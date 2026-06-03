@@ -2,6 +2,7 @@
 from __future__ import annotations
 import re
 import ssl
+import tempfile
 import urllib.request
 import openpyxl
 from pathlib import Path
@@ -77,16 +78,18 @@ def download_and_parse_xlsx(xlsx_path: Path | None = None) -> dict[str, dict]:
         )
         with urllib.request.urlopen(req, context=_SSL_CTX) as resp:
             data = resp.read()
-        tmp_path = Path("C:/Windows/Temp/CoursesList.xlsx")
+        tmp_path = Path(tempfile.gettempdir()) / "CoursesList.xlsx"
         tmp_path.write_bytes(data)
         xlsx_path = tmp_path
 
     wb = openpyxl.load_workbook(xlsx_path, read_only=True, data_only=True)
-    ws = wb.active
-    rows = []
-    for row in ws.iter_rows(min_row=3, values_only=True):  # skip 2 header rows
-        parsed = parse_xlsx_row(row)
-        if parsed:
-            rows.append(parsed)
-    wb.close()
+    try:
+        ws = wb.active
+        rows = []
+        for row in ws.iter_rows(min_row=3, values_only=True):  # skip 2 header rows
+            parsed = parse_xlsx_row(row)
+            if parsed:
+                rows.append(parsed)
+    finally:
+        wb.close()
     return build_courses_meta(rows)

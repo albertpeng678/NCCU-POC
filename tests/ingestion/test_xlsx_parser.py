@@ -26,6 +26,11 @@ def test_parse_xlsx_row_skips_non_9digit_id():
     row = ("HEADER", None, "title", None, None, None, None, None, None, None, None, None, None, None, None, None)
     assert parse_xlsx_row(row) is None
 
+def test_parse_xlsx_row_kind_selective():
+    row = ("000216001", 2, "英文", None, "陳老師", None, "外文系", None, "二A12", None, "Room", "選/Selective", "中文/Mandarin", "否/No", "", "")
+    result = parse_xlsx_row(row)
+    assert result["kind"] == "選修"
+
 def test_build_courses_meta_deduplicates_same_course_id():
     rows = [
         {"course_id": "000211012", "name": "政治學", "credits": 3.0, "department": "政治系",
