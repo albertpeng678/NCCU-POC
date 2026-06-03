@@ -88,29 +88,68 @@
 
 ---
 
-## 五、如何在本地復現驗證環境
+## 五、新機器從零設定（git clone 後完整步驟）
+
+> 適用：在另一台機器 clone 此 repo 後，要跑起本地驗證環境。
+> repo 已含 `backend/courses_meta.json`（5 課 dry-run 版）。**未含** `.env`（gitignored）、Python 套件、Postgres。
+
+### 前置需求
+- Python 3.11+、Docker、git
+- **同一把 `GEMINI_API_KEY`**（dry-run File Search Store 綁在原帳號雲端，換 key 就存取不到，會回 503）
+
+### 步驟
 
 ```bash
-# 1. Postgres（若 nccu-pg 不存在）
+# 0. clone（用 github-personal key）
+git clone git@github.com:albertpeng678/NCCU-POC.git && cd NCCU-POC
+
+# 1. 安裝依賴
+pip install -r backend/requirements.txt
+pip install -r ingestion/requirements.txt   # 若要跑 ingestion
+
+# 2. 建 .env（從 example 複製後填值）
+cp .env.example .env
+#   填入：
+#   GEMINI_API_KEY=<與原機器同一把，才能存取既有 dry-run store>
+#   FILE_SEARCH_STORE_NAME=fileSearchStores/nccucourses1142-1ie5gitqgtur   # dry-run 5課；full run 後換新值
+#   ALLOWED_ORIGIN=*
+
+# 3. 本地 Postgres（容器名自取，埠 5440 與下方一致即可）
 docker run -d --name nccu-pg -e POSTGRES_PASSWORD=nccu -e POSTGRES_DB=nccu -p 5440:5432 postgres:16-alpine
+#   等就緒後套 schema：
 docker exec -i nccu-pg psql -U postgres -d nccu < backend/schema.sql
 
-# 2. Backend（接 DB + dry-run store）
+# 4. 全測試（不需 DB/Gemini，純單元測試）
+python -m pytest tests/ -q          # 預期 49 passed
+
+# 5. 啟動 backend（DATABASE_URL 用環境變數傳，勿寫進 .env 以免覆蓋部署設定）
 DATABASE_URL="postgresql://postgres:nccu@127.0.0.1:5440/nccu" python -m uvicorn backend.main:app --port 8000
+#   健康檢查：curl http://localhost:8000/health → {"status":"ok"}
 
-# 3. Frontend
+# 6. 啟動 frontend
 cd frontend && python -m http.server 3000
-# 開 http://localhost:3000/index.html
-
-# 4. 全測試
-python -m pytest tests/ -q   # 49 passing
+#   開 http://localhost:3000/index.html
 ```
+
+### 驗證可用性（dry-run store 限政治/社會/經濟相關）
+```bash
+# 推薦模式（會 match 的職涯）
+curl -s -X POST http://localhost:8000/recommend -H "Content-Type: application/json" \
+  --data-binary "{\"career\": \"公務員\"}"
+# 問答模式
+curl -s -X POST http://localhost:8000/qa -H "Content-Type: application/json" \
+  --data-binary "{\"question\": \"政治學在教什麼?\", \"session_id\": null}"
+```
+
+> ⚠️ 新機器若 **沒有原 GEMINI_API_KEY**：無法用既有 dry-run store。需自己跑一次 ingestion 建新 store（見待辦 #11），或向原作者取得 key。
+> ⚠️ Windows 注意：連 Docker Postgres 用 `127.0.0.1`（非 `localhost`，避免 IPv6 `::1` 連線被拒）。
 
 ---
 
 ## 六、已知限制 / 注意事項
 
 - **dry-run store 只有 5 課**：問答/推薦只在政治/社會/經濟相關問題有結果；其他職涯（如資料科學家）會回 503「無候選課程」。Full ingestion 後才完整。
+- **File Search Store 是 Gemini 帳號層級雲端資源**（非本機檔案）：同一把 `GEMINI_API_KEY` 在任何機器都能存取同一個 store，故跨機器驗證只需 .env 填對 key + store name，無需重新 ingestion。換 key = 看不到既有 store。
 - **/qa 強依賴 DB**：無 DATABASE_URL 時回 503（與 /recommend 不同，後者可優雅降級）。
 - **latency**：兩階段推薦 ~50-80s，問答 ~15-30s（Gemini File Search 本身較慢）。PoC 可接受。
 - **courses_meta.json 已 commit**（un-gitignored）：backend runtime 依賴，Railway 從 git build 需要它。
