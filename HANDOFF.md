@@ -14,7 +14,7 @@
 | Backend Logging + Judge | ✅ | ✅ | ⬜ 待 live Postgres | ⬜ |
 | Backend Q&A 問答 | ✅ | ✅ | ✅ 單輪+多輪+citations | ⬜ |
 | Frontend 推薦模式 | ✅ | — | ✅ 桌面+mobile | ⬜ |
-| Frontend Q&A 模式 | ✅ | — | 🟡 進行中（剛開始 Playwright 測） | ⬜ |
+| Frontend Q&A 模式 | ✅ | — | ✅ 桌面 E2E（單輪+多輪+新對話+模式切換+DB） | ⬜ |
 
 **測試總計：49 passing**（ingestion 15 + backend 34）。
 
@@ -50,13 +50,17 @@
 - [x] 6. Frontend Q&A 模式（雙模式 UI 程式碼完成）
 - [x] 7. 後端整合（main.py /qa endpoint + models）
 - [x] 8. CLAUDE.md + HANDOFF.md
+- [x] 9. **Frontend Q&A 桌面端到端 Playwright 驗證**（2026-06-03）
+  - 單輪：問題氣泡→loading「AI 正在查閱課綱」→答案氣泡（4 段）+ 參考課綱 citation 連結 + followup chips（3）✅
+  - 多輪：點 followup chip 追問，第 2 輪答案有上下文接續（正確區分政治系必修 vs 經濟/社會系），5 citations，狀態列「第 2 輪對話」✅
+  - 新對話：清空 + 回 empty state + session label 歸位✅
+  - 模式切換不污染：切推薦再切回，對話完整保留，視覺乾淨（a11y 樹的 `↗` 是 Chromium 對 hidden `::before` 的誤報，非真實洩漏）✅
+  - DB 持久化：qa_session.turn_count=2 + last_interaction_id；qa_turn 兩筆 success，citation_count 1/5，latency 16.7s/21.2s✅
+  - 已知：背景 RAGAS judge 此次因 Gemini 503（模型過載）未回填分數，但 /qa 仍回 200、優雅捕捉不阻塞（設計預期）
 
 ### 🟡 進行中
 
-- [ ] 9. **Frontend Q&A 端到端 Playwright 驗證**
-  - 已完成：啟動 backend（接 5440 DB）、frontend（:3000）、切到問答模式
-  - 待做：實測「輸入問題→送出→loading→答案氣泡+citations+followup chips 渲染」、多輪追問、新對話、模式切換不互相污染
-  - 狀態：剛點完 `#chip-qa` 切換，尚未送出問題
+（無）
 
 ### ⬜ 待完成（依優先序）
 
