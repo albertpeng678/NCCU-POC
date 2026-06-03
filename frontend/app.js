@@ -29,6 +29,7 @@ const groupsEl  = document.getElementById("groups");
 
 // ---------- State ----------
 let selectedCareer = null;
+let lastCareer = null;   // 上次實際送出的職涯（含清單外自由輸入），供「換一批」沿用
 let activeIdx = -1;
 
 // ---------- Util ----------
@@ -117,6 +118,8 @@ function clearSelection(){ selectedCareer = null; searchBtn.disabled = true; }
 input.addEventListener("input", ()=>{
   clearSelection();
   renderDropdown(filterCareers(input.value));
+  // 允許清單外職涯：只要輸入非空就能送出（後端會 LLM 推導或溫和導向問答）
+  searchBtn.disabled = !input.value.trim();
 });
 input.addEventListener("keydown",(e)=>{
   const items = dropdown.querySelectorAll(".autocomplete-item");
@@ -131,7 +134,7 @@ input.addEventListener("keydown",(e)=>{
   } else if(e.key === "Enter"){
     e.preventDefault();
     if(activeIdx >= 0 && items[activeIdx]) selectCareer(items[activeIdx].textContent);
-    else if(selectedCareer) fetchRecommendation(selectedCareer);
+    else { const c = selectedCareer || input.value.trim(); if(c) fetchRecommendation(c); }
   }
 });
 document.addEventListener("click",(e)=>{
@@ -176,9 +179,17 @@ const GROUP_META = [
 ];
 function renderResults(data){
   loadingEl.hidden = true; errorEl.hidden = true;
+  const nm = document.getElementById("no-match"); if(nm) nm.hidden = true;
   resCareer.textContent = data.career;
   resLatency.textContent = data.latency_ms ? `GENERATED ${(data.latency_ms/1000).toFixed(1)}s` : "";
   groupsEl.innerHTML = "";
+  // 清單外職涯的誠實說明條（可轉移能力課程）
+  if(data.notice){
+    const n = document.createElement("p");
+    n.className = "result-notice";
+    n.textContent = data.notice;
+    groupsEl.appendChild(n);
+  }
   GROUP_META.forEach(g=>{
     const list = (data.groups && data.groups[g.key]) || [];
     if(!list.length) return;
@@ -202,6 +213,7 @@ function showError(msg){ loadingEl.hidden = true; resultsEl.hidden = true; error
 
 // ---------- API ----------
 async function fetchRecommendation(career){
+  lastCareer = career;            // 供「換一批」沿用（含清單外職涯）
   showLoading();
   try{
     const resp = await fetch(`${CONFIG.API_URL}/recommend`,{
@@ -213,17 +225,42 @@ async function fetchRecommendation(career){
       const err = await resp.json().catch(()=>({}));
       throw new Error(err.detail || `HTTP ${resp.status}`);
     }
-    renderResults(await resp.json());
+    const data = await resp.json();
+    if(data && data.no_match){ showNoMatch(career, data.message || "目前沒有找到相關課程。"); return; }
+    renderResults(data);
   }catch(e){
     showError(`查詢失敗：${e.message}。請稍後再試。`);
   }
 }
 
-searchBtn.addEventListener("click", ()=>{ if(selectedCareer) fetchRecommendation(selectedCareer); });
+// 清單外且查無 → 溫和訊息卡 + 一鍵導向問答（不卡死）
+function showNoMatch(career, message){
+  loadingEl.hidden = true; errorEl.hidden = true; resultsEl.hidden = true;
+  let card = document.getElementById("no-match");
+  if(!card){
+    card = document.createElement("section");
+    card.id = "no-match"; card.className = "no-match-card";
+    resultsEl.parentNode.insertBefore(card, resultsEl);
+  }
+  card.innerHTML = `<p class="nm-msg"></p>
+    <button class="nm-cta" type="button">用問答模式問我 →</button>`;
+  card.querySelector(".nm-msg").textContent = message;
+  card.querySelector(".nm-cta").addEventListener("click", ()=>{
+    card.hidden = true;
+    setMode("qa");
+    qaInput.value = `想當${career}，政大有哪些相關課程或能力可以培養？`;
+    qaInput.dispatchEvent(new Event("input"));
+    qaInput.focus();
+  });
+  card.hidden = false;
+  card.scrollIntoView({behavior:"smooth", block:"center"});
+}
 
-// 換一批：以相同職涯重呼叫（後端每次新亂數 seed → 不同一批課）
+searchBtn.addEventListener("click", ()=>{ const c = selectedCareer || input.value.trim(); if(c) fetchRecommendation(c); });
+
+// 換一批：以「上次送出的職涯」重呼叫（後端每次新亂數 seed → 不同一批課；清單外職涯也適用）
 const rerollBtn = document.getElementById("reroll-btn");
-rerollBtn.addEventListener("click", ()=>{ if(selectedCareer) fetchRecommendation(selectedCareer); });
+rerollBtn.addEventListener("click", ()=>{ if(lastCareer) fetchRecommendation(lastCareer); });
 
 // ========== Q&A mode ==========
 const chipRecommend = document.getElementById("chip-recommend");
