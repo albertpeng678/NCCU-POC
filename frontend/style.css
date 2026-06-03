@@ -118,6 +118,8 @@ body::after{width:600px;height:600px;background:radial-gradient(circle,rgba(40,9
 .error-box p{color:#ff9b9b;font-size:14px}
 
 /* ===== Results ===== */
+/* 讓內容區撐滿寬度並自行置中子元素，使 results 能用到 max-width:1080（不被搜尋框 560 綁住）*/
+#mode-recommend{width:100%;display:flex;flex-direction:column;align-items:center}
 .results{width:100%;max-width:1080px;margin:64px auto 0;text-align:left}
 .results-head{display:flex;align-items:baseline;gap:14px;margin-bottom:8px;flex-wrap:wrap}
 .results-head h2{font-family:"Chakra Petch";font-size:22px;font-weight:600}
@@ -187,7 +189,6 @@ body::after{width:600px;height:600px;background:radial-gradient(circle,rgba(40,9
   .topbar{padding:14px 18px}
   .hero{padding:44px 18px 32px}
   .results{margin-top:48px}
-  .cards{grid-template-columns:1fr}
   .brand-name{font-size:15px}
 }
 @media (max-width:420px){
