@@ -1,15 +1,10 @@
 # ingestion/scraper.py
 from __future__ import annotations
 import asyncio
-import ssl
 import httpx
 from bs4 import BeautifulSoup
 
 _SEMAPHORE = asyncio.Semaphore(20)
-_SSL_CTX = ssl.create_default_context()
-_SSL_CTX.check_hostname = False
-_SSL_CTX.verify_mode = ssl.CERT_NONE
-_SSL_CTX.options |= getattr(ssl, "OP_LEGACY_SERVER_CONNECT", 0x4)
 
 
 def extract_text_from_html(html: str) -> str:
