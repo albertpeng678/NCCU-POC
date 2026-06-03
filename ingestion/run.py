@@ -22,9 +22,13 @@ load_dotenv()
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 OUTPUT_META = Path("backend/courses_meta.json")
 FAILED_LOG = Path("ingestion/failed_courses.json")
+DOCS_CACHE = Path("ingestion/docs_cache.jsonl")  # 文件文字快取（可續跑/廉價重試）
 
 # Set to a positive int to limit course count (for dry-run); None = all courses
 DRY_RUN_LIMIT = int(os.environ.get("INGESTION_LIMIT", "0")) or None
+# import_file 為伺服器端索引，不耐高併發；上傳併發遠低於 skill bridges
+UPLOAD_WORKERS = int(os.environ.get("UPLOAD_WORKERS", "4"))
+UPLOAD_ROUNDS = 3  # 1 主回合 + 2 重試回合（逐回合降併發）
 
 
 async def scrape_all(courses: list[dict]) -> dict[str, str | None]:
@@ -70,7 +74,7 @@ def main():
     bridges = generate_skill_bridges(client, courses)
     bridge_map = {c["course_id"]: b for c, b in zip(courses, bridges)}
 
-    # Step 4: Build document texts + set source
+    # Step 4: Build document texts + set source；同時存檔（可續跑/廉價重試）
     docs = {}
     for cid, course_meta in meta.items():
         docs[cid] = build_document_text(
@@ -80,27 +84,48 @@ def main():
         )
         course_meta["source"] = "name_only" if syllabus_texts.get(cid) is None else "syllabus"
 
-    # Step 5: Upload to File Search Store
+    with DOCS_CACHE.open("w", encoding="utf-8") as f:
+        for cid, doc_text in docs.items():
+            f.write(json.dumps(
+                {"course_id": cid, "doc_text": doc_text, "syllabus_url": meta[cid]["syllabus_url"]},
+                ensure_ascii=False) + "\n")
+    print(f"[run] Cached doc texts → {DOCS_CACHE}")
+
+    # Step 5: Upload to File Search Store（低併發 + 多輪重試，避免 import 佇列雪崩）
     print("[run] Creating File Search Store...")
     store_name = create_store(client)
-
-    print(f"[run] Uploading {len(docs)} documents (parallel x{MAX_WORKERS})...")
-    upload_failures = []
-
-    def _upload_one(item):
-        cid, doc_text = item
-        ok = upload_document(client, store_name, cid, meta[cid]["syllabus_url"], doc_text)
-        return cid, ok
-
-    done = 0
     total = len(docs)
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
-        for cid, ok in ex.map(_upload_one, list(docs.items())):
-            if not ok:
-                upload_failures.append(cid)
-            done += 1
-            if done % 100 == 0 or done == total:
-                print(f"[run]   {done}/{total} uploaded ({len(upload_failures)} failed)...", flush=True)
+
+    def _upload_round(items, workers):
+        """並行上傳一批，回傳仍失敗的 (cid, doc_text) list。"""
+        failed = []
+        done = 0
+
+        def up(item):
+            cid, doc_text = item
+            ok = upload_document(client, store_name, cid, meta[cid]["syllabus_url"], doc_text)
+            return item, ok
+
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            for item, ok in ex.map(up, items):
+                done += 1
+                if not ok:
+                    failed.append(item)
+                if done % 100 == 0 or done == len(items):
+                    print(f"[run]   {done}/{len(items)} this round "
+                          f"({len(failed)} failed so far)...", flush=True)
+        return failed
+
+    pending = list(docs.items())
+    for rnd in range(UPLOAD_ROUNDS):
+        workers = UPLOAD_WORKERS if rnd == 0 else max(2, UPLOAD_WORKERS // 2)
+        print(f"[run] Upload round {rnd + 1}/{UPLOAD_ROUNDS}: {len(pending)} docs (workers={workers})...")
+        pending = _upload_round(pending, workers)
+        if not pending:
+            break
+        print(f"[run] Round {rnd + 1} left {len(pending)} failed; retrying...", flush=True)
+    upload_failures = [cid for cid, _ in pending]
+    print(f"[run] Upload complete: {total - len(upload_failures)}/{total} ok, {len(upload_failures)} failed.")
 
     # Step 6: Save outputs
     OUTPUT_META.parent.mkdir(exist_ok=True)

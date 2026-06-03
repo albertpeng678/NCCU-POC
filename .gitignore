@@ -16,3 +16,4 @@ failed_courses.json
 ingestion_run.log
 scripts/
 .env
+ingestion/docs_cache.jsonl

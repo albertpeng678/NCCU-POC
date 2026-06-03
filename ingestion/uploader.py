@@ -50,7 +50,8 @@ def upload_document(
                 },
             )
             # Poll until the LRO completes (no .result() on ImportFileOperation)
-            deadline = time.time() + 60
+            # 240s：File Search import 為伺服器端索引，併發上傳時佇列較久，給足時間避免過早逾時
+            deadline = time.time() + 240
             while not op.done:
                 if time.time() > deadline:
                     raise TimeoutError(f"import_file timed out for {course_id}")
