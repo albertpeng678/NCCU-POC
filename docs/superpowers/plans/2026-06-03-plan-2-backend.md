@@ -823,14 +823,17 @@ git commit -m "feat(backend): FastAPI app with /recommend endpoint and CORS"
 - [ ] **Step 1: Create `backend/Dockerfile`**
 
 ```dockerfile
+# Package-style imports (from backend.X) require backend/ as a package + context=repo root
 FROM python:3.11-slim
 WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-COPY . .
+COPY backend/requirements.txt ./backend/requirements.txt
+RUN pip install --no-cache-dir -r backend/requirements.txt
+COPY backend/ ./backend/
 EXPOSE 8000
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
 ```
+
+**Note:** `courses_meta.json` must be committed (un-gitignored) — it's a backend runtime dependency and Railway builds from git.
 
 - [ ] **Step 2: Create `railway.toml`**
 
@@ -840,7 +843,7 @@ builder = "dockerfile"
 dockerfilePath = "backend/Dockerfile"
 
 [deploy]
-startCommand = "uvicorn main:app --host 0.0.0.0 --port $PORT"
+startCommand = "uvicorn backend.main:app --host 0.0.0.0 --port $PORT"
 healthcheckPath = "/health"
 healthcheckTimeout = 30
 ```
