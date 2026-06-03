@@ -6,3 +6,7 @@ __pycache__/
 .superpowers/
 failed_courses.json
 # courses_meta.json IS committed — backend runtime dependency, needed for Railway deploy
+
+# Playwright / E2E 測試產物（截圖、snapshot、console log）
+.playwright-mcp/
+*.png

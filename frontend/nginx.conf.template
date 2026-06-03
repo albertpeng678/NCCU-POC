@@ -1,0 +1,17 @@
+server {
+    listen       ${PORT};
+    server_name  _;
+
+    root   /usr/share/nginx/html;
+    index  index.html;
+
+    # SPA-ish：找不到檔就回 index.html
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # 靜態資源快取（PoC 用較短）
+    location ~* \.(?:css|js)$ {
+        add_header Cache-Control "public, max-age=300";
+    }
+}
