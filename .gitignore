@@ -10,3 +10,9 @@ failed_courses.json
 # Playwright / E2E 測試產物（截圖、snapshot、console log）
 .playwright-mcp/
 *.png
+
+# 本機驗證環境/產物
+.venv/
+ingestion_run.log
+scripts/
+.env
