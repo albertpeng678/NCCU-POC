@@ -5,4 +5,4 @@ __pycache__/
 .pytest_cache/
 .superpowers/
 failed_courses.json
-courses_meta.json
+# courses_meta.json IS committed — backend runtime dependency, needed for Railway deploy
