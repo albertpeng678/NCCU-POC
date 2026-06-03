@@ -7,6 +7,7 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from google import genai
+import sentry_sdk
 
 from backend.models import (
     RecommendRequest, RecommendResponse,
@@ -33,6 +34,17 @@ load_dotenv()
 _GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 _STORE_NAME = os.environ["FILE_SEARCH_STORE_NAME"]
 _ALLOWED_ORIGIN = os.environ.get("ALLOWED_ORIGIN", "*")
+
+# Sentry：錯誤監控 + tracing。SENTRY_DSN 未設則優雅停用（本機/無監控環境照常運作）。
+# FastAPI/Starlette 整合由 sentry-sdk 自動偵測啟用。
+_SENTRY_DSN = os.environ.get("SENTRY_DSN")
+if _SENTRY_DSN:
+    sentry_sdk.init(
+        dsn=_SENTRY_DSN,
+        environment=os.environ.get("SENTRY_ENVIRONMENT", "production"),
+        traces_sample_rate=float(os.environ.get("SENTRY_TRACES_SAMPLE_RATE", "1.0")),
+        send_default_pii=False,
+    )
 
 _client = genai.Client(api_key=_GEMINI_API_KEY)
 
@@ -96,6 +108,7 @@ async def recommend(req: RecommendRequest, background_tasks: BackgroundTasks):
         )
     except Exception as e:
         error = e
+        sentry_sdk.capture_exception(e)   # 回報被吞掉的 Gemini/pipeline 錯誤（Sentry 未啟用時 no-op）
 
     # 清單外但檢索空 → no_match（誠實，不硬湊）
     if not error and skills is not None and result is not None and not any(result["groups"].values()):
@@ -156,6 +169,7 @@ async def qa(req: QaRequest, background_tasks: BackgroundTasks):
         result = answer_question(_client, _STORE_NAME, req.question, prev_interaction_id)
     except Exception as e:
         error = e
+        sentry_sdk.capture_exception(e)   # 回報被吞掉的 Gemini 問答錯誤（Sentry 未啟用時 no-op）
 
     # Persist turn (Phase 1)
     turn_id = await insert_turn(pool, session_id, turn_number, req.question, result, error)

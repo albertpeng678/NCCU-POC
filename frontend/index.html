@@ -132,6 +132,10 @@
     <div id="oc-list" class="oc-list" role="listbox"></div>
   </aside>
 
+  <!-- Sentry（錯誤監控+tracing）：放最前以捕捉後續所有錯誤；DSN 由 app.js CONFIG 控制，空則停用 -->
+  <script src="https://browser.sentry-cdn.com/10.42.0/bundle.tracing.min.js"
+    integrity="sha384-DIqcfVcfIewrWiNWfVZcGWExO5v673hkkC5ixJnmAprAfJajpUDEAL35QgkOB5gw"
+    crossorigin="anonymous"></script>
   <!-- Markdown 渲染（Q&A 答案）+ XSS sanitize；內容來自 LLM 故必經 DOMPurify -->
   <script src="https://cdn.jsdelivr.net/npm/marked@15.0.7/marked.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.4/dist/purify.min.js"></script>
