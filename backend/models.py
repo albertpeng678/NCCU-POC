@@ -4,6 +4,7 @@ from pydantic import BaseModel, field_validator
 
 class RecommendRequest(BaseModel):
     career: str
+    seed: int | None = None
 
     @field_validator("career")
     @classmethod
@@ -43,6 +44,7 @@ class RecommendResponse(BaseModel):
     career: str
     groups: CourseGroups
     latency_ms: int
+    seed: int = 0
 
 
 # ===== Q&A mode =====

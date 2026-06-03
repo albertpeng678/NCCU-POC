@@ -1,6 +1,7 @@
 # backend/main.py
 from __future__ import annotations
 import os
+import random
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,7 +16,10 @@ from backend.recommend import build_recommendation_instrumented, load_careers, l
 from backend.logger import build_log_record, insert_log, update_judge_scores
 from backend.judge import evaluate_recommendation
 from backend.db import init_pool, close_pool, get_pool
-from backend.qa import answer_question, extract_citations
+from backend.qa import (
+    answer_question, extract_citations,
+    should_override_no_results, NO_RESULTS_MESSAGE,
+)
 from backend.qa_judge import evaluate_qa
 from backend.qa_logger import (
     create_session, get_session, insert_turn, bump_session,
@@ -69,11 +73,14 @@ async def recommend(req: RecommendRequest, background_tasks: BackgroundTasks):
     if req.career not in careers:
         raise HTTPException(status_code=400, detail=f"Unknown career: {req.career}")
 
+    seed = req.seed if req.seed is not None else random.randrange(1_000_000)
     result = None
     stage1_count = 0
     error = None
     try:
-        result, stage1_count = build_recommendation_instrumented(_client, _STORE_NAME, req.career)
+        result, stage1_count = build_recommendation_instrumented(
+            _client, _STORE_NAME, req.career, seed
+        )
     except Exception as e:
         error = e
 
@@ -134,6 +141,11 @@ async def qa(req: QaRequest, background_tasks: BackgroundTasks):
     # Join citations with course metadata for full display info
     meta = load_courses_meta()
     citations = extract_citations(result.get("citations_course_ids", []), meta)
+
+    # 防幻覺：RAG 空命中卻列出具體課程 → 覆寫為誠實的查無資料引導，不放任模型自由文字
+    if should_override_no_results(result["answer"], citations):
+        result["answer"] = NO_RESULTS_MESSAGE
+        result["followup_suggestions"] = []
 
     # Fire-and-forget Q&A judge (Phase 2)
     if turn_id:
