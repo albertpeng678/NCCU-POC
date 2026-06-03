@@ -39,10 +39,13 @@ def test_recommend_valid_career(client):
     mock_fn.assert_called_once()
 
 
-def test_recommend_invalid_career_returns_400(client):
+def test_recommend_invalid_career_returns_no_match(client):
+    # 清單外職涯不再回 400，改由 LLM 推導技能；無法推導時回 200 + no_match=True
     tc, _ = client
-    resp = tc.post("/recommend", json={"career": "不存在的職業XYZ"})
-    assert resp.status_code == 400
+    with patch("backend.main.derive_skills_for_career", return_value=None):
+        resp = tc.post("/recommend", json={"career": "不存在的職業XYZ"})
+    assert resp.status_code == 200
+    assert resp.json().get("no_match") is True
 
 
 def test_recommend_empty_career_returns_422(client):

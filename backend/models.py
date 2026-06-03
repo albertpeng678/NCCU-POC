@@ -45,6 +45,13 @@ class RecommendResponse(BaseModel):
     groups: CourseGroups
     latency_ms: int
     seed: int = 0
+    notice: str | None = None  # 清單外職涯：說明推薦依據可轉移能力
+
+
+class NoMatchResponse(BaseModel):
+    career: str
+    no_match: bool = True
+    message: str
 
 
 # ===== Q&A mode =====

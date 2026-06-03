@@ -12,7 +12,10 @@ from backend.models import (
     RecommendRequest, RecommendResponse,
     QaRequest, QaResponse,
 )
-from backend.recommend import build_recommendation_instrumented, load_careers, load_courses_meta
+from backend.recommend import (
+    build_recommendation_instrumented, derive_skills_for_career,
+    load_careers, load_courses_meta,
+)
 from backend.logger import build_log_record, insert_log, update_judge_scores
 from backend.judge import evaluate_recommendation
 from backend.db import init_pool, close_pool, get_pool
@@ -67,22 +70,40 @@ def health():
     return {"status": "ok"}
 
 
-@app.post("/recommend", response_model=RecommendResponse)
+@app.post("/recommend")
 async def recommend(req: RecommendRequest, background_tasks: BackgroundTasks):
     careers = load_careers()
-    if req.career not in careers:
-        raise HTTPException(status_code=400, detail=f"Unknown career: {req.career}")
-
     seed = req.seed if req.seed is not None else random.randrange(1_000_000)
+
+    # 清單外職涯：用 LLM 推導可轉移技能；推導不出 → no_match（不再 400）
+    if req.career in careers:
+        skills = None
+    else:
+        skills = derive_skills_for_career(_client, req.career)
+        if not skills:
+            return {
+                "career": req.career,
+                "no_match": True,
+                "message": f"目前沒有找到對應「{req.career}」的課程，你可以用問答模式問我相關方向。",
+            }
+
     result = None
     stage1_count = 0
     error = None
     try:
         result, stage1_count = build_recommendation_instrumented(
-            _client, _STORE_NAME, req.career, seed
+            _client, _STORE_NAME, req.career, seed, skills=skills
         )
     except Exception as e:
         error = e
+
+    # 清單外但檢索空 → no_match（誠實，不硬湊）
+    if not error and skills is not None and result is not None and not any(result["groups"].values()):
+        return {
+            "career": req.career,
+            "no_match": True,
+            "message": f"政大課程偏學術，目前沒有找到與「{req.career}」相關的課程，建議用問答模式探索。",
+        }
 
     # Fire-and-forget: log + judge (never blocks response)
     background_tasks.add_task(_background_log_and_judge, req.career, result, stage1_count, error)
@@ -90,6 +111,12 @@ async def recommend(req: RecommendRequest, background_tasks: BackgroundTasks):
     if error:
         raise HTTPException(status_code=503, detail=str(error))
 
+    # 清單外但有結果 → 補誠實 notice
+    if skills is not None and result is not None:
+        result.setdefault(
+            "notice",
+            f"政大沒有直接對應「{req.career}」的課程，但以下課程能培養相關的可轉移能力：",
+        )
     return result
 
 
