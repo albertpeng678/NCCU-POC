@@ -31,26 +31,28 @@ def upload_document(
             f.write(document_text)
             tmp_path = Path(f.name)
 
-        # Upload file to Gemini Files API
-        uploaded = client.files.upload(
-            file=tmp_path,
-            config={"display_name": f"course-{course_id}"},
-        )
-        tmp_path.unlink(missing_ok=True)
+        try:
+            # Upload file to Gemini Files API
+            uploaded = client.files.upload(
+                file=tmp_path,
+                config={"display_name": f"course-{course_id}"},
+            )
 
-        # Import into File Search Store
-        op = client.file_search_stores.import_file(
-            file_search_store_name=store_name,
-            file_name=uploaded.name,
-            config={
-                "custom_metadata": [
-                    {"key": "course_id", "string_value": course_id},
-                    {"key": "syllabus_url", "string_value": syllabus_url},
-                ]
-            },
-        )
-        op.result(timeout=60)  # Wait for indexing
-        return True
+            # Import into File Search Store
+            op = client.file_search_stores.import_file(
+                file_search_store_name=store_name,
+                file_name=uploaded.name,
+                config={
+                    "custom_metadata": [
+                        {"key": "course_id", "string_value": course_id},
+                        {"key": "syllabus_url", "string_value": syllabus_url},
+                    ]
+                },
+            )
+            op.result(timeout=60)  # Wait for indexing
+            return True
+        finally:
+            tmp_path.unlink(missing_ok=True)
 
     except Exception as e:
         print(f"[uploader] Failed to upload {course_id}: {e}")
