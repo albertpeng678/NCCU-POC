@@ -144,9 +144,13 @@ def build_recommendation(
     careers = load_careers()
     meta = load_courses_meta()
 
+    if career not in careers:
+        raise ValueError(f"Unknown career: {career}")
     skills = careers[career]["skills"]
 
     candidates = stage1_retrieve(client, store_name, career, skills)
+    if not candidates:
+        raise ValueError("Stage 1 returned no candidate courses")
     stage2 = stage2_group(client, career, skills, candidates)
 
     def process_group(items: list[_CourseItem]) -> list[dict]:
@@ -154,14 +158,15 @@ def build_recommendation(
         deduped = deduplicate_by_prefix(raw)
         return join_metadata(deduped, meta)
 
+    groups = {
+        "core": process_group(stage2.groups.core),
+        "supporting": process_group(stage2.groups.supporting),
+        "extended": process_group(stage2.groups.extended),
+    }
     latency_ms = int((time.monotonic() - t0) * 1000)
 
     return {
         "career": career,
-        "groups": {
-            "core": process_group(stage2.groups.core),
-            "supporting": process_group(stage2.groups.supporting),
-            "extended": process_group(stage2.groups.extended),
-        },
+        "groups": groups,
         "latency_ms": latency_ms,
     }
