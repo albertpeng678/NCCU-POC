@@ -193,3 +193,34 @@ def build_recommendation(
         "groups": groups,
         "latency_ms": latency_ms,
     }
+
+
+def build_recommendation_instrumented(
+    client: genai.Client, store_name: str, career: str
+) -> tuple[dict, int]:
+    """Same as build_recommendation but also returns stage1 candidate count."""
+    t0 = time.monotonic()
+    careers = load_careers()
+    meta = load_courses_meta()
+    if career not in careers:
+        raise ValueError(f"Unknown career: {career}")
+    skills = careers[career]["skills"]
+
+    candidates = stage1_retrieve(client, store_name, career, skills)
+    stage1_count = len(candidates)
+    if not candidates:
+        raise ValueError("Stage 1 returned no candidate courses")
+    stage2 = stage2_group(client, career, skills, candidates)
+
+    def process_group(items):
+        raw = [{"course_id": i.course_id, "reason": i.reason} for i in items]
+        return join_metadata(deduplicate_by_prefix(raw), meta)
+
+    groups = {
+        "core": process_group(stage2.groups.core),
+        "supporting": process_group(stage2.groups.supporting),
+        "extended": process_group(stage2.groups.extended),
+    }
+    latency_ms = int((time.monotonic() - t0) * 1000)
+    result = {"career": career, "groups": groups, "latency_ms": latency_ms}
+    return result, stage1_count

@@ -2,25 +2,27 @@
 import pytest
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, AsyncMock, patch
 from fastapi.testclient import TestClient
 
 @pytest.fixture
 def client():
-    # NOTE: When Plan 4 (Logging) is implemented, update this patch to:
-    # patch("backend.main.build_recommendation_instrumented")
-    with patch("backend.main.build_recommendation") as mock_build:
-        mock_build.return_value = {
-            "career": "產品經理(PM)",
-            "groups": {
-                "core": [{"course_id": "000211012", "name": "政治學", "department": "政治系",
-                          "teacher": "蔡中民", "credits": 3.0,
-                          "reason": "培養分析能力", "syllabus_url": "https://x.com/a"}],
-                "supporting": [],
-                "extended": [],
+    with patch("backend.main.build_recommendation_instrumented") as mock_build, \
+         patch("backend.main.evaluate_recommendation", new=AsyncMock(return_value=None)):
+        mock_build.return_value = (
+            {
+                "career": "產品經理(PM)",
+                "groups": {
+                    "core": [{"course_id": "000211012", "name": "政治學", "department": "政治系",
+                              "teacher": "蔡中民", "credits": 3.0,
+                              "reason": "培養分析能力", "syllabus_url": "https://x.com/a"}],
+                    "supporting": [],
+                    "extended": [],
+                },
+                "latency_ms": 1200,
             },
-            "latency_ms": 1200,
-        }
+            15,  # stage1_count
+        )
         from backend.main import app
         yield TestClient(app), mock_build
 
