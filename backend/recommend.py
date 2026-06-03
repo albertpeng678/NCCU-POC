@@ -1,6 +1,7 @@
 # backend/recommend.py
 from __future__ import annotations
 import json
+import random
 import re
 import time
 from pathlib import Path
@@ -11,6 +12,33 @@ from pydantic import BaseModel
 _BASE = Path(__file__).parent
 _CAREERS: dict | None = None
 _COURSES_META: dict | None = None
+
+
+# --- 多樣性參數（跨次輪替）---
+POOL_SIZE = 40       # stage1 檢索候選池大小
+ANCHOR_COUNT = 4     # 每次必留的最相關門數（保品質）
+SAMPLE_SIZE = 18     # 送進 stage2 的候選數
+
+
+def sample_candidates(
+    candidates: list[dict],
+    seed: int,
+    anchor_count: int = ANCHOR_COUNT,
+    sample_size: int = SAMPLE_SIZE,
+) -> list[dict]:
+    """從候選池選出送往 stage2 的子集，達成跨次輪替。
+
+    - 前 anchor_count 門（最相關）一律保留。
+    - 其餘候選用 random.Random(seed) 洗牌後補滿到 sample_size 門。
+    - 候選數 <= sample_size → 原樣回傳（不抽樣）。
+    - 相同 seed → 結果完全相同（可重現）。
+    """
+    if len(candidates) <= sample_size:
+        return list(candidates)
+    anchors = candidates[:anchor_count]
+    rest = list(candidates[anchor_count:])
+    random.Random(seed).shuffle(rest)
+    return anchors + rest[: sample_size - anchor_count]
 
 
 def extract_json_array(text: str) -> list[dict]:
