@@ -4,6 +4,15 @@ import json
 from google import genai
 
 
+def _format_reason(reason) -> str:
+    """Flatten reason (structured dict or plain string) into readable text."""
+    if isinstance(reason, dict):
+        lead = reason.get("lead", "")
+        pts = "；".join(f"{p.get('term','')}:{p.get('detail','')}" for p in reason.get("points", []))
+        return f"{lead}（{pts}）" if pts else lead
+    return str(reason) if reason else "?"
+
+
 def build_judge_prompt(career: str, result: dict) -> str:
     groups = result.get("groups", {})
 
@@ -12,7 +21,7 @@ def build_judge_prompt(career: str, result: dict) -> str:
             return f"[{name}] （空）"
         lines = [f"[{name}]"]
         for c in courses:
-            lines.append(f"  - {c.get('name', '?')} ({c.get('department', '?')}): {c.get('reason', '?')}")
+            lines.append(f"  - {c.get('name', '?')} ({c.get('department', '?')}): {_format_reason(c.get('reason'))}")
         return "\n".join(lines)
 
     courses_text = "\n".join([

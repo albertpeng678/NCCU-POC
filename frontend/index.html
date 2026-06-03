@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NCCU 課程推薦 — 找到最適合你的課程</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- ambient background orbs handled in CSS via body::before/::after -->
+
+  <div class="shell">
+    <!-- Top bar -->
+    <header class="topbar">
+      <div class="topbar-left">
+        <button id="menu-btn" class="icon-btn" type="button" aria-label="開啟職涯目錄" aria-expanded="false" aria-controls="offcanvas">
+          <span class="hamburger"><i></i><i></i><i></i></span>
+        </button>
+        <a class="brand" href="/">
+          <span class="brand-mark" aria-hidden="true">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="9"/>
+              <polygon points="16.5 7.5 13 13 7.5 16.5 11 11 16.5 7.5" fill="currentColor" stroke="none"/>
+            </svg>
+          </span>
+          <span class="brand-name">NCCU COURSE MAP<small>政大課程推薦系統</small></span>
+        </a>
+      </div>
+    </header>
+
+    <!-- Hero / search -->
+    <main class="hero">
+      <p class="eyebrow">114 學年度 · 第 2 學期</p>
+      <h1>輸入你的<span class="accent">職涯方向</span><br>解構最適合的課程組合</h1>
+      <p class="sub">從 50 種職涯路徑出發，AI 從全校 2,877 門課綱中為你導航。</p>
+
+      <section class="search-wrap" aria-label="職涯搜尋">
+        <div class="autocomplete-wrapper">
+          <div class="search-box">
+            <input
+              id="career-input"
+              type="text"
+              placeholder="輸入或選擇職涯目標…"
+              autocomplete="off"
+              aria-autocomplete="list"
+              aria-controls="autocomplete-list"
+              aria-expanded="false">
+            <button id="search-btn" class="go" type="button" aria-label="查詢課程推薦" disabled>↵</button>
+          </div>
+          <ul id="autocomplete-list" class="autocomplete-list" role="listbox" hidden></ul>
+        </div>
+
+        <div class="pills">
+          <span class="label">熱門職涯</span>
+          <div id="hot-picks" class="pills-row" role="group" aria-label="熱門職涯選擇"></div>
+        </div>
+      </section>
+
+      <!-- Loading -->
+      <section id="loading" class="loading" hidden aria-live="polite">
+        <div class="loader-ring" aria-hidden="true"></div>
+        <p class="loading-text">AI 正在分析課綱<span class="dots"><i>.</i><i>.</i><i>.</i></span></p>
+      </section>
+
+      <!-- Error -->
+      <section id="error" class="error-box" hidden role="alert">
+        <p id="error-msg"></p>
+      </section>
+
+      <!-- Results -->
+      <section id="results" class="results" hidden aria-live="polite">
+        <div class="results-head">
+          <h2>推薦課程 · <span id="results-career" class="for"></span></h2>
+          <span id="results-latency" class="lat"></span>
+        </div>
+        <div id="groups" class="groups"></div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <p>資料來源：政大全校課程查詢系統 · 114 學年度第 2 學期</p>
+    </footer>
+  </div>
+
+  <!-- Offcanvas (left) -->
+  <div id="scrim" class="scrim" hidden></div>
+  <aside id="offcanvas" class="offcanvas" aria-hidden="true" aria-label="職涯目錄">
+    <div class="oc-head">
+      <h2 class="oc-title">職涯目錄</h2>
+      <button id="oc-close" class="oc-close" type="button" aria-label="關閉">×</button>
+    </div>
+    <input id="oc-search" class="oc-search" type="text" placeholder="搜尋職涯…" autocomplete="off">
+    <p class="oc-section-label">全部 50 種職涯</p>
+    <div id="oc-list" class="oc-list" role="listbox"></div>
+  </aside>
+
+  <script src="careers.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,52 @@
+{
+  "000211012": {
+    "course_id": "000211012",
+    "name": "政治學",
+    "credits": 3.0,
+    "department": "政治系",
+    "teacher": "蔡中民",
+    "kind": "必修",
+    "syllabus_url": "https://newdoc.nccu.edu.tw/teaschm/1142/schmPrv.jsp-yy=114&smt=2&num=000211&gop=01&s=2.html",
+    "source": "syllabus"
+  },
+  "000216001": {
+    "course_id": "000216001",
+    "name": "社會學",
+    "credits": 3.0,
+    "department": "社會系",
+    "teacher": "劉叡穎",
+    "kind": "選修",
+    "syllabus_url": "https://newdoc.nccu.edu.tw/teaschm/1142/schmPrv.jsp-yy=114&smt=2&num=000216&gop=00&s=1.html",
+    "source": "syllabus"
+  },
+  "000217012": {
+    "course_id": "000217012",
+    "name": "個體經濟學",
+    "credits": 3.0,
+    "department": "經濟系",
+    "teacher": "陳鎮洲",
+    "kind": "必修",
+    "syllabus_url": "https://newdoc.nccu.edu.tw/teaschm/1142/schmPrv.jsp-yy=114&smt=2&num=000217&gop=01&s=2.html",
+    "source": "syllabus"
+  },
+  "000217022": {
+    "course_id": "000217022",
+    "name": "個體經濟學",
+    "credits": 3.0,
+    "department": "經濟系",
+    "teacher": "李慧琳",
+    "kind": "必修",
+    "syllabus_url": "https://newdoc.nccu.edu.tw/teaschm/1142/schmPrv.jsp-yy=114&smt=2&num=000217&gop=02&s=2.html",
+    "source": "syllabus"
+  },
+  "000217032": {
+    "course_id": "000217032",
+    "name": "個體經濟學",
+    "credits": 3.0,
+    "department": "經濟系",
+    "teacher": "徐麗振",
+    "kind": "必修",
+    "syllabus_url": "https://newdoc.nccu.edu.tw/teaschm/1142/schmPrv.jsp-yy=114&smt=2&num=000217&gop=03&s=2.html",
+    "source": "syllabus"
+  }
+}

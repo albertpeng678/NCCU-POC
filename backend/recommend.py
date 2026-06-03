@@ -84,9 +84,14 @@ def join_metadata(raw_courses: list[dict], meta: dict) -> list[dict]:
 
 # --- Gemini Stage 2 Schema ---
 
+class _ReasonPoint(BaseModel):
+    term: str       # 粗體關鍵詞，2-6 字
+    detail: str     # 該關鍵詞的說明，一句
+
 class _CourseItem(BaseModel):
     course_id: str
-    reason: str
+    reason_lead: str               # 總述句，一句
+    reason_points: list[_ReasonPoint]   # 2-3 個結構化重點
 
 class _Groups(BaseModel):
     core: list[_CourseItem]
@@ -145,8 +150,11 @@ def stage2_group(
         "- core（核心技能）：3-4門，直接對應職涯核心能力\n"
         "- supporting（輔助技能）：3-4門，強化周邊能力\n"
         "- extended（延伸視野）：2-3門，跨域拓展\n\n"
-        f"規則：course_id 前6碼相同者只推薦一次。\n"
-        f"每門課的 reason 需具體說明與「{career}」目標的關聯（一句話）。"
+        f"規則：course_id 前6碼相同者只推薦一次。\n\n"
+        f"每門課的推薦理由需結構化說明與「{career}」目標的關聯：\n"
+        "- reason_lead：一句總述，點出這門課對該職涯的核心價值\n"
+        "- reason_points：2-3 個重點，每個含 term（2-6字粗體關鍵詞，如「需求分析」）"
+        "與 detail（一句具體說明該關鍵詞如何對應職涯能力）"
     )
     resp = client.models.generate_content(
         model="gemini-2.5-flash",
@@ -177,7 +185,13 @@ def build_recommendation(
     stage2 = stage2_group(client, career, skills, candidates)
 
     def process_group(items: list[_CourseItem]) -> list[dict]:
-        raw = [{"course_id": i.course_id, "reason": i.reason} for i in items]
+        raw = [{
+            "course_id": i.course_id,
+            "reason": {
+                "lead": i.reason_lead,
+                "points": [{"term": p.term, "detail": p.detail} for p in i.reason_points],
+            },
+        } for i in items]
         deduped = deduplicate_by_prefix(raw)
         return join_metadata(deduped, meta)
 
@@ -213,7 +227,13 @@ def build_recommendation_instrumented(
     stage2 = stage2_group(client, career, skills, candidates)
 
     def process_group(items):
-        raw = [{"course_id": i.course_id, "reason": i.reason} for i in items]
+        raw = [{
+            "course_id": i.course_id,
+            "reason": {
+                "lead": i.reason_lead,
+                "points": [{"term": p.term, "detail": p.detail} for p in i.reason_points],
+            },
+        } for i in items]
         return join_metadata(deduplicate_by_prefix(raw), meta)
 
     groups = {

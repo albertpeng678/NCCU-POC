@@ -15,7 +15,8 @@ def client():
                 "groups": {
                     "core": [{"course_id": "000211012", "name": "政治學", "department": "政治系",
                               "teacher": "蔡中民", "credits": 3.0,
-                              "reason": "培養分析能力", "syllabus_url": "https://x.com/a"}],
+                              "reason": {"lead": "培養分析能力", "points": [{"term": "分析", "detail": "拆解問題"}]},
+                              "syllabus_url": "https://x.com/a"}],
                     "supporting": [],
                     "extended": [],
                 },

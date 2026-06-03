@@ -20,10 +20,12 @@ def test_course_card_has_required_fields():
         department="政治系",
         teacher="蔡中民",
         credits=3.0,
-        reason="培養分析能力",
+        reason={"lead": "培養分析能力", "points": [{"term": "分析", "detail": "系統性拆解問題"}]},
         syllabus_url="https://x.com/a",
     )
     assert card.course_id == "000211012"
+    assert card.reason.lead == "培養分析能力"
+    assert card.reason.points[0].term == "分析"
     assert card.syllabus_url == "https://x.com/a"
 
 

@@ -13,13 +13,23 @@ class RecommendRequest(BaseModel):
         return v.strip()
 
 
+class ReasonPoint(BaseModel):
+    term: str
+    detail: str
+
+
+class Reason(BaseModel):
+    lead: str
+    points: list[ReasonPoint]
+
+
 class CourseCard(BaseModel):
     course_id: str
     name: str
     department: str
     teacher: str
     credits: float
-    reason: str
+    reason: Reason
     syllabus_url: str
 
 
