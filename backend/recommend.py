@@ -130,6 +130,29 @@ class _Stage2Output(BaseModel):
     groups: _Groups
 
 
+def derive_skills_for_career(client: genai.Client, career: str) -> list[str] | None:
+    """為清單外職涯用 LLM 推導『可轉移／學術可教』技能關鍵字。回 None 表示非真實職涯。"""
+    prompt = (
+        f"使用者輸入的職涯目標：「{career}」\n\n"
+        "請判斷這是否為一個真實的職涯/工作。若不是（例如亂打的字），回傳空陣列 []。\n"
+        "若是，請推導 5-8 個此職涯所需、且大學課程可能教授的『可轉移能力』關鍵字"
+        "（聚焦學術可教的能力，如管理、溝通、公共衛生、資料分析；避免純體力或無法在課堂教的技能）。\n"
+        '只回傳 JSON 陣列，例：["公共衛生","基礎管理","人際溝通"]'
+    )
+    resp = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=prompt,
+        config={"response_mime_type": "application/json"},
+    )
+    try:
+        skills = json.loads(resp.text)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(skills, list) or not skills:
+        return None
+    return [str(s) for s in skills][:8]
+
+
 def stage1_retrieve(
     client: genai.Client, store_name: str, career: str, skills: list[str]
 ) -> list[dict]:
