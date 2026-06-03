@@ -19,7 +19,7 @@
 | Backend | Python 3.11 + FastAPI，asyncpg |
 | Frontend | 原生 HTML/CSS/JS（無框架），navy glassmorphism「指揮台」風格 |
 | DB | PostgreSQL（query_log + qa_session + qa_turn） |
-| 部署 | Railway（backend Docker + frontend static） |
+| 部署 | Railway（backend Docker + frontend nginx static），**走 git push**（GitHub-connected service，非 `railway up`） |
 
 ## 目錄結構
 
@@ -53,6 +53,8 @@ NCCU-poc/
 │   ├── style.css           # navy glassmorphism；推薦樣式 + Q&A 樣式（append 區段）
 │   ├── app.js              # 模式切換、autocomplete、offcanvas、/recommend、/qa、對話渲染
 │   ├── careers.js          # 50 職涯清單 + 6 熱門（由 career_skills.json 生成，需同步）
+│   ├── Dockerfile          # frontend 靜態部署：nginx:1.27-alpine + envsubst $PORT（Railway frontend service 用）
+│   ├── nginx.conf.template # listen $PORT + try_files SPA fallback
 │   └── mockup-qa.html      # Q&A 設計稿（獨立預覽，非正式檔）
 │
 ├── tests/                  # pytest，49 passing

@@ -60,22 +60,24 @@
 
 ### 🟡 進行中
 
-（無）
+- [ ] 13. **Railway 部署**（已起步，卡在 #11 full ingestion store）
+  - ✅ Railway CLI 登入（albertpeng678@gmail.com）
+  - ✅ Railway 專案 `NCCU-POC` 已由使用者建立並 `railway link`（environment=production），目前**空專案無 service**
+  - ✅ 決策定案：(a) service 由 Claude 用 CLI 建（`railway add`/`railway up`）；(b) store 走 **full ingestion**（option 2，非 dry-run）；(c) **部署一定走 git push**（GitHub-connected service，非 `railway up` 本地上傳）
+  - ✅ frontend 靜態部署檔已建並 push 到 master：`frontend/Dockerfile`（nginx:1.27-alpine + envsubst $PORT）+ `frontend/nginx.conf.template`，本地 docker 驗證 200
+  - ⛔ **卡點**：backend 的 `FILE_SEARCH_STORE_NAME` 需 full ingestion(#11) 產生的新 store，未跑完無法填 → 部署收尾受阻
+  - 待做（回家後）：跑 #11 → 取新 store name → 建 Postgres+backend+frontend service（git-connected）→ 設 env → 部署 → 改 app.js API_URL → 收緊 CORS（見「四、部署順序」）
 
 ### ⬜ 待完成（依優先序）
 
+- [ ] 11. **Full ingestion run**（2877 課）★ #13 的前置阻塞
+  - 指令：`cd C:/side/NCCU-poc && python -m ingestion.run`（不帶 INGESTION_LIMIT）
+  - 耗時 30-90 分，消耗 Gemini quota，free tier 可能撞 rate limit
+  - 完成後更新 `.env` 與 Railway 的 `FILE_SEARCH_STORE_NAME`，並 commit 新 courses_meta.json
 - [ ] 10. **剩餘推薦模式 E2E**（Plan 3 task #36/#37）
   - tablet 768 響應式截圖
   - 鍵盤導航（Tab/方向鍵/Enter/Esc）
   - 錯誤狀態（503 顯示）
-- [ ] 11. **Full ingestion run**（2877 課）
-  - 指令：`cd C:/side/NCCU-poc && python -m ingestion.run`（不帶 INGESTION_LIMIT）
-  - 耗時 30-90 分，消耗 Gemini quota，free tier 可能撞 rate limit
-  - 完成後更新 `.env` 與 Railway 的 `FILE_SEARCH_STORE_NAME`，並 commit 新 courses_meta.json
-- [ ] 12. **Railway Postgres provisioning**
-  - dashboard 加 Postgres service → 取得 DATABASE_URL
-  - 在 Railway Postgres Query tab 跑 `backend/schema.sql`
-- [ ] 13. **Railway 部署**（依 deploy 順序，見下）
 - [ ] 14. **Q&A 模式跨裝置 E2E**（mobile/tablet 對話氣泡、composer）
 - [ ] 15.（可選）Q&A 重整讀回 GET /qa/session 前端串接（目前後端有，前端未串）
 
@@ -83,11 +85,16 @@
 
 ## 四、Railway 部署順序（避免環境變數 chicken-and-egg）
 
-1. 本地跑 `ingestion/run.py` → 取得 `FILE_SEARCH_STORE_NAME`
-2. Railway 加 Postgres → 跑 schema.sql → 取得 `DATABASE_URL`
-3. 部署 backend（先設 `ALLOWED_ORIGIN=*`）→ 取得 backend URL
-4. 把 backend URL 填入 `frontend/app.js` 的 `CONFIG.API_URL`
-5. 部署 frontend → 取得 frontend URL
+> **部署方式定案：走 git push（GitHub-connected service），非 `railway up` 本地上傳。**
+> service 連結到 repo `albertpeng678/NCCU-POC`，push master 觸發 build。
+> ⚠️ git-connected service 首次需在 Railway dashboard 授權 Railway GitHub App 存取此 repo（OAuth，dashboard 操作）。
+> 專案 `NCCU-POC` 已建並 link；frontend service 的 root directory 設為 `frontend/`（用 `frontend/Dockerfile`）。
+
+1. 本地跑 `python -m ingestion.run` → 取得新 `FILE_SEARCH_STORE_NAME`（full 版，非 dry-run）
+2. Railway 加 Postgres service → 跑 `backend/schema.sql` → 取得 `DATABASE_URL`（用變數引用注入 backend）
+3. 建 backend service（連 repo，root=repo 根，用 `railway.toml`/`backend/Dockerfile`）：設 env `GEMINI_API_KEY`/`FILE_SEARCH_STORE_NAME`/`DATABASE_URL`/`ALLOWED_ORIGIN=*` → push 部署 → 取得 backend URL
+4. 把 backend URL 填入 `frontend/app.js` 的 `CONFIG.API_URL` → commit + push
+5. 建 frontend service（連 repo，root=`frontend/`，用 `frontend/Dockerfile`）→ push 部署 → 取得 frontend URL
 6. backend `ALLOWED_ORIGIN` 改為 frontend URL → redeploy
 
 ---
