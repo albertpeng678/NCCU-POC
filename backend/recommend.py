@@ -167,7 +167,8 @@ def stage1_retrieve(
         "- course_id：9位數課程代號（如 000211012），出現在文件「課程代號:」欄位\n"
         "- course_name：課程名稱\n"
         "- relevance：與職涯目標的相關原因（一句）\n\n"
-        '回傳 JSON：[{"course_id": "xxx", "course_name": "xxx", "relevance": "xxx"}]'
+        '回傳 JSON：[{"course_id": "xxx", "course_name": "xxx", "relevance": "xxx"}]\n'
+        "若知識庫中沒有任何課程與這些技能真正相關，請回傳空陣列 []，不要硬湊不相關的課。\n"
     )
     resp = client.models.generate_content(
         model="gemini-2.5-flash",
@@ -220,16 +221,17 @@ def stage2_group(
 
 
 def build_recommendation(
-    client: genai.Client, store_name: str, career: str, seed: int = 0
+    client: genai.Client, store_name: str, career: str, seed: int = 0, skills: list[str] | None = None
 ) -> dict:
     """Full two-stage pipeline. Returns RecommendResponse-compatible dict."""
     t0 = time.monotonic()
     careers = load_careers()
     meta = load_courses_meta()
 
-    if career not in careers:
-        raise ValueError(f"Unknown career: {career}")
-    skills = careers[career]["skills"]
+    if skills is None:
+        if career not in careers:
+            raise ValueError(f"Unknown career: {career}")
+        skills = careers[career]["skills"]
 
     candidates = stage1_retrieve(client, store_name, career, skills)
     if not candidates:
@@ -265,15 +267,16 @@ def build_recommendation(
 
 
 def build_recommendation_instrumented(
-    client: genai.Client, store_name: str, career: str, seed: int = 0
+    client: genai.Client, store_name: str, career: str, seed: int = 0, skills: list[str] | None = None
 ) -> tuple[dict, int]:
     """Same as build_recommendation but also returns stage1 candidate count."""
     t0 = time.monotonic()
     careers = load_careers()
     meta = load_courses_meta()
-    if career not in careers:
-        raise ValueError(f"Unknown career: {career}")
-    skills = careers[career]["skills"]
+    if skills is None:
+        if career not in careers:
+            raise ValueError(f"Unknown career: {career}")
+        skills = careers[career]["skills"]
 
     candidates = stage1_retrieve(client, store_name, career, skills)
     stage1_count = len(candidates)
