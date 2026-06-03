@@ -1,7 +1,7 @@
 # NCCU 課程推薦系統 — 交接文件（HANDOFF.md）
 
 > 專案進展史 + WBS + 待辦。給接手的 agent 快速掌握「做到哪、還剩什麼」。
-> 最後更新：2026-06-03
+> 最後更新：2026-06-04（Session 2：見「七、Session 2 進度」）
 
 ---
 
@@ -9,16 +9,21 @@
 
 | 模組 | 程式碼 | 測試 | 真實端到端驗證 | 部署 |
 |------|:---:|:---:|:---:|:---:|
-| Ingestion（知識庫建置） | ✅ | ✅ 15 | ✅ 5課 dry-run | — |
-| Backend 職涯推薦 | ✅ | ✅ | ✅ 真實 Gemini | ⬜ |
+| Ingestion（知識庫建置） | ✅+並行/健壯化 | ✅ 15 | ✅ 5課 dry-run | — |
+| Backend 職涯推薦 | ✅ | ✅ | ✅ 真實 Gemini | 🟡 service FAILED 待修 |
+| Backend 推薦多樣性（換一批/seed） | ✅ | ✅ | ⬜ 待 full store | ⬜ |
+| Backend 清單外職涯（LLM推導+no_match） | ✅ | ✅ | ⬜ 待 full store | ⬜ |
 | Backend Logging + Judge | ✅ | ✅ | ⬜ 待 live Postgres | ⬜ |
-| Backend Q&A 問答 | ✅ | ✅ | ✅ 單輪+多輪+citations | ⬜ |
-| Frontend 推薦模式 | ✅ | — | ✅ 桌面+mobile | ⬜ |
-| Frontend Q&A 模式 | ✅ | — | ✅ 桌面 E2E（單輪+多輪+新對話+模式切換+DB） | ⬜ |
+| Backend Q&A（markdown表格/粗體/離題引導/防幻覺） | ✅ | ✅ | ✅ live 後端探針 | ⬜ |
+| Sentry 觀測（後端+前端，env驅動） | ✅ | ✅ | ⬜ 待設 DSN | ⬜ |
+| Frontend（多樣性UI/markdown渲染/清單外/RWD） | ✅ | — | ✅ Playwright 注入樣本(mobile/tablet/desktop) | ⬜ |
+| Railway Postgres | ✅ 已建+schema | — | ✅ schema 套用成功 | ✅ |
 
-**測試總計：49 passing**（ingestion 15 + backend 34）。
+**測試總計：75 passing**（Session 1 起 49 → 新增 26）。
 
-**本地驗證環境**：Docker Postgres 容器 `nccu-pg`（`postgresql://postgres:nccu@127.0.0.1:5440/nccu`，已套 schema.sql）。dry-run Gemini File Search Store：`fileSearchStores/nccucourses1142-1ie5gitqgtur`（僅 5 課：政治/社會/個經×3）。
+**SDK 變更**：本機新環境裝到 `google-genai 2.7.0`（非 1.68.0）。已修 qa.py 相容（interactions response 改 `steps`/`output_text`，extract 同時相容兩版）。
+**本地驗證環境**：Railway Postgres（用 `DATABASE_PUBLIC_URL` 連，免裝 Docker）。dry-run store：`fileSearchStores/nccucourses1142-1ie5gitqgtur`（5課）。
+**⛔ 當前阻塞**：full store 灌資料卡過 Gemini 月度 spend cap（已請使用者於 ai.studio/spend 調高）；解除後跑 `scripts/backfill_store.py`（讀 `docs_cache.jsonl`，免重爬/重標）。
 
 ---
 
@@ -165,3 +170,28 @@ curl -s -X POST http://localhost:8000/qa -H "Content-Type: application/json" \
 - **latency**：兩階段推薦 ~50-80s，問答 ~15-30s（Gemini File Search 本身較慢）。PoC 可接受。
 - **courses_meta.json 已 commit**（un-gitignored）：backend runtime 依賴，Railway 從 git build 需要它。
 - **caveman hook 已從 ~/.claude/settings.json 移除**（曾導致 Windows 卡頓 + 輸出雜訊）。
+
+---
+
+## 七、Session 2 進度（2026-06-04，分支 `feat/poc-enhancements`）
+
+### 已完成並 commit（皆有 Playwright/測試驗證）
+1. **Q&A 強化**（`b7c3f39`）：system_instruction（角色+主題邊界/離題溫和引導+輸出格式）；回答=適量文字+（列課程時）markdown 表格+**克制**粗體；格式驗證+1次重試；citations 空時覆寫「查無資料」防幻覺；**修 google-genai 2.7 回應結構相容 bug**（舊讀 `.outputs` → 改 `extract_answer_text`/`steps`，雙版相容）。
+2. **推薦多樣性**（`8201395`/`d7b3347`/`3e81434`/`6f8a3c6`）：stage1 池擴 40 + `sample_candidates`（定錨4+seed 隨機抽18）→ 同職涯每次不同但相關；`/recommend` 支援 seed；前端「換一批」按鈕 + 導問答 CTA。spec/plan 在 docs/superpowers。
+3. **清單外職涯**（`975b518`/`662bd08`/`c9ae36d`/`19adaf1`）：`derive_skills_for_career`（LLM 推可轉移技能）；stage1 誠實回空；`/recommend` 不再 400 → notice（真實檢索的可轉移課）或 no_match（導問答）；前端放寬送出 + notice 條 + no_match 卡。**保證課程卡皆真實檢索、不捏造**。
+4. **Sentry**（`70b7013`）：後端 sentry-sdk[fastapi]（SENTRY_DSN env 驅動，未設停用）+ 例外吞點 capture_exception；前端 @sentry/browser CDN + CONFIG.SENTRY_DSN。**啟用需建 Sentry 專案填 DSN**（org=albert-ar）。
+5. **前端 RWD**（`8612e88`）：tablet 改 2 欄（mobile 1/tablet 2/desktop 3）。
+6. **Ingestion 健壯化**：`f86ef65` 加 client timeout（防單呼叫 hung）；`0a60818` skill bridges/upload 改 ThreadPoolExecutor 並行；`8c0cfe0` 上傳降併發+多輪重試+import timeout 240s+`docs_cache.jsonl`（可續跑）。
+7. **Railway Postgres**：已建 service + 套 schema.sql（用 `DATABASE_PUBLIC_URL` 本機連）。
+
+### ⛔ Full store 卡點 + 復原（重要）
+- full ingestion 兩次卡關：(a) 並行 x8 灌 `import_file` → store 索引佇列雪崩(2578/2718 timeout，只進 141 課)；(b) 之後撞 **Gemini 月度 spend cap → 全 429**。
+- **根因**：`import_file` 不耐高併發（用低併發 3-4 + 240s timeout）；spend cap 需 ai.studio/spend 調高。
+- **復原**：scrape+skill_bridge 已快取於 `ingestion/docs_cache.jsonl`（2718 筆）。cap 解除後跑 **`.venv/bin/python scripts/backfill_store.py`**（讀快取、低併發上傳、可指定 `BACKFILL_STORE` 續灌、`--failed` 只補失敗）→ 取新 store name。
+
+### 待辦（接手點）
+1. backfill 灌滿 store → 更新 `.env` `FILE_SEARCH_STORE_NAME` + commit 新 `backend/courses_meta.json`（2718）。
+2. full store 跑 **live AC**（Playwright 5x）：多樣性換一批真換、清潔工真檢索；跨裝置真後端 E2E。
+3. **部署**（走 git push GitHub service）：修 backend FAILED service → 設 env（GEMINI_API_KEY/FILE_SEARCH_STORE_NAME/`DATABASE_URL`引用 Postgres/ALLOWED_ORIGIN/SENTRY_DSN）→ 建 frontend service（root=frontend/）→ 改 app.js API_URL + 收緊 CORS。
+4. 建 Sentry 專案填 DSN（後端 env + 前端 CONFIG.SENTRY_DSN）。
+5. 補 8 scrape 失敗課（`failed_courses.json`）。
