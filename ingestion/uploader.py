@@ -8,7 +8,7 @@ from google import genai
 
 def create_store(client: genai.Client, display_name: str = "nccu-courses-1142") -> str:
     """Create a new File Search Store. Returns store name."""
-    store = client.file_search_stores.create(display_name=display_name)
+    store = client.file_search_stores.create(config={"display_name": display_name})
     print(f"[uploader] Created store: {store.name}")
     return store.name
 
@@ -49,7 +49,15 @@ def upload_document(
                     ]
                 },
             )
-            op.result(timeout=60)  # Wait for indexing
+            # Poll until the LRO completes (no .result() on ImportFileOperation)
+            deadline = time.time() + 60
+            while not op.done:
+                if time.time() > deadline:
+                    raise TimeoutError(f"import_file timed out for {course_id}")
+                time.sleep(2)
+                op = client.operations.get(op)
+            if op.error:
+                raise RuntimeError(f"import_file error: {op.error}")
             return True
         finally:
             tmp_path.unlink(missing_ok=True)
