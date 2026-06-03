@@ -1,4 +1,6 @@
 # tests/backend/test_recommend.py
+import json
+from pathlib import Path
 import pytest
 from backend.models import RecommendRequest, CourseCard, RecommendResponse
 
@@ -22,3 +24,15 @@ def test_course_card_has_required_fields():
     )
     assert card.course_id == "000211012"
     assert card.syllabus_url == "https://x.com/a"
+
+
+def test_career_skills_json_has_50_careers():
+    data = json.loads(Path("backend/career_skills.json").read_text(encoding="utf-8"))
+    assert len(data) >= 50
+
+
+def test_career_skills_json_pm_has_skills():
+    data = json.loads(Path("backend/career_skills.json").read_text(encoding="utf-8"))
+    pm = data["產品經理(PM)"]
+    assert "skills" in pm
+    assert len(pm["skills"]) >= 5
