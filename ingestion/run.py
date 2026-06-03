@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 from google import genai
+from google.genai import types
 
 from ingestion.xlsx_parser import download_and_parse_xlsx
 from ingestion.scraper import fetch_syllabus_text, build_document_text, make_httpx_client
@@ -39,7 +40,12 @@ async def scrape_all(courses: list[dict]) -> dict[str, str | None]:
 
 
 def main():
-    client = genai.Client(api_key=GEMINI_API_KEY)
+    # 加上請求 timeout（毫秒）：避免單次 Gemini 呼叫 hung 住整個 ingestion。
+    # 卡住的呼叫會在逾時後拋錯，由 skill_tagger/uploader 既有 try/except 接住並 fallback。
+    client = genai.Client(
+        api_key=GEMINI_API_KEY,
+        http_options=types.HttpOptions(timeout=120_000),
+    )
 
     # Step 1: Download and parse XLSX
     print("[run] Downloading CoursesList.xlsx...")
