@@ -221,6 +221,10 @@ async function fetchRecommendation(career){
 
 searchBtn.addEventListener("click", ()=>{ if(selectedCareer) fetchRecommendation(selectedCareer); });
 
+// 換一批：以相同職涯重呼叫（後端每次新亂數 seed → 不同一批課）
+const rerollBtn = document.getElementById("reroll-btn");
+rerollBtn.addEventListener("click", ()=>{ if(selectedCareer) fetchRecommendation(selectedCareer); });
+
 // ========== Q&A mode ==========
 const chipRecommend = document.getElementById("chip-recommend");
 const chipQa        = document.getElementById("chip-qa");
@@ -254,6 +258,10 @@ function setMode(mode){
 chipRecommend.addEventListener("click", ()=> setMode("recommend"));
 chipQa.addEventListener("click", ()=> setMode("qa"));
 
+// 推薦結果底部 CTA：把使用者導向問答模式
+const toQaLink = document.getElementById("to-qa-link");
+toQaLink.addEventListener("click", (e)=>{ e.preventDefault(); setMode("qa"); });
+
 qaInput.addEventListener("input", ()=>{ qaSend.disabled = !qaInput.value.trim() || qaBusy; });
 qaInput.addEventListener("keydown", (e)=>{ if(e.key==="Enter" && qaInput.value.trim() && !qaBusy) askQuestion(qaInput.value.trim()); });
 qaSend.addEventListener("click", ()=>{ if(qaInput.value.trim() && !qaBusy) askQuestion(qaInput.value.trim()); });
@@ -266,8 +274,19 @@ newChatBtn.addEventListener("click", ()=>{
 });
 
 function renderAnswerHtml(answer){
-  // answer is plain text from Gemini; render newlines, keep simple
-  return `<div class="ans">${escHtml(answer).replace(/\n/g,"<br>")}</div>`;
+  // answer 是 Gemini 產生的 Markdown（含表格/粗體）。用 marked 轉 HTML，再經 DOMPurify
+  // sanitize（內容來自 LLM，務必防 XSS）。若 CDN 未載入則退回純文字。
+  const raw = answer || "";
+  if (typeof marked === "undefined" || typeof DOMPurify === "undefined"){
+    return `<div class="ans">${escHtml(raw).replace(/\n/g,"<br>")}</div>`;
+  }
+  const html = marked.parse(raw, {breaks:true, gfm:true});
+  const safe = DOMPurify.sanitize(html, {
+    ALLOWED_TAGS: ["p","br","strong","em","u","h1","h2","h3","h4","ul","ol","li",
+                   "table","thead","tbody","tr","th","td","blockquote","code","pre","a","hr"],
+    ALLOWED_ATTR: ["href","target","rel"],
+  });
+  return `<div class="ans">${safe}</div>`;
 }
 
 function appendUserBubble(text){

@@ -86,6 +86,10 @@
           <span id="results-latency" class="lat"></span>
         </div>
         <div id="groups" class="groups"></div>
+        <div class="results-actions">
+          <button id="reroll-btn" class="reroll-btn" type="button">換一批推薦 🔄</button>
+        </div>
+        <p class="to-qa-cta">想深入比較這些課？<a id="to-qa-link" href="#" role="button">切到問答模式問我 →</a></p>
       </section>
       </div><!-- /#mode-recommend -->
 
@@ -128,6 +132,9 @@
     <div id="oc-list" class="oc-list" role="listbox"></div>
   </aside>
 
+  <!-- Markdown 渲染（Q&A 答案）+ XSS sanitize；內容來自 LLM 故必經 DOMPurify -->
+  <script src="https://cdn.jsdelivr.net/npm/marked@15.0.7/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.4/dist/purify.min.js"></script>
   <script src="careers.js"></script>
   <script src="app.js"></script>
 </body>

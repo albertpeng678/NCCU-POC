@@ -217,11 +217,34 @@ body::after{width:600px;height:600px;background:radial-gradient(circle,rgba(40,9
 .bubble{max-width:88%;border-radius:16px;padding:14px 18px;font-size:14.5px;line-height:1.7;animation:rise .4s cubic-bezier(.2,.7,.3,1) both}
 .bubble.user{align-self:flex-end;background:var(--cyan);color:var(--navy-void);border-bottom-right-radius:5px;font-weight:500}
 .bubble.bot{align-self:flex-start;background:var(--glass);border:1px solid var(--glass-brd);backdrop-filter:blur(12px);border-bottom-left-radius:5px;width:100%;max-width:100%}
+.bubble.bot .ans{line-height:1.9}
 .bubble.bot .ans strong{color:var(--cyan);font-weight:700}
-.bubble.bot .ans p{margin-bottom:10px}
+.bubble.bot .ans p{margin-bottom:16px}
+.bubble.bot .ans p:last-child{margin-bottom:0}
 .bubble.bot .ans ul{list-style:none;display:flex;flex-direction:column;gap:6px;margin:8px 0}
 .bubble.bot .ans li{position:relative;padding-left:18px;font-size:13.5px;color:rgba(232,240,255,.82)}
 .bubble.bot .ans li::before{content:"";position:absolute;left:2px;top:9px;width:5px;height:5px;border-radius:1px;background:var(--cyan);transform:rotate(45deg)}
+
+/* QA Markdown 渲染（表格 / 標題 / 程式碼 / 引用） */
+.bubble.bot .ans table{width:100%;border-collapse:collapse;margin:12px 0;border:1px solid var(--glass-brd);border-radius:8px;overflow:hidden}
+.bubble.bot .ans th,.bubble.bot .ans td{padding:9px 12px;text-align:left;font-size:13px;border-right:1px solid var(--glass-brd);border-bottom:1px solid var(--glass-brd);vertical-align:top}
+.bubble.bot .ans th:last-child,.bubble.bot .ans td:last-child{border-right:none}
+.bubble.bot .ans tbody tr:last-child td{border-bottom:none}
+.bubble.bot .ans thead{background:rgba(52,227,255,.08)}
+.bubble.bot .ans th{color:var(--cyan);font-weight:600;font-family:"Chakra Petch"}
+.bubble.bot .ans tbody tr{transition:background .15s}
+.bubble.bot .ans tbody tr:hover{background:rgba(52,227,255,.05)}
+.bubble.bot .ans ol{margin:8px 0 8px 18px;display:flex;flex-direction:column;gap:6px}
+.bubble.bot .ans ol li{padding-left:4px;font-size:13.5px;color:rgba(232,240,255,.82)}
+.bubble.bot .ans ol li::before{content:none}
+.bubble.bot .ans h1,.bubble.bot .ans h2,.bubble.bot .ans h3,.bubble.bot .ans h4{font-family:"Chakra Petch";color:var(--cyan);margin:12px 0 7px;line-height:1.4}
+.bubble.bot .ans h1{font-size:16px}.bubble.bot .ans h2{font-size:15px}.bubble.bot .ans h3{font-size:14px}.bubble.bot .ans h4{font-size:13.5px}
+.bubble.bot .ans code{background:rgba(20,34,68,.8);padding:2px 6px;border-radius:4px;font-family:ui-monospace,Menlo,monospace;font-size:12.5px;color:#a0e7e5}
+.bubble.bot .ans pre{background:rgba(20,34,68,.9);padding:12px 14px;border-radius:8px;border:1px solid var(--glass-brd);overflow-x:auto;margin:10px 0}
+.bubble.bot .ans pre code{background:none;padding:0}
+.bubble.bot .ans blockquote{border-left:3px solid var(--cyan);padding:6px 12px;margin:10px 0;color:rgba(232,240,255,.7)}
+.bubble.bot .ans a{color:var(--cyan);text-decoration:none;border-bottom:1px solid transparent;transition:border-color .15s}
+.bubble.bot .ans a:hover{border-bottom-color:var(--cyan)}
 
 /* QA citations */
 .cites{margin-top:16px;padding-top:14px;border-top:1px solid var(--glass-brd)}
@@ -229,9 +252,9 @@ body::after{width:600px;height:600px;background:radial-gradient(circle,rgba(40,9
 .cite{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:10px;background:rgba(20,34,68,.45);border:1px solid var(--glass-brd);margin-bottom:7px;text-decoration:none;color:var(--text);transition:border-color .15s}
 .cite:hover{border-color:var(--cyan)}
 .cite .num{font-family:"Chakra Petch";font-size:11px;color:var(--cyan);border:1px solid var(--cyan);border-radius:5px;padding:1px 7px;flex-shrink:0}
-.cite .cinfo{flex:1;min-width:0}
-.cite .cn{font-size:13.5px;font-weight:600}
-.cite .cd{font-size:11px;color:var(--text-dim)}
+.cite .cinfo{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
+.cite .cn{font-size:13.5px;font-weight:600;line-height:1.2}
+.cite .cd{font-size:11px;color:var(--text-dim);line-height:1.2}
 .cite .arrow{color:var(--cyan);font-family:"Chakra Petch";font-size:12px;flex-shrink:0}
 
 /* QA followup chips */
@@ -260,3 +283,12 @@ body.qa-active .hero{padding-bottom:200px}
   .qa-composer{padding:16px}
   .bubble{max-width:92%}
 }
+
+/* 推薦多樣性：換一批按鈕 + 導問答 CTA */
+.results-actions{display:flex;justify-content:center;margin-top:24px}
+.reroll-btn{font-family:"Chakra Petch";font-size:14px;letter-spacing:.04em;color:var(--cyan);background:var(--glass);border:1.5px solid var(--glass-brd);border-radius:24px;padding:11px 26px;cursor:pointer;transition:border-color .18s,box-shadow .18s,transform .15s}
+.reroll-btn:hover{border-color:var(--cyan);box-shadow:0 0 18px var(--cyan-dim);transform:translateY(-2px)}
+.reroll-btn:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
+.to-qa-cta{text-align:center;margin-top:14px;font-size:13.5px;color:var(--text-dim)}
+.to-qa-cta a{color:var(--cyan);text-decoration:none;border-bottom:1px solid transparent;transition:border-color .15s;margin-left:4px}
+.to-qa-cta a:hover{border-bottom-color:var(--cyan)}
