@@ -108,52 +108,29 @@ def extract_course_ids_from_grounding(response) -> list[str]:
     """
     try:
         found: list[str] = []
-        _COURSE_ID_RE = re.compile(r"\b(\d{9})\b")
-        _NAME_RE = re.compile(r"course-(\d{9})")
+        # Course documents embed "課程代號: 000211012" — primary signal in
+        # file_citation annotation .source text.
+        _SRC_ID_RE = re.compile(r"課程代號[:：]\s*(\d{9})")
+        _ANY_ID_RE = re.compile(r"\b(\d{9})\b")
 
-        # Walk through outputs (list of Turn objects)
         outputs = getattr(response, "outputs", None) or []
         answer_text = ""
 
-        for turn in outputs:
-            content_list = getattr(turn, "content", None) or []
-            for item in content_list:
-                item_type = getattr(item, "type", None)
-
-                # TextContent: look at annotations for FileCitation
-                if item_type == "text":
-                    answer_text += getattr(item, "text", "") or ""
-                    annotations = getattr(item, "annotations", None) or []
-                    for ann in annotations:
-                        ann_type = getattr(ann, "type", None)
-                        if ann_type == "file_citation":
-                            file_name = getattr(ann, "file_name", None) or ""
-                            m = _NAME_RE.search(file_name)
-                            if m:
-                                found.append(m.group(1))
-
-                # FileSearchResultContent: look at results
-                elif item_type == "file_search_call":
-                    pass  # this is the call, not the results
-
-                elif item_type == "file_search_result":
-                    results = getattr(item, "result", None) or []
-                    for chunk in results:
-                        # chunk may be a dict or object
-                        if isinstance(chunk, dict):
-                            name = chunk.get("file", {}).get("display_name", "") or chunk.get("display_name", "")
-                        else:
-                            file_obj = getattr(chunk, "file", None)
-                            name = getattr(file_obj, "display_name", None) if file_obj else None
-                            if not name:
-                                name = getattr(chunk, "display_name", None) or ""
-                        m = _NAME_RE.search(str(name))
+        for item in outputs:
+            item_type = getattr(item, "type", None)
+            if item_type == "text":
+                answer_text += getattr(item, "text", "") or ""
+                annotations = getattr(item, "annotations", None) or []
+                for ann in annotations:
+                    if getattr(ann, "type", None) == "file_citation":
+                        source = getattr(ann, "source", None) or ""
+                        m = _SRC_ID_RE.search(source)
                         if m:
                             found.append(m.group(1))
 
-        # Strategy 3: regex scan answer text for 9-digit codes
-        if answer_text:
-            for m in _COURSE_ID_RE.finditer(answer_text):
+        # Fallback: scan answer text for any 9-digit code
+        if not found and answer_text:
+            for m in _ANY_ID_RE.finditer(answer_text):
                 found.append(m.group(1))
 
         # Dedup preserving order
@@ -200,14 +177,13 @@ def answer_question(
     response = client.interactions.create(**kwargs)
     latency_ms = int((time.monotonic() - t0) * 1000)
 
-    # Extract text from outputs
+    # Extract text from outputs. Interactions API returns a flat list of output
+    # items; the answer is the item with type=="text" (its .text is the answer).
     raw_text = ""
     outputs = getattr(response, "outputs", None) or []
-    for turn in outputs:
-        content_list = getattr(turn, "content", None) or []
-        for item in content_list:
-            if getattr(item, "type", None) == "text":
-                raw_text += getattr(item, "text", "") or ""
+    for item in outputs:
+        if getattr(item, "type", None) == "text":
+            raw_text += getattr(item, "text", "") or ""
 
     parsed = parse_qa_response(raw_text)
     citations_course_ids = extract_course_ids_from_grounding(response)
