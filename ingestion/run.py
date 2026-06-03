@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from dotenv import load_dotenv
 from google import genai
@@ -14,7 +15,7 @@ from google.genai import types
 
 from ingestion.xlsx_parser import download_and_parse_xlsx
 from ingestion.scraper import fetch_syllabus_text, build_document_text, make_httpx_client
-from ingestion.skill_tagger import generate_skill_bridges, chunk_list
+from ingestion.skill_tagger import generate_skill_bridges, chunk_list, MAX_WORKERS
 from ingestion.uploader import create_store, upload_document
 
 load_dotenv()
@@ -83,14 +84,23 @@ def main():
     print("[run] Creating File Search Store...")
     store_name = create_store(client)
 
-    print(f"[run] Uploading {len(docs)} documents...")
+    print(f"[run] Uploading {len(docs)} documents (parallel x{MAX_WORKERS})...")
     upload_failures = []
-    for i, (cid, doc_text) in enumerate(docs.items(), 1):
+
+    def _upload_one(item):
+        cid, doc_text = item
         ok = upload_document(client, store_name, cid, meta[cid]["syllabus_url"], doc_text)
-        if not ok:
-            upload_failures.append(cid)
-        if i % 100 == 0:
-            print(f"[run]   {i}/{len(docs)} uploaded...")
+        return cid, ok
+
+    done = 0
+    total = len(docs)
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+        for cid, ok in ex.map(_upload_one, list(docs.items())):
+            if not ok:
+                upload_failures.append(cid)
+            done += 1
+            if done % 100 == 0 or done == total:
+                print(f"[run]   {done}/{total} uploaded ({len(upload_failures)} failed)...", flush=True)
 
     # Step 6: Save outputs
     OUTPUT_META.parent.mkdir(exist_ok=True)
