@@ -12,6 +12,7 @@
   --space-sm:8px; --space-md:16px; --space-lg:24px; --space-xl:40px;
 }
 *,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+[hidden]{display:none!important}
 html{scroll-behavior:smooth}
 html,body{height:100%}
 body{
@@ -197,4 +198,65 @@ body::after{width:600px;height:600px;background:radial-gradient(circle,rgba(40,9
 
 @media (prefers-reduced-motion:reduce){
   *{animation-duration:.001ms!important;transition-duration:.001ms!important}
+}
+
+/* ===== Q&A mode ===== */
+.newchat-top{margin-left:auto;cursor:pointer;font-family:"Chakra Petch";font-size:13px;letter-spacing:.04em;color:var(--cyan);background:var(--glass);border:1px solid var(--glass-brd);border-radius:10px;padding:9px 16px;transition:border-color .18s,box-shadow .18s}
+.newchat-top:hover{border-color:var(--cyan);box-shadow:0 0 16px var(--cyan-dim)}
+
+/* mode chips */
+.mode-chips{display:flex;gap:10px;margin-bottom:36px;justify-content:center}
+.chip{padding:9px 20px;border-radius:24px;font-family:"Chakra Petch";font-size:14px;letter-spacing:.04em;cursor:pointer;border:1.5px solid var(--glass-brd);background:rgba(20,34,68,.4);color:var(--text-dim);transition:all .18s;display:flex;align-items:center;gap:8px}
+.chip.active{border-color:var(--cyan);color:var(--cyan);background:var(--cyan-dim);box-shadow:0 0 16px var(--cyan-dim)}
+.chip .dot{width:7px;height:7px;border-radius:50%;background:currentColor;display:inline-block}
+.chip:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
+
+/* QA conversation */
+.qa-convo{display:flex;flex-direction:column;gap:20px;max-width:760px;margin:0 auto;width:100%;text-align:left}
+.qa-empty{text-align:center;padding-top:32px}
+.bubble{max-width:88%;border-radius:16px;padding:14px 18px;font-size:14.5px;line-height:1.7;animation:rise .4s cubic-bezier(.2,.7,.3,1) both}
+.bubble.user{align-self:flex-end;background:var(--cyan);color:var(--navy-void);border-bottom-right-radius:5px;font-weight:500}
+.bubble.bot{align-self:flex-start;background:var(--glass);border:1px solid var(--glass-brd);backdrop-filter:blur(12px);border-bottom-left-radius:5px;width:100%;max-width:100%}
+.bubble.bot .ans strong{color:var(--cyan);font-weight:700}
+.bubble.bot .ans p{margin-bottom:10px}
+.bubble.bot .ans ul{list-style:none;display:flex;flex-direction:column;gap:6px;margin:8px 0}
+.bubble.bot .ans li{position:relative;padding-left:18px;font-size:13.5px;color:rgba(232,240,255,.82)}
+.bubble.bot .ans li::before{content:"";position:absolute;left:2px;top:9px;width:5px;height:5px;border-radius:1px;background:var(--cyan);transform:rotate(45deg)}
+
+/* QA citations */
+.cites{margin-top:16px;padding-top:14px;border-top:1px solid var(--glass-brd)}
+.cites-label{font-family:"Chakra Petch";font-size:11px;letter-spacing:.2em;color:var(--text-dim);text-transform:uppercase;margin-bottom:10px}
+.cite{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:10px;background:rgba(20,34,68,.45);border:1px solid var(--glass-brd);margin-bottom:7px;text-decoration:none;color:var(--text);transition:border-color .15s}
+.cite:hover{border-color:var(--cyan)}
+.cite .num{font-family:"Chakra Petch";font-size:11px;color:var(--cyan);border:1px solid var(--cyan);border-radius:5px;padding:1px 7px;flex-shrink:0}
+.cite .cinfo{flex:1;min-width:0}
+.cite .cn{font-size:13.5px;font-weight:600}
+.cite .cd{font-size:11px;color:var(--text-dim)}
+.cite .arrow{color:var(--cyan);font-family:"Chakra Petch";font-size:12px;flex-shrink:0}
+
+/* QA followup chips */
+.followups{margin-top:14px;padding-top:14px;border-top:1px solid var(--glass-brd)}
+.followups-label{font-family:"Chakra Petch";font-size:11px;letter-spacing:.2em;color:var(--text-dim);text-transform:uppercase;margin-bottom:10px}
+.fu-row{display:flex;flex-wrap:wrap;gap:8px}
+.fu-chip{padding:8px 14px;border-radius:18px;font-size:13px;cursor:pointer;background:rgba(20,34,68,.5);border:1px solid var(--glass-brd);color:var(--text);transition:all .15s}
+.fu-chip:hover{border-color:var(--cyan);color:var(--cyan);transform:translateY(-2px)}
+.fu-chip::before{content:"↗ ";color:var(--cyan);font-size:11px}
+
+/* QA sticky composer */
+.qa-composer{position:fixed;bottom:0;left:0;right:0;background:linear-gradient(180deg,transparent,var(--navy-void) 24%);padding:24px;z-index:20}
+.qa-composer-inner{max-width:760px;margin:0 auto}
+.qa-session-bar{font-family:"Chakra Petch";font-size:11px;letter-spacing:.08em;color:var(--text-dim);margin-bottom:10px}
+.qa-input-wrap{position:relative}
+.qa-input-wrap input{width:100%;padding:16px 56px 16px 20px;font-size:15px;font-family:"Noto Sans TC";background:var(--navy-panel);border:1.5px solid var(--glass-brd);border-radius:16px;color:var(--text);outline:none;transition:border-color .2s,box-shadow .2s}
+.qa-input-wrap input:focus{border-color:var(--cyan);box-shadow:0 0 0 4px var(--cyan-dim)}
+.qa-input-wrap input::placeholder{color:var(--text-dim)}
+.qa-send{position:absolute;right:8px;top:50%;transform:translateY(-50%);width:40px;height:40px;border-radius:11px;border:none;background:var(--cyan);color:var(--navy-void);font-size:17px;cursor:pointer;display:grid;place-items:center;transition:transform .15s,opacity .2s}
+.qa-send:hover:not(:disabled){transform:translateY(-50%) scale(1.06)}
+.qa-send:disabled{opacity:.35;cursor:not-allowed}
+
+/* QA mode: leave room for fixed composer */
+body.qa-active .hero{padding-bottom:200px}
+@media (max-width:768px){
+  .qa-composer{padding:16px}
+  .bubble{max-width:92%}
 }

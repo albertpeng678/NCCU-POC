@@ -7,11 +7,20 @@ from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from google import genai
 
-from backend.models import RecommendRequest, RecommendResponse
-from backend.recommend import build_recommendation_instrumented, load_careers
+from backend.models import (
+    RecommendRequest, RecommendResponse,
+    QaRequest, QaResponse,
+)
+from backend.recommend import build_recommendation_instrumented, load_careers, load_courses_meta
 from backend.logger import build_log_record, insert_log, update_judge_scores
 from backend.judge import evaluate_recommendation
 from backend.db import init_pool, close_pool, get_pool
+from backend.qa import answer_question, extract_citations
+from backend.qa_judge import evaluate_qa
+from backend.qa_logger import (
+    create_session, get_session, insert_turn, bump_session,
+    update_qa_judge, get_session_turns,
+)
 
 load_dotenv()
 _GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
@@ -75,3 +84,81 @@ async def recommend(req: RecommendRequest, background_tasks: BackgroundTasks):
         raise HTTPException(status_code=503, detail=str(error))
 
     return result
+
+
+# ===== Q&A mode =====
+
+async def _background_qa_judge(turn_id, question, answer, citation_names):
+    """Phase 2: run Q&A judge, update scores. Non-blocking."""
+    pool = get_pool()
+    scores = await evaluate_qa(_client, question, answer, citation_names)
+    if scores:
+        await update_qa_judge(pool, turn_id, scores)
+
+
+@app.post("/qa", response_model=QaResponse)
+async def qa(req: QaRequest, background_tasks: BackgroundTasks):
+    pool = get_pool()
+
+    # Resolve session: new or existing
+    session_id = req.session_id
+    prev_interaction_id = None
+    turn_number = 1
+    if session_id:
+        sess = await get_session(pool, session_id)
+        if sess is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+        prev_interaction_id = sess.get("last_interaction_id")
+        turn_number = (sess.get("turn_count") or 0) + 1
+    else:
+        session_id = await create_session(pool)
+        if session_id is None:
+            raise HTTPException(status_code=503, detail="Cannot create session (DB unavailable)")
+
+    # Call Gemini
+    result = None
+    error = None
+    try:
+        result = answer_question(_client, _STORE_NAME, req.question, prev_interaction_id)
+    except Exception as e:
+        error = e
+
+    # Persist turn (Phase 1)
+    turn_id = await insert_turn(pool, session_id, turn_number, req.question, result, error)
+    if result and result.get("interaction_id"):
+        await bump_session(pool, session_id, result["interaction_id"])
+
+    if error:
+        raise HTTPException(status_code=503, detail=str(error))
+
+    # Join citations with course metadata for full display info
+    meta = load_courses_meta()
+    citations = extract_citations(result.get("citations_course_ids", []), meta)
+
+    # Fire-and-forget Q&A judge (Phase 2)
+    if turn_id:
+        citation_names = [c["name"] for c in citations]
+        background_tasks.add_task(
+            _background_qa_judge, turn_id, req.question, result["answer"], citation_names
+        )
+
+    return {
+        "session_id": session_id,
+        "turn_number": turn_number,
+        "answer": result["answer"],
+        "citations": citations,
+        "followup_suggestions": result.get("followup_suggestions", []),
+        "latency_ms": result.get("latency_ms", 0),
+    }
+
+
+@app.get("/qa/session/{session_id}")
+async def qa_session(session_id: str):
+    pool = get_pool()
+    turns = await get_session_turns(pool, session_id)
+    meta = load_courses_meta()
+    # enrich each turn's citations
+    for t in turns:
+        cids = t.get("citations_json") or []
+        t["citations"] = extract_citations(cids, meta)
+    return {"session_id": session_id, "turns": turns}

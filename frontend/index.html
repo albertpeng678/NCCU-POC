@@ -29,10 +29,19 @@
           <span class="brand-name">NCCU COURSE MAP<small>政大課程推薦系統</small></span>
         </a>
       </div>
+      <button id="new-chat-btn" class="newchat-top" type="button" hidden>+ 新對話</button>
     </header>
 
     <!-- Hero / search -->
     <main class="hero">
+      <!-- Mode switch chips -->
+      <div class="mode-chips" role="tablist" aria-label="模式切換">
+        <button class="chip active" id="chip-recommend" role="tab" aria-selected="true" type="button"><span class="dot"></span>職涯推薦</button>
+        <button class="chip" id="chip-qa" role="tab" aria-selected="false" type="button">自由問答</button>
+      </div>
+
+      <!-- ===== Recommend mode container ===== -->
+      <div id="mode-recommend">
       <p class="eyebrow">114 學年度 · 第 2 學期</p>
       <h1>輸入你的<span class="accent">職涯方向</span><br>解構最適合的課程組合</h1>
       <p class="sub">從 50 種職涯路徑出發，AI 從全校 2,877 門課綱中為你導航。</p>
@@ -78,7 +87,29 @@
         </div>
         <div id="groups" class="groups"></div>
       </section>
+      </div><!-- /#mode-recommend -->
+
+      <!-- ===== Q&A mode container ===== -->
+      <div id="mode-qa" hidden>
+        <div id="qa-convo" class="qa-convo" aria-live="polite"></div>
+        <div id="qa-empty" class="qa-empty">
+          <p class="eyebrow">自由問答 · 課綱知識庫</p>
+          <h1>問任何<span class="accent">課程問題</span></h1>
+          <p class="sub">例如「哪些課教 Python？」「政治系有什麼選修？」AI 會基於課綱回答並附上來源。</p>
+        </div>
+      </div>
     </main>
+
+    <!-- Q&A sticky composer (only visible in QA mode) -->
+    <div id="qa-composer" class="qa-composer" hidden>
+      <div class="qa-composer-inner">
+        <div class="qa-session-bar"><span id="qa-session-label">新對話</span></div>
+        <div class="qa-input-wrap">
+          <input id="qa-input" type="text" placeholder="問任何關於課程的問題…" autocomplete="off" aria-label="輸入問題">
+          <button id="qa-send" class="qa-send" type="button" aria-label="送出問題" disabled>↑</button>
+        </div>
+      </div>
+    </div>
 
     <footer class="site-footer">
       <p>資料來源：政大全校課程查詢系統 · 114 學年度第 2 學期</p>

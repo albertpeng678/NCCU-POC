@@ -43,3 +43,34 @@ class RecommendResponse(BaseModel):
     career: str
     groups: CourseGroups
     latency_ms: int
+
+
+# ===== Q&A mode =====
+
+class QaRequest(BaseModel):
+    question: str
+    session_id: str | None = None
+
+    @field_validator("question")
+    @classmethod
+    def question_not_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("question must not be empty")
+        return v.strip()
+
+
+class Citation(BaseModel):
+    course_id: str
+    name: str
+    department: str
+    teacher: str
+    syllabus_url: str
+
+
+class QaResponse(BaseModel):
+    session_id: str
+    turn_number: int
+    answer: str
+    citations: list[Citation]
+    followup_suggestions: list[str]
+    latency_ms: int

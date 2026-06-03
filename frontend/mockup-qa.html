@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Q&A 模式 — 設計預覽</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root{--navy-void:#070d1f;--navy-deep:#0c1733;--navy-panel:#101d3d;--cyan:#34e3ff;--cyan-dim:rgba(52,227,255,.14);--text:#e8f0ff;--text-dim:rgba(232,240,255,.55);--glass:rgba(20,34,68,.55);--glass-brd:rgba(120,170,255,.16);}
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:"Noto Sans TC",sans-serif;background:var(--navy-void);color:var(--text);line-height:1.6;position:relative;overflow-x:hidden;min-height:100vh}
+  body::before{content:"";position:fixed;width:520px;height:520px;border-radius:50%;filter:blur(90px);background:radial-gradient(circle,rgba(52,227,255,.10),transparent 70%);top:-160px;right:-120px;pointer-events:none}
+  body::after{content:"";position:fixed;width:600px;height:600px;border-radius:50%;filter:blur(90px);background:radial-gradient(circle,rgba(40,90,200,.16),transparent 70%);bottom:-220px;left:-160px;pointer-events:none}
+  .shell{position:relative;z-index:1;max-width:760px;margin:0 auto;padding:0 24px}
+  .topbar{display:flex;align-items:center;gap:18px;padding:16px 0;border-bottom:1px solid var(--glass-brd);margin-bottom:8px}
+  .newchat-top{margin-left:auto;cursor:pointer;font-family:"Chakra Petch";font-size:13px;letter-spacing:.04em;color:var(--cyan);background:var(--glass);border:1px solid var(--glass-brd);border-radius:10px;padding:9px 16px;transition:border-color .18s,box-shadow .18s}
+  .newchat-top:hover{border-color:var(--cyan);box-shadow:0 0 16px var(--cyan-dim)}
+  .icon-btn{width:44px;height:44px;display:grid;place-items:center;background:var(--glass);border:1px solid var(--glass-brd);border-radius:11px;cursor:pointer}
+  .hamburger{display:flex;flex-direction:column;gap:4px}.hamburger i{width:18px;height:2px;background:var(--cyan);display:block;border-radius:2px}
+  .brand{display:flex;align-items:center;gap:12px}
+  .brand-mark{width:36px;height:36px;border:1.5px solid var(--cyan);border-radius:9px;display:grid;place-items:center;color:var(--cyan);box-shadow:0 0 18px var(--cyan-dim)}
+  .brand-name{font-family:"Chakra Petch";font-weight:600;letter-spacing:.06em;font-size:17px}
+  .brand-name small{display:block;font-family:"Noto Sans TC";font-weight:400;font-size:11px;color:var(--text-dim);letter-spacing:.16em}
+
+  /* mode chips */
+  .mode-chips{display:flex;gap:10px;margin:28px 0 16px}
+  .chip{padding:9px 20px;border-radius:24px;font-family:"Chakra Petch";font-size:14px;letter-spacing:.04em;cursor:pointer;border:1.5px solid var(--glass-brd);background:rgba(20,34,68,.4);color:var(--text-dim);transition:all .18s;display:flex;align-items:center;gap:8px}
+  .chip.active{border-color:var(--cyan);color:var(--cyan);background:var(--cyan-dim);box-shadow:0 0 16px var(--cyan-dim)}
+  .chip .dot{width:7px;height:7px;border-radius:50%;background:currentColor;display:inline-block}
+
+  /* conversation */
+  .convo{display:flex;flex-direction:column;gap:20px;padding:12px 0 200px}
+  .bubble{max-width:88%;border-radius:16px;padding:14px 18px;font-size:14.5px;line-height:1.7}
+  .bubble.user{align-self:flex-end;background:var(--cyan);color:var(--navy-void);border-bottom-right-radius:5px;font-weight:500}
+  .bubble.bot{align-self:flex-start;background:var(--glass);border:1px solid var(--glass-brd);backdrop-filter:blur(12px);border-bottom-left-radius:5px;width:100%;max-width:100%}
+  .bubble.bot .ans strong{color:var(--cyan);font-weight:700}
+  .bubble.bot .ans p{margin-bottom:10px}
+  .bubble.bot .ans ul{list-style:none;display:flex;flex-direction:column;gap:6px;margin:8px 0}
+  .bubble.bot .ans li{position:relative;padding-left:18px;font-size:13.5px;color:rgba(232,240,255,.82)}
+  .bubble.bot .ans li::before{content:"";position:absolute;left:2px;top:9px;width:5px;height:5px;border-radius:1px;background:var(--cyan);transform:rotate(45deg)}
+
+  /* citations */
+  .cites{margin-top:16px;padding-top:14px;border-top:1px solid var(--glass-brd)}
+  .cites-label{font-family:"Chakra Petch";font-size:11px;letter-spacing:.2em;color:var(--text-dim);text-transform:uppercase;margin-bottom:10px}
+  .cite{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:10px;background:rgba(20,34,68,.45);border:1px solid var(--glass-brd);margin-bottom:7px;text-decoration:none;color:var(--text);transition:border-color .15s}
+  .cite:hover{border-color:var(--cyan)}
+  .cite .num{font-family:"Chakra Petch";font-size:11px;color:var(--cyan);border:1px solid var(--cyan);border-radius:5px;padding:1px 7px;flex-shrink:0}
+  .cite .cinfo{flex:1;min-width:0}
+  .cite .cn{font-size:13.5px;font-weight:600}
+  .cite .cd{font-size:11px;color:var(--text-dim)}
+  .cite .arrow{color:var(--cyan);font-family:"Chakra Petch";font-size:12px}
+
+  /* followup suggestion chips */
+  .followups{margin-top:14px;padding-top:14px;border-top:1px solid var(--glass-brd)}
+  .followups-label{font-family:"Chakra Petch";font-size:11px;letter-spacing:.2em;color:var(--text-dim);text-transform:uppercase;margin-bottom:10px}
+  .fu-row{display:flex;flex-wrap:wrap;gap:8px}
+  .fu-chip{padding:8px 14px;border-radius:18px;font-size:13px;cursor:pointer;background:rgba(20,34,68,.5);border:1px solid var(--glass-brd);color:var(--text);transition:all .15s}
+  .fu-chip:hover{border-color:var(--cyan);color:var(--cyan);transform:translateY(-2px)}
+  .fu-chip::before{content:"↗ ";color:var(--cyan);font-size:11px}
+
+  /* sticky composer */
+  .composer{position:fixed;bottom:0;left:0;right:0;background:linear-gradient(180deg,transparent,var(--navy-void) 24%);padding:24px;z-index:5}
+  .composer-inner{max-width:760px;margin:0 auto;position:relative}
+  .composer input{width:100%;padding:16px 56px 16px 20px;font-size:15px;font-family:"Noto Sans TC";background:var(--navy-panel);border:1.5px solid var(--glass-brd);border-radius:16px;color:var(--text);outline:none}
+  .composer input:focus{border-color:var(--cyan);box-shadow:0 0 0 4px var(--cyan-dim)}
+  .composer .send{position:absolute;right:8px;top:50%;transform:translateY(-50%);width:40px;height:40px;border-radius:11px;border:none;background:var(--cyan);color:var(--navy-void);font-size:17px;cursor:pointer;display:grid;place-items:center}
+  .session-bar{display:flex;align-items:center;justify-content:space-between;max-width:760px;margin:0 auto 10px;font-family:"Chakra Petch";font-size:11px;letter-spacing:.08em;color:var(--text-dim)}
+  .session-bar .newchat{cursor:pointer;color:var(--cyan);border:1px solid var(--glass-brd);border-radius:8px;padding:5px 12px;background:none}
+</style>
+</head>
+<body>
+<div class="shell">
+  <div class="topbar">
+    <div class="icon-btn"><span class="hamburger"><i></i><i></i><i></i></span></div>
+    <div class="brand">
+      <div class="brand-mark"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polygon points="16.5 7.5 13 13 7.5 16.5 11 11 16.5 7.5" fill="currentColor" stroke="none"/></svg></div>
+      <div class="brand-name">NCCU COURSE MAP<small>政大課程推薦系統</small></div>
+    </div>
+    <button class="newchat-top">+ 新對話</button>
+  </div>
+
+  <div class="mode-chips">
+    <div class="chip">職涯推薦</div>
+    <div class="chip active"><span class="dot"></span>自由問答</div>
+  </div>
+
+  <div class="convo">
+    <!-- turn 1 -->
+    <div class="bubble user">哪些課程會教到 Python 程式設計？</div>
+    <div class="bubble bot">
+      <div class="ans">
+        <p>根據課綱，全校有數門課程涵蓋 <strong>Python 程式設計</strong>，主要分布在資訊與資料分析領域：</p>
+        <ul>
+          <li><strong>資料分析與決策</strong>：以 Python 進行資料清理、視覺化與統計建模</li>
+          <li><strong>資料科學導論</strong>：使用 Python 與 pandas、scikit-learn 實作機器學習基礎</li>
+          <li><strong>程式設計入門</strong>：從 Python 語法開始，建立程式邏輯基礎</li>
+        </ul>
+        <p>其中「資料分析與決策」最適合非資訊背景學生入門。</p>
+      </div>
+      <div class="cites">
+        <div class="cites-label">參考課綱</div>
+        <a class="cite" href="#"><span class="num">1</span><span class="cinfo"><span class="cn">資料分析與決策</span><span class="cd">資訊管理學系 · 陳柏宇</span></span><span class="arrow">查看 →</span></a>
+        <a class="cite" href="#"><span class="num">2</span><span class="cinfo"><span class="cn">資料科學導論</span><span class="cd">統計學系 · 林思妤</span></span><span class="arrow">查看 →</span></a>
+        <a class="cite" href="#"><span class="num">3</span><span class="cinfo"><span class="cn">程式設計入門</span><span class="cd">資訊科學系 · 王建明</span></span><span class="arrow">查看 →</span></a>
+      </div>
+      <div class="followups">
+        <div class="followups-label">你可能想問</div>
+        <div class="fu-row">
+          <span class="fu-chip">哪一門適合零基礎？</span>
+          <span class="fu-chip">這些課要先修什麼？</span>
+          <span class="fu-chip">有英語授課的嗎？</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- turn 2 (follow-up, shows multi-turn) -->
+    <div class="bubble user">那其中哪一門比較適合完全沒寫過程式的人？</div>
+    <div class="bubble bot">
+      <div class="ans">
+        <p>對<strong>完全沒有程式經驗</strong>的學生，最推薦「<strong>程式設計入門</strong>」：</p>
+        <ul>
+          <li><strong>零基礎友善</strong>：從變數、迴圈等最基本概念教起，不假設先備知識</li>
+          <li><strong>節奏較緩</strong>：課綱安排每週小作業循序漸進，期末才到專案</li>
+        </ul>
+        <p>「資料分析與決策」雖也適合入門，但會同時要求統計概念，建議有基礎後再修。</p>
+      </div>
+      <div class="cites">
+        <div class="cites-label">參考課綱</div>
+        <a class="cite" href="#"><span class="num">1</span><span class="cinfo"><span class="cn">程式設計入門</span><span class="cd">資訊科學系 · 王建明</span></span><span class="arrow">查看 →</span></a>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="composer">
+  <div class="session-bar">
+    <span>SESSION · 第 2 輪對話</span>
+  </div>
+  <div class="composer-inner">
+    <input placeholder="繼續追問，或問新的問題…">
+    <button class="send">↑</button>
+  </div>
+</div>
+</body>
+</html>

@@ -220,3 +220,135 @@ async function fetchRecommendation(career){
 }
 
 searchBtn.addEventListener("click", ()=>{ if(selectedCareer) fetchRecommendation(selectedCareer); });
+
+// ========== Q&A mode ==========
+const chipRecommend = document.getElementById("chip-recommend");
+const chipQa        = document.getElementById("chip-qa");
+const modeRecommend = document.getElementById("mode-recommend");
+const modeQa        = document.getElementById("mode-qa");
+const newChatBtn    = document.getElementById("new-chat-btn");
+const qaComposer    = document.getElementById("qa-composer");
+const qaConvo       = document.getElementById("qa-convo");
+const qaEmpty       = document.getElementById("qa-empty");
+const qaInput       = document.getElementById("qa-input");
+const qaSend        = document.getElementById("qa-send");
+const qaSessionLabel= document.getElementById("qa-session-label");
+
+let qaSessionId = null;
+let qaTurnCount = 0;
+let qaBusy = false;
+
+function setMode(mode){
+  const qa = mode === "qa";
+  chipRecommend.classList.toggle("active", !qa);
+  chipQa.classList.toggle("active", qa);
+  chipRecommend.setAttribute("aria-selected", String(!qa));
+  chipQa.setAttribute("aria-selected", String(qa));
+  modeRecommend.hidden = qa;
+  modeQa.hidden = !qa;
+  qaComposer.hidden = !qa;
+  newChatBtn.hidden = !qa;
+  document.body.classList.toggle("qa-active", qa);
+  if(qa) qaInput.focus();
+}
+chipRecommend.addEventListener("click", ()=> setMode("recommend"));
+chipQa.addEventListener("click", ()=> setMode("qa"));
+
+qaInput.addEventListener("input", ()=>{ qaSend.disabled = !qaInput.value.trim() || qaBusy; });
+qaInput.addEventListener("keydown", (e)=>{ if(e.key==="Enter" && qaInput.value.trim() && !qaBusy) askQuestion(qaInput.value.trim()); });
+qaSend.addEventListener("click", ()=>{ if(qaInput.value.trim() && !qaBusy) askQuestion(qaInput.value.trim()); });
+
+newChatBtn.addEventListener("click", ()=>{
+  qaSessionId = null; qaTurnCount = 0;
+  qaConvo.innerHTML = "";
+  qaEmpty.hidden = false;
+  qaSessionLabel.textContent = "新對話";
+});
+
+function renderAnswerHtml(answer){
+  // answer is plain text from Gemini; render newlines, keep simple
+  return `<div class="ans">${escHtml(answer).replace(/\n/g,"<br>")}</div>`;
+}
+
+function appendUserBubble(text){
+  const b = document.createElement("div");
+  b.className = "bubble user";
+  b.textContent = text;
+  qaConvo.appendChild(b);
+}
+
+function appendBotBubble(data){
+  const b = document.createElement("div");
+  b.className = "bubble bot";
+  let html = renderAnswerHtml(data.answer || "");
+  // citations
+  if(Array.isArray(data.citations) && data.citations.length){
+    let cites = `<div class="cites"><div class="cites-label">參考課綱</div>`;
+    data.citations.forEach((c,i)=>{
+      cites += `<a class="cite" href="${escHtml(c.syllabus_url)}" target="_blank" rel="noopener noreferrer">`
+        + `<span class="num">${i+1}</span>`
+        + `<span class="cinfo"><span class="cn">${escHtml(c.name)}</span><span class="cd">${escHtml(c.department)} · ${escHtml(c.teacher)}</span></span>`
+        + `<span class="arrow">查看 →</span></a>`;
+    });
+    cites += `</div>`;
+    html += cites;
+  }
+  // followup chips
+  if(Array.isArray(data.followup_suggestions) && data.followup_suggestions.length){
+    let fu = `<div class="followups"><div class="followups-label">你可能想問</div><div class="fu-row">`;
+    data.followup_suggestions.forEach(s=>{ fu += `<span class="fu-chip" data-q="${escHtml(s)}">${escHtml(s)}</span>`; });
+    fu += `</div></div>`;
+    html += fu;
+  }
+  b.innerHTML = html;
+  b.querySelectorAll(".fu-chip").forEach(chip=>{
+    chip.addEventListener("click", ()=>{ if(!qaBusy) askQuestion(chip.dataset.q); });
+  });
+  qaConvo.appendChild(b);
+  b.scrollIntoView({behavior:"smooth", block:"end"});
+}
+
+function appendLoadingBubble(){
+  const b = document.createElement("div");
+  b.className = "bubble bot";
+  b.id = "qa-loading-bubble";
+  b.innerHTML = `<div class="ans loading-text">AI 正在查閱課綱<span class="dots"><i>.</i><i>.</i><i>.</i></span></div>`;
+  qaConvo.appendChild(b);
+  b.scrollIntoView({behavior:"smooth", block:"end"});
+}
+
+async function askQuestion(question){
+  qaBusy = true;
+  qaSend.disabled = true;
+  qaEmpty.hidden = true;
+  qaInput.value = "";
+  appendUserBubble(question);
+  appendLoadingBubble();
+  try{
+    const resp = await fetch(`${CONFIG.API_URL}/qa`, {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({question, session_id: qaSessionId}),
+    });
+    document.getElementById("qa-loading-bubble")?.remove();
+    if(!resp.ok){
+      const err = await resp.json().catch(()=>({}));
+      throw new Error(err.detail || `HTTP ${resp.status}`);
+    }
+    const data = await resp.json();
+    qaSessionId = data.session_id;
+    qaTurnCount = data.turn_number || (qaTurnCount + 1);
+    qaSessionLabel.textContent = `SESSION · 第 ${qaTurnCount} 輪對話`;
+    appendBotBubble(data);
+  }catch(e){
+    document.getElementById("qa-loading-bubble")?.remove();
+    const b = document.createElement("div");
+    b.className = "bubble bot";
+    b.innerHTML = `<div class="ans" style="color:#ff9b9b">查詢失敗：${escHtml(e.message)}。請稍後再試。</div>`;
+    qaConvo.appendChild(b);
+  }finally{
+    qaBusy = false;
+    qaSend.disabled = !qaInput.value.trim();
+    qaInput.focus();
+  }
+}

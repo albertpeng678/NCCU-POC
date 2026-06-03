@@ -36,6 +36,7 @@
 
 - AI 答案（markdown 渲染，沿用結構化排版風格）
 - 「參考課綱」區：citations 列出引用到的課程（課名 + 可點課綱連結）
+- **追問建議 chips**（NNgroup「facilitating followups」實證：77% 對話 >1 輪）：答案氣泡底部顯示 2-3 個動態生成的相關追問 chip，單擊即填入 composer 並送出
 - 多輪：答案下方保留輸入框，可繼續追問；對話氣泡式堆疊（user / assistant 交替）
 - 「新對話」按鈕：清空當前 session，開新 session
 
@@ -81,6 +82,7 @@
   "citations": [
     {"course_id": "000211012", "name": "資料分析與決策", "syllabus_url": "https://..."}
   ],
+  "followup_suggestions": ["需要先修統計嗎？", "這門課幾學分？", "還有其他系開的嗎？"],
   "latency_ms": 4200
 }
 ```
@@ -116,6 +118,7 @@ CREATE TABLE qa_turn (
     answer          TEXT,
     citation_count  INTEGER,
     citations_json  JSONB,
+    followup_json   JSONB,               -- 追問建議 chips（2-3 個字串）
     latency_ms      INTEGER,
     success         BOOLEAN NOT NULL,
     error_type      VARCHAR(50),
@@ -149,6 +152,9 @@ POST /qa
   ├─ Gemini interactions.create(input=question, file_search tool,
   │                             previous_interaction_id=last_interaction_id)
   │  → answer + grounding_metadata（citations）+ new interaction_id
+  │  → followup_suggestions：prompt 指示 Gemini 回答後生成 2-3 個相關追問
+  │     （File Search tool 不能配 response_schema，故追問與答案一起以文字產生後解析，
+  │      或第二次無 tool 的輕量 call 生成——實作時擇一，優先單次文字解析）
   │
   ├─ 從 grounding_metadata 萃取 course_id（來源：grounding chunk 對應的上傳檔
   │  display_name = "course-{id}"，或回退解析答案/chunk 文字中的「課程代號:」9碼）
