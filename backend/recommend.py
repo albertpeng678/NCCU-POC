@@ -138,7 +138,8 @@ def stage1_retrieve(
     prompt = (
         f"職涯目標：{career}\n"
         f"所需技能：{skill_str}\n\n"
-        "請從課程知識庫找出最相關的 15 門課程。\n"
+        "請從課程知識庫找出最相關的 "
+        f"{POOL_SIZE} 門課程。\n"
         "每門課必須回傳：\n"
         "- course_id：9位數課程代號（如 000211012），出現在文件「課程代號:」欄位\n"
         "- course_name：課程名稱\n"
@@ -196,7 +197,7 @@ def stage2_group(
 
 
 def build_recommendation(
-    client: genai.Client, store_name: str, career: str
+    client: genai.Client, store_name: str, career: str, seed: int = 0
 ) -> dict:
     """Full two-stage pipeline. Returns RecommendResponse-compatible dict."""
     t0 = time.monotonic()
@@ -210,6 +211,8 @@ def build_recommendation(
     candidates = stage1_retrieve(client, store_name, career, skills)
     if not candidates:
         raise ValueError("Stage 1 returned no candidate courses")
+    # 從候選池抽樣，達成跨次輪替多樣性
+    candidates = sample_candidates(candidates, seed)
     stage2 = stage2_group(client, career, skills, candidates)
 
     def process_group(items: list[_CourseItem]) -> list[dict]:
@@ -234,11 +237,12 @@ def build_recommendation(
         "career": career,
         "groups": groups,
         "latency_ms": latency_ms,
+        "seed": seed,
     }
 
 
 def build_recommendation_instrumented(
-    client: genai.Client, store_name: str, career: str
+    client: genai.Client, store_name: str, career: str, seed: int = 0
 ) -> tuple[dict, int]:
     """Same as build_recommendation but also returns stage1 candidate count."""
     t0 = time.monotonic()
@@ -252,6 +256,8 @@ def build_recommendation_instrumented(
     stage1_count = len(candidates)
     if not candidates:
         raise ValueError("Stage 1 returned no candidate courses")
+    # 從候選池抽樣，達成跨次輪替多樣性
+    candidates = sample_candidates(candidates, seed)
     stage2 = stage2_group(client, career, skills, candidates)
 
     def process_group(items):
@@ -270,5 +276,5 @@ def build_recommendation_instrumented(
         "extended": process_group(stage2.groups.extended),
     }
     latency_ms = int((time.monotonic() - t0) * 1000)
-    result = {"career": career, "groups": groups, "latency_ms": latency_ms}
+    result = {"career": career, "groups": groups, "latency_ms": latency_ms, "seed": seed}
     return result, stage1_count
