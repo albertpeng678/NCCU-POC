@@ -1,6 +1,7 @@
 # backend/recommend.py
 from __future__ import annotations
 import json
+import re
 import time
 from pathlib import Path
 from google import genai
@@ -10,6 +11,29 @@ from pydantic import BaseModel
 _BASE = Path(__file__).parent
 _CAREERS: dict | None = None
 _COURSES_META: dict | None = None
+
+
+def extract_json_array(text: str) -> list[dict]:
+    """Extract a JSON array from text that may be wrapped in markdown fences
+    or surrounded by prose. Returns [] if no valid array found."""
+    if not text or not text.strip():
+        return []
+    # Try direct parse first
+    stripped = text.strip()
+    # Strip markdown code fences if present
+    fence_match = re.search(r"```(?:json)?\s*(.*?)\s*```", stripped, re.DOTALL)
+    if fence_match:
+        stripped = fence_match.group(1).strip()
+    # Find the first [ ... ] array
+    start = stripped.find("[")
+    end = stripped.rfind("]")
+    if start == -1 or end == -1 or end < start:
+        return []
+    try:
+        result = json.loads(stripped[start : end + 1])
+        return result if isinstance(result, list) else []
+    except json.JSONDecodeError:
+        return []
 
 
 def load_careers() -> dict:
@@ -92,7 +116,6 @@ def stage1_retrieve(
         model="gemini-2.5-flash",
         contents=prompt,
         config=types.GenerateContentConfig(
-            response_mime_type="application/json",
             tools=[
                 types.Tool(
                     file_search=types.FileSearch(
@@ -102,7 +125,7 @@ def stage1_retrieve(
             ],
         ),
     )
-    return json.loads(resp.text)
+    return extract_json_array(resp.text)
 
 
 def stage2_group(

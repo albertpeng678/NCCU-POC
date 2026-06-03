@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 import pytest
 from backend.models import RecommendRequest, CourseCard, RecommendResponse
-from backend.recommend import deduplicate_by_prefix, join_metadata, load_careers, load_courses_meta
+from backend.recommend import deduplicate_by_prefix, join_metadata, load_careers, load_courses_meta, extract_json_array
 
 def test_recommend_request_valid():
     r = RecommendRequest(career="產品經理(PM)")
@@ -89,3 +89,26 @@ def test_load_careers_returns_dict():
 def test_load_courses_meta_returns_dict_or_empty():
     meta = load_courses_meta()
     assert isinstance(meta, dict)
+
+
+def test_extract_json_array_plain():
+    text = '[{"course_id": "000211012", "course_name": "政治學", "relevance": "x"}]'
+    result = extract_json_array(text)
+    assert len(result) == 1
+    assert result[0]["course_id"] == "000211012"
+
+def test_extract_json_array_markdown_fenced():
+    text = '```json\n[{"course_id": "000211012", "relevance": "x"}]\n```'
+    result = extract_json_array(text)
+    assert len(result) == 1
+    assert result[0]["course_id"] == "000211012"
+
+def test_extract_json_array_with_surrounding_text():
+    text = 'Here are the courses:\n```json\n[{"course_id": "000216001"}]\n```\nDone.'
+    result = extract_json_array(text)
+    assert len(result) == 1
+    assert result[0]["course_id"] == "000216001"
+
+def test_extract_json_array_empty_or_invalid_returns_empty():
+    assert extract_json_array("no json here") == []
+    assert extract_json_array("") == []
