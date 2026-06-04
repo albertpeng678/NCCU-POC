@@ -3,7 +3,7 @@
 FROM nginx:1.27-alpine
 
 # 靜態檔
-COPY index.html style.css app.js careers.js /usr/share/nginx/html/
+COPY index.html style.css app.js careers.js pagination.js /usr/share/nginx/html/
 
 # nginx 設定模板：用 $PORT 取代埠（Railway 在 runtime 注入 PORT）
 COPY nginx.conf.template /etc/nginx/templates/default.conf.template
