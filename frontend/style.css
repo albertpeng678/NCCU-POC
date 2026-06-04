@@ -14,12 +14,13 @@
 *,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
 [hidden]{display:none!important}
 html{scroll-behavior:smooth}
-html,body{height:100%}
+/* 不鎖 html,body 高度：height:100% 會把它們固定成 viewport 高，content 溢出時 viewport 不捲（矮視窗滾不到底）。靠 .shell 的 min-height:100vh 撐滿即可 */
 body{
   font-family:"Noto Sans TC",sans-serif;
   background:var(--navy-void);
   color:var(--text);
-  overflow-x:hidden;
+  /* 用 clip 而非 hidden：hidden 會把 overflow-y 從 visible 升級成 auto→body 變獨立捲動容器。clip 只裁切水平溢出、不建立捲動容器 */
+  overflow-x:clip;
   position:relative;
   line-height:1.6;
 }
