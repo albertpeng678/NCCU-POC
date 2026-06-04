@@ -1,6 +1,7 @@
 # backend/recommend.py
 from __future__ import annotations
 import json
+import logging
 import random
 import re
 import time
@@ -9,9 +10,12 @@ from google import genai
 from google.genai import types
 from pydantic import BaseModel
 
+logger = logging.getLogger(__name__)
+
 _BASE = Path(__file__).parent
 _CAREERS: dict | None = None
 _COURSES_META: dict | None = None
+_NAME_INDEX: dict | None = None
 
 
 # --- 多樣性參數（跨次輪替）---
@@ -106,6 +110,39 @@ def deduplicate_by_name(courses: list[dict], name_key: str) -> list[dict]:
     return result
 
 
+def build_name_index(meta: dict) -> dict:
+    """從 meta 建 {course_name: course_id} 索引（首次出現優先）。
+
+    用於把 stage1 抄錯的 course_id 透過 course_name 修正回真實 id。
+    同名不同 id 時保留首次出現（依 meta 插入序）。
+    """
+    idx: dict[str, str] = {}
+    for cid, m in meta.items():
+        name = m.get("name")
+        if name and name not in idx:
+            idx[name] = cid
+    return idx
+
+
+def correct_candidate_ids(candidates: list[dict], meta: dict) -> list[dict]:
+    """修正 stage1 抄錯的 course_id：
+
+    若 candidate 的 course_id 不在 meta，但 course_name 在 name 索引中，
+    則用真實 course_id 取代。查不到名稱者維持原樣（後續分組時才丟棄）。
+    回傳新 list（不就地改 input）。
+    """
+    name_index = build_name_index(meta)
+    fixed: list[dict] = []
+    for c in candidates:
+        cid = c.get("course_id")
+        if cid not in meta:
+            real = name_index.get(c.get("course_name"))
+            if real:
+                c = {**c, "course_id": real}
+        fixed.append(c)
+    return fixed
+
+
 def join_metadata(raw_courses: list[dict], meta: dict) -> list[dict]:
     """Enrich course list with metadata. Skips courses not found in meta."""
     result = []
@@ -143,6 +180,72 @@ class _Groups(BaseModel):
 
 class _Stage2Output(BaseModel):
     groups: _Groups
+
+
+def build_groups(
+    stage2: _Stage2Output, candidates: list[dict], meta: dict
+) -> dict[str, list[dict]]:
+    """把 stage2 分組結果轉成最終 group dict，含 course_id 復原 + 去重。
+
+    對每門 stage2 課程：
+    1. 若 course_id 不在 meta，嘗試用「與某 candidate 共享前 6 碼」復原成該
+       candidate 的真實 id（前6碼=系所+課號，後3碼=班次；已先經
+       correct_candidate_ids 修正的 candidate id 視為可信來源）。
+    2. join_metadata 補資料（仍查無 → 丟棄）。
+    保留原本行為：組內 deduplicate_by_prefix、跨組依課名去重（core 優先）。
+    並印出可觀測 log（stage2 回 N / meta 命中 / 前綴復原 / 最終丟棄）量化此 bug。
+    """
+    # 候選的真實 course_id 集合（已經 correct_candidate_ids 修正過）
+    candidate_ids = {c["course_id"] for c in candidates if c.get("course_id")}
+    # 前6碼 → 真實 id（首次出現優先，與其它去重一致）
+    prefix_to_id: dict[str, str] = {}
+    for cid in (c["course_id"] for c in candidates if c.get("course_id")):
+        prefix_to_id.setdefault(cid[:6], cid)
+
+    seen_names: set[str] = set()
+    counts = {"stage2": 0, "hit": 0, "prefix_recovered": 0, "dropped": 0}
+
+    def _one(items: list[_CourseItem]) -> list[dict]:
+        raw = []
+        for i in items:
+            counts["stage2"] += 1
+            cid = i.course_id
+            if cid not in meta:
+                # 前綴復原：找共享前6碼的 candidate 真實 id
+                recovered = prefix_to_id.get(cid[:6])
+                if recovered and recovered in meta:
+                    cid = recovered
+                    counts["prefix_recovered"] += 1
+            raw.append({
+                "course_id": cid,
+                "reason": {
+                    "lead": i.reason_lead,
+                    "points": [{"term": p.term, "detail": p.detail} for p in i.reason_points],
+                },
+            })
+        enriched = join_metadata(deduplicate_by_prefix(raw), meta)
+        counts["hit"] += len(enriched)
+        out = []
+        for c in enriched:
+            if c["name"] in seen_names:
+                continue
+            seen_names.add(c["name"])
+            out.append(c)
+        return out
+
+    groups = {
+        "core": _one(stage2.groups.core),
+        "supporting": _one(stage2.groups.supporting),
+        "extended": _one(stage2.groups.extended),
+    }
+    counts["dropped"] = counts["stage2"] - counts["hit"]
+    logger.info(
+        "build_groups: stage2=%d meta_hit=%d name_corrected_candidates=%d "
+        "prefix_recovered=%d dropped=%d",
+        counts["stage2"], counts["hit"], len(candidate_ids),
+        counts["prefix_recovered"], counts["dropped"],
+    )
+    return groups
 
 
 def derive_skills_for_career(client: genai.Client, career: str) -> list[str] | None:
@@ -254,35 +357,13 @@ def build_recommendation(
     candidates = stage1_retrieve(client, store_name, career, skills)
     if not candidates:
         raise ValueError("Stage 1 returned no candidate courses")
-    # 先依課名去重（避免跨掛同名課），再抽樣達成跨次輪替多樣性
+    # 先依課名去重（避免跨掛同名課），修正 stage1 抄錯的 course_id，再抽樣達成跨次輪替多樣性
     candidates = deduplicate_by_name(candidates, "course_name")
+    candidates = correct_candidate_ids(candidates, meta)
     candidates = sample_candidates(candidates, seed)
     stage2 = stage2_group(client, career, skills, candidates)
 
-    seen_names: set[str] = set()
-
-    def process_group(items: list[_CourseItem]) -> list[dict]:
-        raw = [{
-            "course_id": i.course_id,
-            "reason": {
-                "lead": i.reason_lead,
-                "points": [{"term": p.term, "detail": p.detail} for p in i.reason_points],
-            },
-        } for i in items]
-        enriched = join_metadata(deduplicate_by_prefix(raw), meta)
-        out = []
-        for c in enriched:
-            if c["name"] in seen_names:
-                continue
-            seen_names.add(c["name"])
-            out.append(c)
-        return out
-
-    groups = {
-        "core": process_group(stage2.groups.core),
-        "supporting": process_group(stage2.groups.supporting),
-        "extended": process_group(stage2.groups.extended),
-    }
+    groups = build_groups(stage2, candidates, meta)
     latency_ms = int((time.monotonic() - t0) * 1000)
 
     return {
@@ -308,37 +389,14 @@ def build_recommendation_instrumented(
     candidates = stage1_retrieve(client, store_name, career, skills)
     if not candidates:
         raise ValueError("Stage 1 returned no candidate courses")
-    # 先依課名去重（避免跨掛同名課），再抽樣達成跨次輪替多樣性
+    # 先依課名去重（避免跨掛同名課），修正 stage1 抄錯的 course_id，再抽樣達成跨次輪替多樣性
     candidates = deduplicate_by_name(candidates, "course_name")
+    candidates = correct_candidate_ids(candidates, meta)
     stage1_count = len(candidates)
     candidates = sample_candidates(candidates, seed)
     stage2 = stage2_group(client, career, skills, candidates)
 
-    seen_names: set[str] = set()
-
-    def process_group(items):
-        raw = [{
-            "course_id": i.course_id,
-            "reason": {
-                "lead": i.reason_lead,
-                "points": [{"term": p.term, "detail": p.detail} for p in i.reason_points],
-            },
-        } for i in items]
-        enriched = join_metadata(deduplicate_by_prefix(raw), meta)
-        # 跨組依課名去重（core 優先），避免同名課重複出現於多組
-        out = []
-        for c in enriched:
-            if c["name"] in seen_names:
-                continue
-            seen_names.add(c["name"])
-            out.append(c)
-        return out
-
-    groups = {
-        "core": process_group(stage2.groups.core),
-        "supporting": process_group(stage2.groups.supporting),
-        "extended": process_group(stage2.groups.extended),
-    }
+    groups = build_groups(stage2, candidates, meta)
     latency_ms = int((time.monotonic() - t0) * 1000)
     result = {"career": career, "groups": groups, "latency_ms": latency_ms, "seed": seed}
     return result, stage1_count
