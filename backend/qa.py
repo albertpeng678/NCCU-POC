@@ -481,7 +481,8 @@ async def stream_answer(
         tools=[
             types.Tool(
                 file_search=types.FileSearch(
-                    file_search_store_names=[store_name]
+                    file_search_store_names=[store_name],
+                    top_k=5,   # 明確固定檢索 5 筆 → 參考課綱穩定 ~5 門（不設則浮動，曾實測吐 14 筆）
                 )
             )
         ],
