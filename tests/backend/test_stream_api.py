@@ -9,8 +9,8 @@ from fastapi.testclient import TestClient
 async def _gen_recommend_ok():
     yield {"event": "stage", "data": {"n": 1, "key": "understand", "status": "start"}}
     yield {"event": "stage", "data": {"n": 1, "key": "understand", "status": "done"}}
-    yield {"event": "result", "data": {"career": "產品經理(PM)", "groups":
-           {"core": [], "supporting": [], "extended": []}, "latency_ms": 0, "seed": 7}}
+    yield {"event": "result", "data": {"career": "產品經理(PM)", "courses": [],
+           "batch_size": 10, "latency_ms": 0, "seed": 7}}
 
 
 async def _gen_recommend_no_match():
