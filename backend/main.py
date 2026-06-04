@@ -1,10 +1,12 @@
 # backend/main.py
 from __future__ import annotations
 import os
+import json
 import random
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
+from sse_starlette.sse import EventSourceResponse
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
@@ -16,7 +18,7 @@ from backend.models import (
 )
 from backend.recommend import (
     build_recommendation_instrumented, derive_skills_for_career,
-    load_careers, load_courses_meta,
+    load_careers, load_courses_meta, stream_recommendation,
 )
 from backend.logger import build_log_record, insert_log, update_judge_scores
 from backend.judge import evaluate_recommendation
@@ -24,6 +26,7 @@ from backend.db import init_pool, close_pool, get_pool
 from backend.qa import (
     answer_question, extract_citations,
     should_override_no_results, NO_RESULTS_MESSAGE,
+    stream_answer, parse_qa_response,
 )
 from backend.qa_judge import evaluate_qa
 from backend.qa_logger import (
@@ -143,6 +146,32 @@ async def recommend(req: RecommendRequest, background_tasks: BackgroundTasks):
     return result
 
 
+# ===== SSE 串流端點（保留舊 POST 當 fallback）=====
+
+def _sse(event: str, data: dict) -> dict:
+    """把內部事件轉成 sse-starlette EventSourceResponse 接受的格式。"""
+    return {"event": event, "data": json.dumps(data, ensure_ascii=False)}
+
+
+@app.get("/recommend/stream")
+async def recommend_stream(request: Request, career: str, seed: int | None = None):
+    resolved_seed = seed if seed is not None else random.randrange(1_000_000)
+
+    async def event_gen():
+        try:
+            async for ev in stream_recommendation(
+                _client, _STORE_NAME, career, resolved_seed, skills=None
+            ):
+                if await request.is_disconnected():
+                    break  # 前端已關閉（收到終態 es.close()）→ 中止，勿續燒 Gemini
+                yield _sse(ev["event"], ev["data"])
+        except Exception as e:
+            sentry_sdk.capture_exception(e)
+            yield _sse("error", {"error_type": type(e).__name__, "message": str(e)})
+
+    return EventSourceResponse(event_gen(), ping=15)
+
+
 # ===== Q&A mode =====
 
 async def _background_qa_judge(turn_id, question, answer, citation_names):
@@ -213,6 +242,75 @@ async def qa(req: QaRequest, background_tasks: BackgroundTasks):
         "followup_suggestions": result.get("followup_suggestions", []),
         "latency_ms": result.get("latency_ms", 0),
     }
+
+
+@app.get("/qa/stream")
+async def qa_stream(request: Request, question: str, session_id: str | None = None):
+    pool = get_pool()
+
+    # 解析 session（沿用 POST /qa 規則）
+    turn_number = 1
+    history: list = []
+    if session_id:
+        sess = await get_session(pool, session_id)
+        if sess is None:
+            async def _err():
+                yield _sse("error", {"error_type": "NotFound", "message": "Session not found"})
+            return EventSourceResponse(_err(), ping=15)
+        turn_number = (sess.get("turn_count") or 0) + 1
+        turns = await get_session_turns(pool, session_id)
+        history = [{"question": t.get("question"), "answer": t.get("answer")} for t in turns]
+    else:
+        session_id = await create_session(pool)
+        if session_id is None:
+            async def _err():
+                yield _sse("error", {"error_type": "ServiceUnavailable",
+                                     "message": "Cannot create session (DB unavailable)"})
+            return EventSourceResponse(_err(), ping=15)
+
+    async def event_gen():
+        meta = load_courses_meta()
+        result_dict = None
+        error = None
+        try:
+            async for ev in stream_answer(_client, _STORE_NAME, question, history):
+                if await request.is_disconnected():
+                    return  # 前端已關閉 → 中止
+                if ev["event"] == "token":
+                    yield _sse("token", ev["data"])
+                elif ev["event"] == "done":
+                    parsed = parse_qa_response(ev["data"]["answer_text"])
+                    citations = extract_citations(ev["data"]["course_ids"], meta)
+                    answer = parsed["answer"]
+                    followups = parsed["followup_suggestions"]
+                    # 防幻覺：citations 空卻列具體課程 → 覆寫
+                    if should_override_no_results(answer, citations):
+                        answer = NO_RESULTS_MESSAGE
+                        followups = []
+                    result_dict = {
+                        "answer": answer,
+                        "citations_course_ids": ev["data"]["course_ids"],
+                        "followup_suggestions": followups,
+                        "latency_ms": 0,
+                    }
+                    yield _sse("done", {
+                        "answer": answer,   # 最終權威答案（含防幻覺覆寫）；前端據此覆蓋已串流文字
+                        "citations": citations,
+                        "followup_suggestions": followups,
+                        "session_id": session_id,
+                        "turn_number": turn_number,
+                    })
+        except Exception as e:
+            error = e
+            sentry_sdk.capture_exception(e)
+            yield _sse("error", {"error_type": type(e).__name__, "message": str(e)})
+
+        # 串流末持久化 turn
+        await insert_turn(pool, session_id, turn_number, question, result_dict, error)
+        if result_dict:
+            await bump_session(pool, session_id, "")
+
+    return EventSourceResponse(event_gen(), ping=15)
 
 
 @app.get("/qa/session/{session_id}")
