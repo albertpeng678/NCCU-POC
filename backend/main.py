@@ -358,3 +358,17 @@ async def qa_session(session_id: str):
         cids = t.get("citations_json") or []
         t["citations"] = extract_citations(cids, meta)
     return {"session_id": session_id, "turns": turns}
+
+
+# ===== 同源前端：backend 直接服務 frontend 靜態檔 =====
+# 掛在最後 → 所有 API 路由（/health、/recommend、/qa…）優先；其餘路徑（/、/app.js…）給靜態檔。
+# 部署時前後端同網址 → 零 CORS、單一 service、git push 觸發即更新。
+# 目錄不存在（極端情境）時略過掛載，不崩啟動。
+from pathlib import Path as _Path
+from fastapi.staticfiles import StaticFiles
+
+_FRONTEND_DIR = _Path(__file__).resolve().parent.parent / "frontend"
+if _FRONTEND_DIR.is_dir():
+    app.mount("/", StaticFiles(directory=str(_FRONTEND_DIR), html=True), name="static")
+else:
+    print(f"[static] frontend dir not found ({_FRONTEND_DIR}) — static serving disabled")
