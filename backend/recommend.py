@@ -292,6 +292,78 @@ def build_groups(
     return groups
 
 
+def build_ranked_courses(
+    ranked: _RankedOutput, candidates: list[dict], meta: dict
+) -> list[dict]:
+    """把 annotate-pool 的扁平 ranked 輸出轉成最終扁平課程清單。
+
+    對每門課（依 ranked.courses 順序，順序即 rank）：
+    1. course_id 不在 meta → 用『與某 candidate 共享前6碼』前綴復原成真實 id。
+    2. join_metadata 補資料（仍查無 → 丟棄、不帶 None）。
+    3. 前6碼去重（deduplicate_by_prefix）+ 跨課依課名去重（首次保留）。
+    保留 group 標籤與 rank（去重/丟棄後重新編號 0..N-1，連續無洞）。
+    """
+    prefix_to_id: dict[str, str] = {}
+    for cid in (c["course_id"] for c in candidates if c.get("course_id")):
+        prefix_to_id.setdefault(cid[:6], cid)
+
+    raw: list[dict] = []
+    for item in ranked.courses:
+        cid = item.course_id
+        if cid not in meta:
+            recovered = prefix_to_id.get(cid[:6])
+            if recovered and recovered in meta:
+                cid = recovered
+        raw.append({
+            "course_id": cid,
+            "group": item.group,
+            "reason": {
+                "lead": item.reason_lead,
+                "points": [{"term": p.term, "detail": p.detail}
+                           for p in item.reason_points],
+            },
+        })
+
+    # 前6碼去重（保留首次出現＝較高 rank）
+    raw = deduplicate_by_prefix(raw)
+
+    # join metadata（缺 → 丟棄），保留 group/reason
+    enriched: list[dict] = []
+    for c in raw:
+        m = meta.get(c["course_id"])
+        if not m:
+            continue
+        enriched.append({
+            "course_id": c["course_id"],
+            "name": m["name"],
+            "department": m["department"],
+            "teacher": m["teacher"],
+            "credits": m["credits"],
+            "group": c["group"],
+            "reason": c["reason"],
+            "syllabus_url": m["syllabus_url"],
+        })
+
+    # 跨課依課名去重（首次＝較高 rank 保留）
+    seen_names: set[str] = set()
+    out: list[dict] = []
+    for c in enriched:
+        if c["name"] in seen_names:
+            continue
+        seen_names.add(c["name"])
+        out.append(c)
+
+    # 重新編號 rank（連續、無洞）
+    for i, c in enumerate(out):
+        c["rank"] = i
+
+    logger.info(
+        "build_ranked_courses: ranked_in=%d final=%d",
+        len(ranked.courses), len(out),
+    )
+    return out
+
+
 def derive_skills_for_career(client: genai.Client, career: str) -> list[str] | None:
     """為清單外職涯用 LLM 推導『可轉移／學術可教』技能關鍵字。回 None 表示非真實職涯。"""
     prompt = (
