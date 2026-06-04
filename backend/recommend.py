@@ -15,6 +15,9 @@ _COURSES_META: dict | None = None
 
 
 # --- 多樣性參數（跨次輪替）---
+# 生成模型：flash-lite 輸出快 ~3.8x（887 vs 232 tok/s），擅長萃取/組織任務；
+# retrieval 相關性來自嵌入庫(與模型無關)，LLM 僅整理結果 → 換 lite 大幅提速、品質影響小
+_GEN_MODEL = "gemini-2.5-flash-lite"
 POOL_SIZE = 24       # stage1 檢索候選池大小（降輸出量→降延遲；仍足夠多樣性）
 ANCHOR_COUNT = 4     # 每次必留的最相關門數（保品質）
 SAMPLE_SIZE = 14     # 送進 stage2 的候選數
@@ -153,7 +156,7 @@ def derive_skills_for_career(client: genai.Client, career: str) -> list[str] | N
         '只回傳 JSON 陣列，例：["公共衛生","基礎管理","人際溝通"]'
     )
     resp = client.models.generate_content(
-        model="gemini-2.5-flash",
+        model=_GEN_MODEL,
         contents=prompt,
         config={
             "response_mime_type": "application/json",
@@ -187,7 +190,7 @@ def stage1_retrieve(
         "若知識庫中沒有任何課程與這些技能真正相關，請回傳空陣列 []，不要硬湊不相關的課。\n"
     )
     resp = client.models.generate_content(
-        model="gemini-2.5-flash",
+        model=_GEN_MODEL,
         contents=prompt,
         config=types.GenerateContentConfig(
             tools=[
@@ -226,7 +229,7 @@ def stage2_group(
         "與 detail（簡短一句，20 字內，說明如何對應職涯能力）"
     )
     resp = client.models.generate_content(
-        model="gemini-2.5-flash",
+        model=_GEN_MODEL,
         contents=prompt,
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
