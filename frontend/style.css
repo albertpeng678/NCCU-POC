@@ -203,8 +203,14 @@ body::after{width:600px;height:600px;background:radial-gradient(circle,rgba(40,9
 }
 
 /* ===== Q&A mode ===== */
-.newchat-top{margin-left:auto;cursor:pointer;font-family:"Chakra Petch";font-size:13px;letter-spacing:.04em;color:var(--cyan);background:var(--glass);border:1px solid var(--glass-brd);border-radius:10px;padding:9px 16px;transition:border-color .18s,box-shadow .18s}
+.newchat-top{margin-left:auto;cursor:pointer;display:inline-flex;align-items:center;gap:6px;font-family:"Chakra Petch";font-size:13px;letter-spacing:.04em;color:var(--cyan);background:var(--glass);border:1px solid var(--glass-brd);border-radius:10px;padding:9px 16px;transition:border-color .18s,box-shadow .18s}
 .newchat-top:hover{border-color:var(--cyan);box-shadow:0 0 16px var(--cyan-dim)}
+.newchat-top .nc-icon{display:block;flex-shrink:0}
+/* 手機：擠壓時改 icon-only 方形鈕，避免文字換行變形 */
+@media (max-width:480px){
+  .newchat-top{padding:0;width:40px;height:40px;justify-content:center;gap:0}
+  .newchat-top .nc-label{display:none}
+}
 
 /* mode chips */
 .mode-chips{display:flex;gap:10px;margin-bottom:36px;justify-content:center}
