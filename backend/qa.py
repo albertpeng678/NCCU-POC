@@ -273,6 +273,54 @@ def extract_course_ids_from_grounding(response) -> list[str]:
         return []
 
 
+def _grounding_course_ids_from_chunk(chunk) -> list[str]:
+    """從單一 stream chunk 的 grounding_metadata 萃取 9 碼 course_id。"""
+    out: list[str] = []
+    for cand in getattr(chunk, "candidates", None) or []:
+        gm = getattr(cand, "grounding_metadata", None)
+        if gm is None:
+            continue
+        for gc in getattr(gm, "grounding_chunks", None) or []:
+            rc = getattr(gc, "retrieved_context", None)
+            if rc is None:
+                continue
+            blob = " ".join(
+                str(getattr(rc, attr, "") or "") for attr in ("title", "text", "uri")
+            )
+            m = re.search(r"課程代號[:：]\s*(\d{9})", blob) or re.search(r"\b(\d{9})\b", blob)
+            if m:
+                out.append(m.group(1))
+    return out
+
+
+def extract_course_ids_from_chunks(chunks) -> list[str]:
+    """從 generate_content_stream 累積的 chunks 萃取 grounded course_id。
+
+    優先用 grounding_metadata.grounding_chunks.retrieved_context；
+    無結構化來源時退而掃描累積文字的 9 碼碼。dedup 保序；任何例外回 []。
+    """
+    try:
+        found: list[str] = []
+        answer_text = ""
+        for chunk in chunks or []:
+            answer_text += getattr(chunk, "text", "") or ""
+            found.extend(_grounding_course_ids_from_chunk(chunk))
+
+        if not found and answer_text:
+            for m in re.finditer(r"\b(\d{9})\b", answer_text):
+                found.append(m.group(1))
+
+        seen: set[str] = set()
+        unique = []
+        for cid in found:
+            if cid not in seen:
+                seen.add(cid)
+                unique.append(cid)
+        return unique
+    except Exception:
+        return []
+
+
 def answer_question(
     client: genai.Client,
     store_name: str,
