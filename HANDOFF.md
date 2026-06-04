@@ -187,7 +187,9 @@ curl -s -X POST http://localhost:8000/qa -H "Content-Type: application/json" \
 ### ⛔ Full store 卡點 + 復原（重要）
 - full ingestion 兩次卡關：(a) 並行 x8 灌 `import_file` → store 索引佇列雪崩(2578/2718 timeout，只進 141 課)；(b) 之後撞 **Gemini 月度 spend cap → 全 429**。
 - **根因**：`import_file` 不耐高併發（用低併發 3-4 + 240s timeout）；spend cap 需 ai.studio/spend 調高。
-- **復原**：scrape+skill_bridge 已快取於 `ingestion/docs_cache.jsonl`（2718 筆）。cap 解除後跑 **`.venv/bin/python scripts/backfill_store.py`**（讀快取、低併發上傳、可指定 `BACKFILL_STORE` 續灌、`--failed` 只補失敗）→ 取新 store name。
+- **復原**：scrape+skill_bridge 已快取於 `ingestion/docs_cache.jsonl`（2718 筆）。cap 解除後跑 backfill 從快取灌入（不重爬/重標）。
+- **⚡ 上傳效率解法（已實測）**：`scripts/backfill_async.py` 用 **async client + `upload_to_file_search_store`（一步上傳+索引）+ semaphore 高併發(16)**，實測 **~80-101 課/分鐘、0 失敗**（vs 舊版兩步+ThreadPool x3 僅 12/min 且高併發會雪崩）。全 2718 課約 **25-35 分鐘**。根因：慢與雪崩來自「併發太低 + 兩步流程 + 60s timeout 太短」，**非** File Search 伺服器吞吐天花板。→ **`ingestion/run.py` 未來應改用此 async 一步法**（目前 run.py 仍是 ThreadPool 兩步版）。
+  指令：`CONCURRENCY=16 .venv/bin/python scripts/backfill_async.py`（`LIMIT=N` 測試、`ONLY_FAILED=1` 只補失敗、`BACKFILL_STORE=...` 續灌既有 store）。
 
 ### 待辦（接手點）
 1. backfill 灌滿 store → 更新 `.env` `FILE_SEARCH_STORE_NAME` + commit 新 `backend/courses_meta.json`（2718）。
