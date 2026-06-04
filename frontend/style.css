@@ -281,8 +281,8 @@ body::after{width:600px;height:600px;background:radial-gradient(circle,rgba(40,9
 .fu-chip:hover{border-color:var(--cyan);color:var(--cyan);transform:translateY(-2px)}
 .fu-chip::before{content:"↗ ";color:var(--cyan);font-size:11px}
 
-/* QA sticky composer */
-.qa-composer{position:fixed;bottom:0;left:0;right:0;background:linear-gradient(180deg,transparent,var(--navy-void) 24%);padding:24px;z-index:20}
+/* QA composer：QA 模式為 flex chat 佈局的底部成員（不用 position:fixed，避免各尺寸/瀏覽器下跑掉或被截） */
+.qa-composer{flex:0 0 auto;background:linear-gradient(180deg,transparent,var(--navy-void) 24%);padding:24px;z-index:20}
 .qa-composer-inner{max-width:760px;margin:0 auto}
 .qa-session-bar{font-family:"Chakra Petch";font-size:11px;letter-spacing:.08em;color:var(--text-dim);margin-bottom:10px}
 .qa-input-wrap{position:relative}
@@ -293,8 +293,10 @@ body::after{width:600px;height:600px;background:radial-gradient(circle,rgba(40,9
 .qa-send:hover:not(:disabled){transform:translateY(-50%) scale(1.06)}
 .qa-send:disabled{opacity:.35;cursor:not-allowed}
 
-/* QA mode: leave room for fixed composer */
-body.qa-active .hero{padding-bottom:200px}
+/* QA 模式：整頁鎖視窗高、對話區內部捲動、composer 在底部（穩固 flex chat 佈局，跨尺寸/瀏覽器一致）*/
+body.qa-active .shell{height:100vh;height:100dvh;min-height:0}
+body.qa-active .hero{flex:1 1 auto;min-height:0;overflow-y:auto;padding-bottom:24px}
+body.qa-active .site-footer{display:none}
 @media (max-width:768px){
   .qa-composer{padding:16px}
   .bubble{max-width:92%}
