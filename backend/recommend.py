@@ -1,5 +1,6 @@
 # backend/recommend.py
 from __future__ import annotations
+import asyncio
 import json
 import logging
 import random
@@ -534,6 +535,30 @@ async def fanout_query_skill_async(
         ),
     )
     return extract_json_array(resp.text)
+
+
+async def fanout_retrieve_async(
+    client: genai.Client, store_name: str, career: str, skills: list[str]
+) -> list[dict]:
+    """並行 fan-out 檢索：每技能一支 file_search，asyncio.gather 並行。
+
+    - 單支失敗（raise 503/timeout）或回非 list → 視為 []，不拖垮整體（容錯）。
+    - 合併委派 merge_fanout_results（round-robin 交錯 + 修正 id + 去重 + 池上限）。
+    - 全部皆空/皆失敗 → 回 []（上層判 no_match / error）。
+    """
+    meta = load_courses_meta()
+    results = await asyncio.gather(
+        *(fanout_query_skill_async(client, store_name, career, s) for s in skills),
+        return_exceptions=True,
+    )
+    per_skill: list[list[dict]] = []
+    for r in results:
+        if isinstance(r, Exception) or not isinstance(r, list):
+            logger.warning("fanout skill query failed/invalid: %r", r)
+            per_skill.append([])
+        else:
+            per_skill.append(r)
+    return merge_fanout_results(per_skill, meta)
 
 
 async def stage2_group_async(

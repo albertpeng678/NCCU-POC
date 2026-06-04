@@ -131,3 +131,81 @@ def test_merge_small_pool_no_padding():
     meta = _meta_for([("000010011", "A")])
     out = merge_fanout_results(sources, meta)
     assert len(out) == 1  # 不補零、不報錯
+
+
+from unittest.mock import patch
+from backend.recommend import fanout_retrieve_async
+
+
+def _ok(*ids_names):
+    return [{"course_id": cid, "course_name": name, "relevance": "x"}
+            for cid, name in ids_names]
+
+
+@pytest.mark.asyncio
+async def test_fanout_retrieve_merges_all_skills():
+    meta = _meta_for([("000010011", "A"), ("000020011", "B")])
+    side = {"分析": _ok(("000010011", "A")), "溝通": _ok(("000020011", "B"))}
+
+    async def fake_query(client, store, career, skill):
+        return side[skill]
+
+    with patch("backend.recommend.fanout_query_skill_async", new=fake_query), \
+         patch("backend.recommend.load_courses_meta", return_value=meta):
+        out = await fanout_retrieve_async(object(), "store", "PM", ["分析", "溝通"])
+    names = sorted(c["course_name"] for c in out)
+    assert names == ["A", "B"]
+
+
+@pytest.mark.asyncio
+async def test_fanout_retrieve_one_skill_raises_others_survive():
+    # B1：一支 raise（503/timeout）→ gather 不整體失敗、該支貢獻 []、其餘正常
+    meta = _meta_for([("000020011", "B")])
+
+    async def fake_query(client, store, career, skill):
+        if skill == "分析":
+            raise RuntimeError("503 overloaded")
+        return _ok(("000020011", "B"))
+
+    with patch("backend.recommend.fanout_query_skill_async", new=fake_query), \
+         patch("backend.recommend.load_courses_meta", return_value=meta):
+        out = await fanout_retrieve_async(object(), "store", "PM", ["分析", "溝通"])
+    assert [c["course_name"] for c in out] == ["B"]
+
+
+@pytest.mark.asyncio
+async def test_fanout_retrieve_one_skill_empty_not_no_match():
+    # B2：一支回空 → 池由其餘組成、不誤判 no_match（回非空）
+    meta = _meta_for([("000020011", "B")])
+
+    async def fake_query(client, store, career, skill):
+        return [] if skill == "分析" else _ok(("000020011", "B"))
+
+    with patch("backend.recommend.fanout_query_skill_async", new=fake_query), \
+         patch("backend.recommend.load_courses_meta", return_value=meta):
+        out = await fanout_retrieve_async(object(), "store", "PM", ["分析", "溝通"])
+    assert len(out) == 1
+
+
+@pytest.mark.asyncio
+async def test_fanout_retrieve_all_empty_returns_empty_pool():
+    # B3：全部皆空 → 空池（上層才轉 no_match/error）
+    async def fake_query(client, store, career, skill):
+        return []
+
+    with patch("backend.recommend.fanout_query_skill_async", new=fake_query), \
+         patch("backend.recommend.load_courses_meta", return_value={}):
+        out = await fanout_retrieve_async(object(), "store", "PM", ["分析", "溝通"])
+    assert out == []
+
+
+@pytest.mark.asyncio
+async def test_fanout_retrieve_all_raise_returns_empty_pool():
+    # B3 變體：全部 raise → 空池、不向外拋
+    async def fake_query(client, store, career, skill):
+        raise RuntimeError("boom")
+
+    with patch("backend.recommend.fanout_query_skill_async", new=fake_query), \
+         patch("backend.recommend.load_courses_meta", return_value={}):
+        out = await fanout_retrieve_async(object(), "store", "PM", ["分析", "溝通"])
+    assert out == []
