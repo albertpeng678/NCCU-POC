@@ -2,7 +2,60 @@
 from __future__ import annotations
 
 import json
+import uuid
 from typing import Optional
+
+
+class _EphemeralStore:
+    """進程內記憶體 session 後端：DB 不可用時接管多輪 session 狀態。
+
+    結構：
+      _sessions[sid] = {"last_interaction_id": str|None, "turn_count": int}
+      _turns[sid]    = list[dict]  # 每筆形狀對齊 DB row：{question, answer, success, ...}
+    降級邊界：進程重啟 / 多進程不共享、純記憶體（PoC 可接受）。
+    """
+
+    def __init__(self) -> None:
+        self._sessions: dict[str, dict] = {}
+        self._turns: dict[str, list[dict]] = {}
+
+    def create(self) -> str:
+        sid = uuid.uuid4().hex
+        self._sessions[sid] = {"last_interaction_id": None, "turn_count": 0}
+        self._turns[sid] = []
+        return sid
+
+    def get(self, session_id: str) -> Optional[dict]:
+        sess = self._sessions.get(session_id)
+        return dict(sess) if sess is not None else None
+
+    def add_turn(self, session_id: str, turn: dict) -> int:
+        # 查無 → 視為新 session（不 raise）：對齊「session_id 帶了但查無 → 當新 session 開」。
+        if session_id not in self._sessions:
+            self._sessions[session_id] = {"last_interaction_id": None, "turn_count": 0}
+            self._turns[session_id] = []
+        self._turns[session_id].append(turn)
+        return len(self._turns[session_id])  # 充當 turn_id（>0、非 None）
+
+    def bump(self, session_id: str, interaction_id: str) -> None:
+        if session_id not in self._sessions:
+            self._sessions[session_id] = {"last_interaction_id": None, "turn_count": 0}
+            self._turns[session_id] = []
+        self._sessions[session_id]["last_interaction_id"] = interaction_id
+        self._sessions[session_id]["turn_count"] += 1
+
+    def turns(self, session_id: str) -> list[dict]:
+        return list(self._turns.get(session_id, []))
+
+
+# module 單例：無 DB 時所有 session 函式共用這一份記憶體。
+_STORE = _EphemeralStore()
+
+
+def reset_ephemeral_store() -> None:
+    """測試用：重建單例，杜絕跨測 module-state 污染。"""
+    global _STORE
+    _STORE = _EphemeralStore()
 
 
 async def create_session(pool) -> Optional[str]:
