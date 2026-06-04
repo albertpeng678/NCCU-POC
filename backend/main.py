@@ -7,6 +7,7 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from google import genai
+from google.genai import types
 import sentry_sdk
 
 from backend.models import (
@@ -46,7 +47,16 @@ if _SENTRY_DSN:
         send_default_pii=False,
     )
 
-_client = genai.Client(api_key=_GEMINI_API_KEY)
+# 對 429(速率/配額)、503(過載) 自動指數退避重試 → 提升韌性，避免瞬間爆量直接吐錯給使用者
+_client = genai.Client(
+    api_key=_GEMINI_API_KEY,
+    http_options=types.HttpOptions(
+        retry_options=types.HttpRetryOptions(
+            attempts=3, initial_delay=1.0, max_delay=8.0,
+            http_status_codes=[429, 503],
+        ),
+    ),
+)
 
 
 @asynccontextmanager

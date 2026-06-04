@@ -15,9 +15,9 @@ _COURSES_META: dict | None = None
 
 
 # --- 多樣性參數（跨次輪替）---
-POOL_SIZE = 40       # stage1 檢索候選池大小
+POOL_SIZE = 24       # stage1 檢索候選池大小（降輸出量→降延遲；仍足夠多樣性）
 ANCHOR_COUNT = 4     # 每次必留的最相關門數（保品質）
-SAMPLE_SIZE = 18     # 送進 stage2 的候選數
+SAMPLE_SIZE = 14     # 送進 stage2 的候選數
 
 
 def sample_candidates(
@@ -155,7 +155,10 @@ def derive_skills_for_career(client: genai.Client, career: str) -> list[str] | N
     resp = client.models.generate_content(
         model="gemini-2.5-flash",
         contents=prompt,
-        config={"response_mime_type": "application/json"},
+        config={
+            "response_mime_type": "application/json",
+            "thinking_config": types.ThinkingConfig(thinking_budget=0),  # 關 thinking 降延遲
+        },
     )
     try:
         skills = json.loads(resp.text)
@@ -217,10 +220,10 @@ def stage2_group(
         "- supporting（輔助技能）：3-4門，強化周邊能力\n"
         "- extended（延伸視野）：2-3門，跨域拓展\n\n"
         f"規則：course_id 前6碼相同者只推薦一次。\n\n"
-        f"每門課的推薦理由需結構化說明與「{career}」目標的關聯：\n"
-        "- reason_lead：一句總述，點出這門課對該職涯的核心價值\n"
-        "- reason_points：2-3 個重點，每個含 term（2-6字粗體關鍵詞，如「需求分析」）"
-        "與 detail（一句具體說明該關鍵詞如何對應職涯能力）"
+        f"每門課的推薦理由需簡潔說明與「{career}」目標的關聯：\n"
+        "- reason_lead：一句總述（25 字內），點出核心價值\n"
+        "- reason_points：恰 2 個重點，每個含 term（2-6字粗體關鍵詞，如「需求分析」）"
+        "與 detail（簡短一句，20 字內，說明如何對應職涯能力）"
     )
     resp = client.models.generate_content(
         model="gemini-2.5-flash",
