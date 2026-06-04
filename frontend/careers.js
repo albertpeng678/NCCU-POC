@@ -60,3 +60,9 @@ const HOT_PICKS = [
   "行銷企劃",
   "財務分析師"
 ];
+
+// 掛 window，供 type="module" 的 app.js 讀取
+if (typeof window !== "undefined") {
+  window.CAREERS = CAREERS;
+  window.HOT_PICKS = HOT_PICKS;
+}

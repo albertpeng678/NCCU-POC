@@ -1,4 +1,6 @@
 // app.js — NCCU Course Map frontend logic
+import { createPaginationState, nextBatch, appendPool, groupBatch } from "./pagination.js";
+
 const CONFIG = {
   // Local dev default; overwrite before Railway deploy.
   // window.__API_URL__ 由 Playwright e2e addInitScript 注入，可覆蓋指定 backend port（qa-with-db/qa-no-db）。
@@ -40,10 +42,17 @@ const resCareer = document.getElementById("results-career");
 const resLatency= document.getElementById("results-latency");
 const groupsEl  = document.getElementById("groups");
 
+// careers.js 以普通 script 載入並掛 window；module scope 讀回
+const CAREERS = window.CAREERS || [];
+const HOT_PICKS = window.HOT_PICKS || [];
+
 // ---------- State ----------
 let selectedCareer = null;
 let lastCareer = null;   // 上次實際送出的職涯（含清單外自由輸入），供「換一批」沿用
 let activeIdx = -1;
+let pageState = null;    // 分頁 state（整池 + shown）
+let lastNotice = null;   // 清單外職涯誠實說明（換批沿用）
+let rerolling = false;   // 續池/切批進行中（去抖，避免 rapid double-click）
 
 // ---------- Util ----------
 function escHtml(s){
@@ -178,6 +187,8 @@ function renderReason(reason){
 function renderCard(course){
   const card = document.createElement("div");
   card.className = "card";
+  card.setAttribute("data-course-id", course.course_id || "");
+  card.setAttribute("data-group", course.group || "");
   card.innerHTML = `
     <div class="cname">${escHtml(course.name)}</div>
     <div class="cmeta">${escHtml(course.department)} · ${escHtml(course.teacher)} · ${course.credits} 學分</div>
@@ -196,29 +207,47 @@ function renderResults(data){
   const nm = document.getElementById("no-match"); if(nm) nm.hidden = true;
   resCareer.textContent = data.career;
   resLatency.textContent = data.latency_ms ? `GENERATED ${(data.latency_ms/1000).toFixed(1)}s` : "";
+  // 存整池並重置分頁
+  pageState = createPaginationState(data.courses || [], data.batch_size || 10);
+  lastNotice = data.notice || null;
+  renderBatch(nextBatch(pageState));   // 首批
+  resultsEl.hidden = false;
+  resultsEl.scrollIntoView({behavior:"smooth", block:"start"});
+}
+
+// 渲染「一批」課程：依 group 分三區塊（沿用 GROUP_META）
+function renderBatch(batch){
   groupsEl.innerHTML = "";
-  // 清單外職涯的誠實說明條（可轉移能力課程）
-  if(data.notice){
+  if(lastNotice){
     const n = document.createElement("p");
     n.className = "result-notice";
-    n.textContent = data.notice;
+    n.textContent = lastNotice;
     groupsEl.appendChild(n);
   }
+  if(!batch || !batch.length){
+    const p = document.createElement("p");
+    p.className = "result-notice";
+    p.textContent = "已涵蓋主要推薦課程。";
+    groupsEl.appendChild(p);
+    return;
+  }
+  const grouped = groupBatch(batch);
   GROUP_META.forEach(g=>{
-    const list = (data.groups && data.groups[g.key]) || [];
+    const list = grouped[g.key] || [];
     if(!list.length) return;
     const block = document.createElement("div");
     block.className = "group";
+    block.setAttribute("data-group-key", g.key);
+    block.setAttribute("role", "region");
+    block.setAttribute("aria-label", g.title);
     block.innerHTML = `
       <div class="group-title"><span class="idx">${g.idx}</span><h3>${g.title}</h3></div>
       <p class="group-desc">${g.desc}</p>
-      <div class="cards"></div>`;
+      <div class="cards" data-testid="group-cards-${g.key}"></div>`;
     const cardsEl = block.querySelector(".cards");
     list.forEach(c=>cardsEl.appendChild(renderCard(c)));
     groupsEl.appendChild(block);
   });
-  resultsEl.hidden = false;
-  resultsEl.scrollIntoView({behavior:"smooth", block:"start"});
 }
 
 // ---------- States ----------
@@ -495,9 +524,87 @@ function showNoMatch(career, message){
 
 searchBtn.addEventListener("click", ()=>{ const c = selectedCareer || input.value.trim(); if(c) fetchRecommendation(c); });
 
-// 換一批：以「上次送出的職涯」重呼叫（後端每次新亂數 seed → 不同一批課；清單外職涯也適用）
+// 換一批：池中有 → 純前端切片（0 網路請求）；池乾 → 以新 seed 呼叫 /recommend/stream 續池
 const rerollBtn = document.getElementById("reroll-btn");
-rerollBtn.addEventListener("click", ()=>{ if(lastCareer) fetchRecommendation(lastCareer); });
+rerollBtn.addEventListener("click", ()=>{
+  if(rerolling) return;                 // 去抖：處理中忽略重複點擊
+  if(!pageState){ if(lastCareer) fetchRecommendation(lastCareer); return; }
+  const batch = nextBatch(pageState);
+  if(batch){                            // 池中還有 → 純前端切片，0 網路請求
+    renderBatch(batch);
+    resultsEl.scrollIntoView({behavior:"smooth", block:"start"});
+    return;
+  }
+  // 池乾 → 以新 seed 呼叫 /recommend/stream 續池
+  if(!lastCareer) return;
+  rerolling = true;
+  rerollBtn.disabled = true;
+  continuePool(lastCareer);
+});
+
+// 續池：新 seed 取一池 → append 去重 → 切下一批；UI 沿用 streaming stepper
+function continuePool(career){
+  closeRecEs();
+  const seed = Math.floor(Math.random() * 1e9);
+  const url = `${CONFIG.API_URL}/recommend/stream?career=${encodeURIComponent(career)}&seed=${seed}`;
+  showLoadingShell();
+  let firstEvent = false, settled = false;
+  const guard = setTimeout(()=>{ if(!firstEvent && !settled){ closeRecEs(); continuePoolFallback(career); } }, 8000);
+  _loadTimers.push(guard);
+  let es;
+  try{ es = new EventSource(url); }
+  catch(e){ clearTimeout(guard); continuePoolFallback(career); return; }
+  _recEs = es;
+  es.addEventListener("stage", (ev)=>{
+    firstEvent = true;
+    let d; try{ d = JSON.parse(ev.data); }catch(_){ return; }
+    const idx = (d.n|0) - 1;
+    if(idx < 0 || idx >= REC_STAGES.length) return;
+    if(d.status === "start") setStageActive(idx); else if(d.status === "done") setStageDone(idx);
+  });
+  es.addEventListener("result", (ev)=>{
+    settled = true; clearTimeout(guard); closeRecEs();
+    let data; try{ data = JSON.parse(ev.data); }catch(e){ finishContinue(null); return; }
+    finishProgress();
+    setTimeout(()=>finishContinue(data), 350);
+  });
+  es.addEventListener("no_match", ()=>{ settled = true; clearTimeout(guard); closeRecEs(); finishContinue(null); });
+  es.addEventListener("error", (ev)=>{
+    if(ev && typeof ev.data === "string" && ev.data.length){
+      settled = true; clearTimeout(guard); closeRecEs(); finishContinue(null); return;
+    }
+    if(settled) return;
+    clearTimeout(guard); closeRecEs();
+    if(!firstEvent) continuePoolFallback(career); else finishContinue(null);
+  });
+}
+
+async function continuePoolFallback(career){
+  try{
+    const resp = await fetch(`${CONFIG.API_URL}/recommend`, {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({career}),
+    });
+    if(!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    finishContinue(await resp.json());
+  }catch(e){ finishContinue(null); }
+}
+
+// 續池收尾：append 去重 → 切下一批顯示；失敗則顯示「已涵蓋主要推薦」
+function finishContinue(data){
+  loadingEl.hidden = true;
+  resultsEl.hidden = false;
+  if(data && Array.isArray(data.courses) && data.courses.length){
+    appendPool(pageState, data.courses);
+    const batch = nextBatch(pageState);
+    renderBatch(batch);   // batch 可能 null → renderBatch 顯示「已涵蓋」
+  } else {
+    renderBatch(null);
+  }
+  rerolling = false;
+  rerollBtn.disabled = false;
+  resultsEl.scrollIntoView({behavior:"smooth", block:"start"});
+}
 
 // ========== Q&A mode ==========
 const chipRecommend = document.getElementById("chip-recommend");
