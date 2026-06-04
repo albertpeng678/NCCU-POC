@@ -154,6 +154,28 @@ def parse_qa_response(raw: str) -> dict:
     return {"answer": stripped, "followup_suggestions": []}
 
 
+# 多輪歷史：帶最近 N 輪原文進 contents（取代 interactions 的 previous_interaction_id）
+_MAX_HISTORY_TURNS = 3
+
+
+def build_qa_contents(question: str, history: Optional[list] = None) -> list:
+    """把多輪歷史 + 本輪問題組成 generate_content 的 contents。
+
+    history: [{"question": str, "answer": str}, ...]（時間升序）。
+    只保留最近 _MAX_HISTORY_TURNS 輪原文；本輪問題用 _PROMPT_TEMPLATE 包裝置於末尾。
+    """
+    contents: list = []
+    if history:
+        recent = history[-_MAX_HISTORY_TURNS:]
+        for turn in recent:
+            q = turn.get("question") or ""
+            a = turn.get("answer") or ""
+            contents.append({"role": "user", "parts": [{"text": q}]})
+            contents.append({"role": "model", "parts": [{"text": a}]})
+    contents.append({"role": "user", "parts": [{"text": _PROMPT_TEMPLATE.format(question=question)}]})
+    return contents
+
+
 def extract_citations(course_ids: list[str], meta: dict) -> list[dict]:
     """Dedup course_ids preserving order, look up meta, skip missing, return enriched dicts."""
     seen: set[str] = set()
@@ -235,6 +257,54 @@ def extract_course_ids_from_grounding(response) -> list[str]:
                     cid = _annotation_course_id(ann)
                     if cid:
                         found.append(cid)
+
+        if not found and answer_text:
+            for m in re.finditer(r"\b(\d{9})\b", answer_text):
+                found.append(m.group(1))
+
+        seen: set[str] = set()
+        unique = []
+        for cid in found:
+            if cid not in seen:
+                seen.add(cid)
+                unique.append(cid)
+        return unique
+    except Exception:
+        return []
+
+
+def _grounding_course_ids_from_chunk(chunk) -> list[str]:
+    """從單一 stream chunk 的 grounding_metadata 萃取 9 碼 course_id。"""
+    out: list[str] = []
+    for cand in getattr(chunk, "candidates", None) or []:
+        gm = getattr(cand, "grounding_metadata", None)
+        if gm is None:
+            continue
+        for gc in getattr(gm, "grounding_chunks", None) or []:
+            rc = getattr(gc, "retrieved_context", None)
+            if rc is None:
+                continue
+            blob = " ".join(
+                str(getattr(rc, attr, "") or "") for attr in ("title", "text", "uri")
+            )
+            m = re.search(r"課程代號[:：]\s*(\d{9})", blob) or re.search(r"\b(\d{9})\b", blob)
+            if m:
+                out.append(m.group(1))
+    return out
+
+
+def extract_course_ids_from_chunks(chunks) -> list[str]:
+    """從 generate_content_stream 累積的 chunks 萃取 grounded course_id。
+
+    優先用 grounding_metadata.grounding_chunks.retrieved_context；
+    無結構化來源時退而掃描累積文字的 9 碼碼。dedup 保序；任何例外回 []。
+    """
+    try:
+        found: list[str] = []
+        answer_text = ""
+        for chunk in chunks or []:
+            answer_text += getattr(chunk, "text", "") or ""
+            found.extend(_grounding_course_ids_from_chunk(chunk))
 
         if not found and answer_text:
             for m in re.finditer(r"\b(\d{9})\b", answer_text):

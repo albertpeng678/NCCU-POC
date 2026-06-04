@@ -342,3 +342,213 @@ def build_recommendation_instrumented(
     latency_ms = int((time.monotonic() - t0) * 1000)
     result = {"career": career, "groups": groups, "latency_ms": latency_ms, "seed": seed}
     return result, stage1_count
+
+
+# ===== async 版（供 SSE 串流逐階段呼叫；不阻塞 event loop） =====
+# 與上方同步版邏輯一致，僅把 client.models.generate_content 改為 await client.aio...
+
+async def derive_skills_for_career_async(
+    client: genai.Client, career: str
+) -> list[str] | None:
+    """async 版 derive_skills_for_career（清單外職涯技能推導）。"""
+    prompt = (
+        f"使用者輸入的職涯目標：「{career}」\n\n"
+        "請判斷這是否為一個真實的職涯/工作。若不是（例如亂打的字），回傳空陣列 []。\n"
+        "若是，請推導 5-8 個此職涯所需、且大學課程可能教授的『可轉移能力』關鍵字"
+        "（聚焦學術可教的能力，如管理、溝通、公共衛生、資料分析；避免純體力或無法在課堂教的技能）。\n"
+        '只回傳 JSON 陣列，例：["公共衛生","基礎管理","人際溝通"]'
+    )
+    resp = await client.aio.models.generate_content(
+        model=_GEN_MODEL,
+        contents=prompt,
+        config={
+            "response_mime_type": "application/json",
+            "thinking_config": types.ThinkingConfig(thinking_budget=0),
+        },
+    )
+    try:
+        skills = json.loads(resp.text)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(skills, list) or not skills:
+        return None
+    return [str(s) for s in skills][:8]
+
+
+async def stage1_retrieve_async(
+    client: genai.Client, store_name: str, career: str, skills: list[str]
+) -> list[dict]:
+    """async 版 stage1_retrieve（File Search 海選候選池）。"""
+    skill_str = "、".join(skills)
+    prompt = (
+        f"職涯目標：{career}\n"
+        f"所需技能：{skill_str}\n\n"
+        "請從課程知識庫找出最相關的 "
+        f"{POOL_SIZE} 門課程。\n"
+        "每門課必須回傳：\n"
+        "- course_id：9位數課程代號（如 000211012），出現在文件「課程代號:」欄位\n"
+        "- course_name：課程名稱\n"
+        "- relevance：與職涯目標的相關原因（一句）\n\n"
+        '回傳 JSON：[{"course_id": "xxx", "course_name": "xxx", "relevance": "xxx"}]\n'
+        "若知識庫中沒有任何課程與這些技能真正相關，請回傳空陣列 []，不要硬湊不相關的課。\n"
+    )
+    resp = await client.aio.models.generate_content(
+        model=_GEN_MODEL,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            tools=[
+                types.Tool(
+                    file_search=types.FileSearch(
+                        file_search_store_names=[store_name]
+                    )
+                )
+            ],
+        ),
+    )
+    return extract_json_array(resp.text)
+
+
+async def stage2_group_async(
+    client: genai.Client, career: str, skills: list[str], candidates: list[dict]
+) -> _Stage2Output:
+    """async 版 stage2_group（分組 + 生成理由）。"""
+    skill_str = "、".join(skills)
+    candidates_text = "\n".join(
+        f"{i + 1}. [{c['course_id']}] {c.get('course_name', '')} — {c.get('relevance', '')}"
+        for i, c in enumerate(candidates)
+    )
+    prompt = (
+        f"職涯目標：{career}\n"
+        f"核心技能：{skill_str}\n\n"
+        f"以下是 {len(candidates)} 門候選課程：\n{candidates_text}\n\n"
+        "請選出最推薦的 10 門課，分三組：\n"
+        "- core（核心技能）：3-4門，直接對應職涯核心能力\n"
+        "- supporting（輔助技能）：3-4門，強化周邊能力\n"
+        "- extended（延伸視野）：2-3門，跨域拓展\n\n"
+        f"規則：course_id 前6碼相同者只推薦一次。\n\n"
+        f"每門課的推薦理由需簡潔說明與「{career}」目標的關聯：\n"
+        "- reason_lead：一句總述（25 字內），點出核心價值\n"
+        "- reason_points：恰 2 個重點，每個含 term（2-6字粗體關鍵詞，如「需求分析」）"
+        "與 detail（簡短一句，20 字內，說明如何對應職涯能力）"
+    )
+    resp = await client.aio.models.generate_content(
+        model=_GEN_MODEL,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=_Stage2Output,
+        ),
+    )
+    return resp.parsed
+
+
+# ===== SSE 串流產生器：逐階段 yield 事件（誠實對應後端真實工作） =====
+# 事件形狀：{"event": "stage"|"result"|"no_match", "data": {...}}
+# main.py 負責偵測 is_disconnected 與包成 EventSourceResponse。
+
+_STAGES = [
+    (1, "understand"),
+    (2, "retrieve"),
+    (3, "filter"),
+    (4, "compose"),
+    (5, "finalize"),
+]
+
+
+def _stage_event(n: int, key: str, status: str) -> dict:
+    return {"event": "stage", "data": {"n": n, "key": key, "status": status}}
+
+
+async def stream_recommendation(
+    client: genai.Client, store_name: str, career: str,
+    seed: int = 0, skills: list[str] | None = None,
+):
+    """逐階段串流推薦。skills=None 表示清單內（查 careers）或需即時推導（清單外）。
+
+    呼叫端（main.py）已先判斷清單內/外並可能傳入 skills；此處再兜底：
+    - skills 傳入 → 視為已決定（清單外推導好的或清單內查好的）。
+    - skills=None 且 career 在 careers → 用靜態技能。
+    - skills=None 且 career 不在 careers → derive_skills_for_career_async；推不出 → no_match。
+    """
+    careers = load_careers()
+    meta = load_courses_meta()
+    is_open = career not in careers  # 清單外旗標（決定 no_match / notice 行為）
+
+    # --- 階段 1：understand（決定技能）---
+    yield _stage_event(1, "understand", "start")
+    if skills is None:
+        if career in careers:
+            skills = careers[career]["skills"]
+        else:
+            skills = await derive_skills_for_career_async(client, career)
+            if not skills:
+                yield {"event": "no_match", "data": {
+                    "career": career,
+                    "message": f"目前沒有找到對應「{career}」的課程，你可以用問答模式問我相關方向。",
+                }}
+                return
+    yield _stage_event(1, "understand", "done")
+
+    # --- 階段 2：retrieve（File Search 海選）---
+    yield _stage_event(2, "retrieve", "start")
+    candidates = await stage1_retrieve_async(client, store_name, career, skills)
+    if not candidates:
+        if is_open:
+            yield {"event": "no_match", "data": {
+                "career": career,
+                "message": f"政大課程偏學術，目前沒有找到與「{career}」相關的課程，建議用問答模式探索。",
+            }}
+            return
+        # 清單內海選空：沿用同步版以 error 回報（與 POST 行為一致）
+        yield {"event": "error", "data": {
+            "error_type": "ValueError",
+            "message": "Stage 1 returned no candidate courses",
+        }}
+        return
+    yield _stage_event(2, "retrieve", "done")
+
+    # --- 階段 3：filter（純程式：去重 + 抽樣）---
+    yield _stage_event(3, "filter", "start")
+    candidates = deduplicate_by_name(candidates, "course_name")
+    candidates = sample_candidates(candidates, seed)
+    yield _stage_event(3, "filter", "done")
+
+    # --- 階段 4：compose（分組 + 生成理由）---
+    yield _stage_event(4, "compose", "start")
+    stage2 = await stage2_group_async(client, career, skills, candidates)
+    yield _stage_event(4, "compose", "done")
+
+    # --- 階段 5：finalize（補 metadata + 跨組去重）---
+    yield _stage_event(5, "finalize", "start")
+    seen_names: set[str] = set()
+
+    def process_group(items):
+        raw = [{
+            "course_id": i.course_id,
+            "reason": {
+                "lead": i.reason_lead,
+                "points": [{"term": p.term, "detail": p.detail} for p in i.reason_points],
+            },
+        } for i in items]
+        enriched = join_metadata(deduplicate_by_prefix(raw), meta)
+        out = []
+        for c in enriched:
+            if c["name"] in seen_names:
+                continue
+            seen_names.add(c["name"])
+            out.append(c)
+        return out
+
+    groups = {
+        "core": process_group(stage2.groups.core),
+        "supporting": process_group(stage2.groups.supporting),
+        "extended": process_group(stage2.groups.extended),
+    }
+    result = {"career": career, "groups": groups, "latency_ms": 0, "seed": seed}
+    if is_open:
+        result.setdefault(
+            "notice",
+            f"政大沒有直接對應「{career}」的課程，但以下課程能培養相關的可轉移能力：",
+        )
+    yield _stage_event(5, "finalize", "done")
+    yield {"event": "result", "data": result}
