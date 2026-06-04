@@ -3,6 +3,7 @@ builder = "dockerfile"
 dockerfilePath = "backend/Dockerfile"
 
 [deploy]
-startCommand = "uvicorn backend.main:app --host 0.0.0.0 --port $PORT"
+# 不覆蓋 startCommand：改由 backend/Dockerfile 的 shell-form CMD 處理（${PORT} 正確展開）。
+# （舊版用 "--port $PORT" 直接 exec 不過 shell → uvicorn 收到字面 "$PORT" 崩潰、healthcheck 失敗。）
 healthcheckPath = "/health"
 healthcheckTimeout = 100
