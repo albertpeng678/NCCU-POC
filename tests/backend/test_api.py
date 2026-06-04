@@ -12,14 +12,11 @@ def client():
         mock_build.return_value = (
             {
                 "career": "產品經理(PM)",
-                "groups": {
-                    "core": [{"course_id": "000211012", "name": "政治學", "department": "政治系",
-                              "teacher": "蔡中民", "credits": 3.0,
-                              "reason": {"lead": "培養分析能力", "points": [{"term": "分析", "detail": "拆解問題"}]},
-                              "syllabus_url": "https://x.com/a"}],
-                    "supporting": [],
-                    "extended": [],
-                },
+                "courses": [{"course_id": "000211012", "name": "政治學", "department": "政治系",
+                             "teacher": "蔡中民", "credits": 3.0, "group": "core",
+                             "reason": {"lead": "培養分析能力", "points": [{"term": "分析", "detail": "拆解問題"}]},
+                             "syllabus_url": "https://x.com/a", "rank": 0}],
+                "batch_size": 10,
                 "latency_ms": 1200,
             },
             15,  # stage1_count
@@ -34,8 +31,8 @@ def test_recommend_valid_career(client):
     assert resp.status_code == 200
     data = resp.json()
     assert data["career"] == "產品經理(PM)"
-    assert "groups" in data
-    assert "core" in data["groups"]
+    assert "courses" in data
+    assert data["courses"][0]["group"] == "core"
     mock_fn.assert_called_once()
 
 

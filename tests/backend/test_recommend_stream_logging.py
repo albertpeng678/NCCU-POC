@@ -18,8 +18,8 @@ async def _gen_ok():
     yield {"event": "stage", "data": {"n": 1, "key": "understand", "status": "done"}}
     yield {"event": "result", "data": {
         "career": "產品經理(PM)",
-        "groups": {"core": [{"course_id": "a"}, {"course_id": "b"}],
-                   "supporting": [{"course_id": "c"}], "extended": []},
+        "courses": [{"course_id": "a"}, {"course_id": "b"}, {"course_id": "c"}],
+        "batch_size": 10,
         "latency_ms": 0, "seed": 7,
     }}
 

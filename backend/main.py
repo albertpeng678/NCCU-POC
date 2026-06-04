@@ -134,7 +134,7 @@ async def recommend(req: RecommendRequest, background_tasks: BackgroundTasks):
         sentry_sdk.capture_exception(e)   # 回報被吞掉的 Gemini/pipeline 錯誤（Sentry 未啟用時 no-op）
 
     # 清單外但檢索空 → no_match（誠實，不硬湊）
-    if not error and skills is not None and result is not None and not any(result["groups"].values()):
+    if not error and skills is not None and result is not None and not result["courses"]:
         return {
             "career": req.career,
             "no_match": True,
@@ -200,9 +200,7 @@ async def recommend_stream(request: Request, career: str, seed: int | None = Non
         # 串流路徑也要 logging/judge（否則上線主走串流時 query_log 斷裂、judge 不評分）。
         # 串流端點未回傳 stage1 候選池大小 → 以三組課程總數推估（下界，僅作量測參考）。
         if result is not None or error is not None:
-            stage1_count = (
-                sum(len(g) for g in result["groups"].values()) if result else 0
-            )
+            stage1_count = len(result["courses"]) if result else 0
             _spawn_bg(_background_log_and_judge(career, result, stage1_count, error))
 
     return EventSourceResponse(event_gen(), ping=15)

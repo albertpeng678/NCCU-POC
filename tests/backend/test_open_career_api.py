@@ -20,24 +20,23 @@ def test_unknown_career_with_skills_recommends(monkeypatch):
         lambda client, store, career, seed, skills=None: (
             {
                 "career": career,
-                "groups": {
-                    "core": [
-                        {
-                            "course_id": "000211012",
-                            "name": "公共衛生概論",
-                            "department": "X系",
-                            "teacher": "T",
-                            "credits": 3.0,
-                            "reason": {
-                                "lead": "l",
-                                "points": [{"term": "a", "detail": "b"}],
-                            },
-                            "syllabus_url": "http://x",
-                        }
-                    ],
-                    "supporting": [],
-                    "extended": [],
-                },
+                "courses": [
+                    {
+                        "course_id": "000211012",
+                        "name": "公共衛生概論",
+                        "department": "X系",
+                        "teacher": "T",
+                        "credits": 3.0,
+                        "group": "core",
+                        "reason": {
+                            "lead": "l",
+                            "points": [{"term": "a", "detail": "b"}],
+                        },
+                        "syllabus_url": "http://x",
+                        "rank": 0,
+                    }
+                ],
+                "batch_size": 10,
                 "latency_ms": 1,
                 "seed": seed,
             },
@@ -59,7 +58,8 @@ def test_known_career_no_notice(monkeypatch):
         lambda client, store, career, seed, skills=None: (
             {
                 "career": career,
-                "groups": {"core": [], "supporting": [], "extended": []},
+                "courses": [],
+                "batch_size": 10,
                 "latency_ms": 1,
                 "seed": seed,
             },
