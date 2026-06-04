@@ -565,9 +565,10 @@ async def stream_recommendation(
         return
     yield _stage_event(2, "retrieve", "done")
 
-    # --- 階段 3：filter（純程式：去重 + 抽樣）---
+    # --- 階段 3：filter（純程式：去重 + 修正抄錯 course_id + 抽樣）---
     yield _stage_event(3, "filter", "start")
     candidates = deduplicate_by_name(candidates, "course_name")
+    candidates = correct_candidate_ids(candidates, meta)
     candidates = sample_candidates(candidates, seed)
     yield _stage_event(3, "filter", "done")
 
@@ -576,32 +577,9 @@ async def stream_recommendation(
     stage2 = await stage2_group_async(client, career, skills, candidates)
     yield _stage_event(4, "compose", "done")
 
-    # --- 階段 5：finalize（補 metadata + 跨組去重）---
+    # --- 階段 5：finalize（補 metadata + course_id 前綴復原 + 跨組去重）---
     yield _stage_event(5, "finalize", "start")
-    seen_names: set[str] = set()
-
-    def process_group(items):
-        raw = [{
-            "course_id": i.course_id,
-            "reason": {
-                "lead": i.reason_lead,
-                "points": [{"term": p.term, "detail": p.detail} for p in i.reason_points],
-            },
-        } for i in items]
-        enriched = join_metadata(deduplicate_by_prefix(raw), meta)
-        out = []
-        for c in enriched:
-            if c["name"] in seen_names:
-                continue
-            seen_names.add(c["name"])
-            out.append(c)
-        return out
-
-    groups = {
-        "core": process_group(stage2.groups.core),
-        "supporting": process_group(stage2.groups.supporting),
-        "extended": process_group(stage2.groups.extended),
-    }
+    groups = build_groups(stage2, candidates, meta)
     result = {"career": career, "groups": groups, "latency_ms": 0, "seed": seed}
     if is_open:
         result.setdefault(
