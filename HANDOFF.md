@@ -1,7 +1,35 @@
 # NCCU 課程推薦系統 — 交接文件（HANDOFF.md）
 
 > 專案進展史 + WBS + 待辦。給接手的 agent 快速掌握「做到哪、還剩什麼」。
-> 最後更新：2026-06-04（Session 2：見「七、Session 2 進度」）
+> 最後更新：2026-06-04（Session 2 後期）
+
+---
+
+## 零、最優先事項：推薦延遲提速方案抉擇（**未決，待做**）
+
+> **使用者最在意的痛點：`/recommend` 太慢（~40-50s）。** 這是接手後的第一優先。
+> 約束（使用者明確要求）：**生成模型必須維持 `gemini-2.5-flash`，不可換 flash-lite；thinking 不可關**（兩者都會犧牲品質：flash-lite 品質低約 10%、關 thinking 會讓檢索/分組稀疏，皆已實測）。
+
+### 研究結論（已用 context7 + web search 查證）
+- **RAG 延遲主因 = LLM 輸出 token 數**（逐字生成）。來源：[RAG Latency Optimization](https://apxml.com/courses/optimizing-rag-for-production/chapter-4-end-to-end-rag-performance/rag-latency-analysis-reduction)、[Echelon RAG breakdown](https://www.echelonedge.com/blogs/breaking-down-a-rag-pipeline-where-latency-really-comes-from/)。
+- **查詢時不重索引**：File Search 只嵌入「問句」，文件嵌入是一次性（[File Search docs](https://ai.google.dev/gemini-api/docs/file-search)）。所以延遲不是來自重索引。
+- **可控解法（排序）**：① 降輸出量 ② 減少 LLM 呼叫次數 ③ 小模型 ④ 精簡 prompt ⑤ 快取 ⑥ streaming（感知）。來源：[CompactRAG](https://arxiv.org/pdf/2602.05728)、[flash-lite benchmark](https://venturebeat.com/ai/googles-gemini-2-5-flash-lite-is-now-the-fastest-proprietary-model-and)。
+
+### 已做（robust 基線，不犧牲品質）
+- 降輸出量：`POOL_SIZE` 40→24、stage2 理由精簡（lead 25字/2 points/detail 20字）。
+- thinking 維持自動（保品質）；client 加 **429/503 退避重試**（3×8s，抗瞬間爆量）。
+- 前端**分步驟等待 UX**（NNgroup 感知優化：步驟進度+預估時間+進度條+輪播）。
+- 真實延遲仍 ~40-50s（flash + 兩階段 RAG 本質下限）。
+
+### ⭐ 待抉擇的兩個「保品質」提速方案（接手要做的第一件事）
+- **方案 A：合併 stage1+stage2 為單次 file_search 呼叫** → 約砍半延遲（~20-25s）。
+  - 做法：一次 generate_content(file_search) 直接輸出分組結果的自由文字 JSON（file_search 不能配 response_schema，故 parse 自由文字，類似 qa）。
+  - **代價**：「換一批」多樣性目前靠 stage1→stage2 之間的 `sample_candidates`，合併後沒有中間候選池可抽 → 需改用 **prompt 變化（帶 seed/技能側重輪替）** 重做多樣性。
+- **方案 B：預先算好 50 大職涯推薦並快取** → 熱門職涯瞬間回。
+  - **代價**：要為每職涯預存**多組 seed 結果**才能保「換一批」多樣性；清單外職涯仍即時算。
+- 折衷：A（架構提速）優先；B 作為熱門職涯的加速層。**建議先和使用者確認走哪個再動工。**
+
+> ⚠️ 量測注意：先前 backfill burst + 連續測試把 embedding **速率上限打爆(429)**，導致延遲量測被重試灌水（同端點 9s~156s 亂跳）。乾淨量測需等速率冷卻，或在部署環境用正常流量驗。
 
 ---
 
@@ -19,11 +47,12 @@
 | Frontend（多樣性UI/markdown渲染/清單外/RWD） | ✅ | — | ✅ Playwright 注入樣本(mobile/tablet/desktop) | ⬜ |
 | Railway Postgres | ✅ 已建+schema | — | ✅ schema 套用成功 | ✅ |
 
-**測試總計：75 passing**（Session 1 起 49 → 新增 26）。
+**測試總計：78 passing**（Session 1 起 49 → 新增 29）。
 
 **SDK 變更**：本機新環境裝到 `google-genai 2.7.0`（非 1.68.0）。已修 qa.py 相容（interactions response 改 `steps`/`output_text`，extract 同時相容兩版）。
-**本地驗證環境**：Railway Postgres（用 `DATABASE_PUBLIC_URL` 連，免裝 Docker）。dry-run store：`fileSearchStores/nccucourses1142-1ie5gitqgtur`（5課）。
-**⛔ 當前阻塞**：full store 灌資料卡過 Gemini 月度 spend cap（已請使用者於 ai.studio/spend 調高）；解除後跑 `scripts/backfill_store.py`（讀 `docs_cache.jsonl`，免重爬/重標）。
+**本地驗證環境**：Railway Postgres（用 `DATABASE_PUBLIC_URL` 連，免裝 Docker）。
+**✅ Full store 已建好**：`fileSearchStores/nccucourses1142-znuka50qq2y2`（**2713/2718 課**，11 課待補；用 `scripts/backfill_async.py` 高併發灌入，~30 分）。`.env` 與 Railway backend 的 `FILE_SEARCH_STORE_NAME` 已更新；`backend/courses_meta.json` 已 commit 2718 課版。
+**目前狀態**：核心功能全部完成 + live 驗證（資料科學家/軟體工程師 真檢索、dedup 不重複、多樣性、Q&A markdown、Sentry 真捕捉前端錯誤）。**剩：①延遲提速抉擇(見「零」) ②git push 部署收尾 ③補 11 課 ④跨裝置真後端 E2E。**
 
 ---
 
@@ -183,6 +212,12 @@ curl -s -X POST http://localhost:8000/qa -H "Content-Type: application/json" \
 5. **前端 RWD**（`8612e88`）：tablet 改 2 欄（mobile 1/tablet 2/desktop 3）。
 6. **Ingestion 健壯化**：`f86ef65` 加 client timeout（防單呼叫 hung）；`0a60818` skill bridges/upload 改 ThreadPoolExecutor 並行；`8c0cfe0` 上傳降併發+多輪重試+import timeout 240s+`docs_cache.jsonl`（可續跑）。
 7. **Railway Postgres**：已建 service + 套 schema.sql（用 `DATABASE_PUBLIC_URL` 本機連）。
+8. **前端 RWD/UX**：tablet 2 欄（`8612e88`）；**等待 UX**（分步驟+進度條+輪播，`?v=N` cache-bust，showLoading 防禦）；換一批 emoji 換 SVG。
+9. **多樣性 bug 修復**（`c3884ee`）：`deduplicate_by_name` 修「換一批出同名重複課」；conftest 測試停用 Sentry。
+10. **Sentry 啟用**（`f007db1`）：建好專案 `nccu-poc`（org albert-ar）+ 前端填 DSN（已驗證 client 啟用）+ Railway backend 設 `SENTRY_DSN`。**Sentry 已實測捕捉到真實前端錯誤並寄警示信。**
+11. **Full store 灌好**（`backfill_async.py`）+ `.env`/Railway 的 `FILE_SEARCH_STORE_NAME` 更新 + `courses_meta.json` 2718 commit（`7af466d`）。
+12. **延遲 robust 配置**（`af1575f`、`6dff462`）：降輸出量 + 429/503 重試 + 生成還原 flash（見「零」）。
+13. **live AC（真後端+full store）**：資料科學家→10門真實資料科學課、軟體工程師→9門 0 重複（dedup 生效）。換一批/清單外「記者/流浪漢」測試因 429 速率牆中斷，待冷卻後補驗。
 
 ### ⛔ Full store 卡點 + 復原（重要）
 - full ingestion 兩次卡關：(a) 並行 x8 灌 `import_file` → store 索引佇列雪崩(2578/2718 timeout，只進 141 課)；(b) 之後撞 **Gemini 月度 spend cap → 全 429**。
@@ -191,9 +226,20 @@ curl -s -X POST http://localhost:8000/qa -H "Content-Type: application/json" \
 - **⚡ 上傳效率解法（已實測）**：`scripts/backfill_async.py` 用 **async client + `upload_to_file_search_store`（一步上傳+索引）+ semaphore 高併發(16)**，實測 **~80-101 課/分鐘、0 失敗**（vs 舊版兩步+ThreadPool x3 僅 12/min 且高併發會雪崩）。全 2718 課約 **25-35 分鐘**。根因：慢與雪崩來自「併發太低 + 兩步流程 + 60s timeout 太短」，**非** File Search 伺服器吞吐天花板。→ **`ingestion/run.py` 未來應改用此 async 一步法**（目前 run.py 仍是 ThreadPool 兩步版）。
   指令：`CONCURRENCY=16 .venv/bin/python scripts/backfill_async.py`（`LIMIT=N` 測試、`ONLY_FAILED=1` 只補失敗、`BACKFILL_STORE=...` 續灌既有 store）。
 
-### 待辦（接手點）
-1. backfill 灌滿 store → 更新 `.env` `FILE_SEARCH_STORE_NAME` + commit 新 `backend/courses_meta.json`（2718）。
-2. full store 跑 **live AC**（Playwright 5x）：多樣性換一批真換、清潔工真檢索；跨裝置真後端 E2E。
-3. **部署**（走 git push GitHub service）：修 backend FAILED service → 設 env（GEMINI_API_KEY/FILE_SEARCH_STORE_NAME/`DATABASE_URL`引用 Postgres/ALLOWED_ORIGIN/SENTRY_DSN）→ 建 frontend service（root=frontend/）→ 改 app.js API_URL + 收緊 CORS。
-4. 建 Sentry 專案填 DSN（後端 env + 前端 CONFIG.SENTRY_DSN）。
-5. 補 8 scrape 失敗課（`failed_courses.json`）。
+### 待辦（接手點，依優先序）
+0. **★ 推薦延遲提速方案抉擇**（見「零、最優先事項」）—— 使用者最在意，先和使用者確認走方案 A（合併呼叫）或 B（快取）再動工。
+1. **部署收尾**（走 git push GitHub service）：
+   - backend service `NCCU-POC` env **已設好**（FILE_SEARCH_STORE_NAME新store / GEMINI_API_KEY / `DATABASE_URL=${{Postgres.DATABASE_URL}}` / SENTRY_DSN / ALLOWED_ORIGIN=*）。
+   - **把 `feat/poc-enhancements` 的程式推上 GitHub**（Railway 從 GitHub build）→ 確認 backend 部署 /health 過。
+   - 取 backend public URL → 填 `frontend/app.js` `CONFIG.API_URL` → commit/push → 建 frontend service（root=`frontend/`）。
+   - frontend URL 出來後 backend `ALLOWED_ORIGIN` 收緊成該 URL → redeploy。
+2. **補 11 課**：`ONLY_FAILED=1 BACKFILL_STORE=fileSearchStores/nccucourses1142-znuka50qq2y2 .venv/bin/python scripts/backfill_async.py`（讀 `ingestion/backfill_failed.json`）；若仍頑固失敗，診斷那幾筆文件（可能空內容）。
+3. **跨裝置真後端 E2E**（Playwright 5x）：換一批真換不同課、清單外職涯（記者/流浪漢）、mobile/tablet 對話氣泡。先前因 429 速率牆中斷。
+4.（可選）`ingestion/run.py` 改用 async 一步上傳法（目前 backfill_async.py 才有；run.py 仍是慢的兩步版）。
+5.（可選）Q&A 重整讀回 GET /qa/session 前端串接。
+
+### 換機器接手（另一台電腦）
+1. `git clone` 後 checkout `feat/poc-enhancements`（或已 merge 的 master）。
+2. 建 `.env`：`GEMINI_API_KEY`（同一把）、`FILE_SEARCH_STORE_NAME=fileSearchStores/nccucourses1142-znuka50qq2y2`、`SENTRY_DSN`（見 app.js 同一個）、`ALLOWED_ORIGIN=*`。
+3. `pip install -r backend/requirements.txt`（含 sentry-sdk）；本機 /qa 用 Railway `DATABASE_PUBLIC_URL` 當 `DATABASE_URL` 環境變數傳入。
+4. 起 backend：`ALLOWED_ORIGIN=* DATABASE_URL="<Railway public url>" python -m uvicorn backend.main:app --port 8000`；起 frontend：`python -m http.server 3000 --directory frontend`。
