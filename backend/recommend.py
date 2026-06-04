@@ -25,6 +25,12 @@ POOL_SIZE = 24       # stage1 檢索候選池大小（降輸出量→降延遲�
 ANCHOR_COUNT = 4     # 每次必留的最相關門數（保品質）
 SAMPLE_SIZE = 14     # 送進 stage2 的候選數
 
+# --- fan-out 並行檢索參數（推薦提速重構）---
+FANOUT_TOP_K = 8          # 每支 file_search 的 chunk 上限（壓 retrieved 量→壓 thinking）
+FANOUT_PER_SKILL = 5      # 每技能 prompt 要求的課數
+POOL_TARGET = 30          # 合併池上限（round-robin 後截斷前 N）
+DEFAULT_BATCH_SIZE = 10   # 前端每批顯示數（後端給預設）
+
 
 def sample_candidates(
     candidates: list[dict],
@@ -458,6 +464,43 @@ async def stage1_retrieve_async(
                 types.Tool(
                     file_search=types.FileSearch(
                         file_search_store_names=[store_name]
+                    )
+                )
+            ],
+        ),
+    )
+    return extract_json_array(resp.text)
+
+
+async def fanout_query_skill_async(
+    client: genai.Client, store_name: str, career: str, skill: str
+) -> list[dict]:
+    """單一技能 → 一支聚焦小檢索（file_search top_k 受限），回候選 list。
+
+    與 stage1_retrieve_async 不同：prompt 只聚焦『一個』技能、只要 ~FANOUT_PER_SKILL 門課、
+    FileSearch(top_k=FANOUT_TOP_K) 壓住 retrieved chunk 量 → 單支快（壓 thinking）。
+    解析失敗 / 空輸出 → 回 []（呼叫端用 return_exceptions 容錯）。
+    """
+    prompt = (
+        f"職涯目標：{career}\n"
+        f"聚焦技能：{skill}\n\n"
+        f"請從課程知識庫找出與「{skill}」最相關的 {FANOUT_PER_SKILL} 門課程。\n"
+        "每門課必須回傳：\n"
+        "- course_id：9位數課程代號（如 000211012），出現在文件「課程代號:」欄位\n"
+        "- course_name：課程名稱\n"
+        "- relevance：與此技能的相關原因（一句）\n\n"
+        '回傳 JSON：[{"course_id": "xxx", "course_name": "xxx", "relevance": "xxx"}]\n'
+        "若知識庫中沒有任何課程與此技能真正相關，請回傳空陣列 []，不要硬湊。\n"
+    )
+    resp = await client.aio.models.generate_content(
+        model=_GEN_MODEL,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            tools=[
+                types.Tool(
+                    file_search=types.FileSearch(
+                        file_search_store_names=[store_name],
+                        top_k=FANOUT_TOP_K,
                     )
                 )
             ],
