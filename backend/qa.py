@@ -332,6 +332,30 @@ def _course_id_from_retrieved_context(rc) -> Optional[str]:
     return m.group(1) if m else None
 
 
+def _visible_text_from_chunk(chunk) -> str:
+    """只回非 thought 的可見文字 part。
+
+    gemini-2.5-flash thinking 會把推理片段以 `part.thought=True` 的 part 串出來；
+    `chunk.text` 便利屬性可能把 thought 一起串進去 → 思維鏈/工具呼叫敘述外洩給使用者。
+    官方 thinking 文件作法：逐 part 檢查 `if part.thought:` 即跳過。
+    無 candidates/parts 結構（舊形狀）時退回 chunk.text 保底相容。
+    """
+    out: list[str] = []
+    parts_found = False
+    for cand in getattr(chunk, "candidates", None) or []:
+        content = getattr(cand, "content", None)
+        for part in getattr(content, "parts", None) or []:
+            parts_found = True
+            if getattr(part, "thought", None):
+                continue
+            t = getattr(part, "text", None)
+            if t:
+                out.append(t)
+    if parts_found:
+        return "".join(out)
+    return getattr(chunk, "text", None) or ""
+
+
 def _grounding_course_ids_from_chunk(chunk) -> list[str]:
     """從單一 stream chunk 的 grounding_metadata 萃取 9 碼 course_id。"""
     out: list[str] = []
@@ -474,7 +498,7 @@ async def stream_answer(
     )
     async for chunk in stream:
         chunks.append(chunk)
-        text = getattr(chunk, "text", None)
+        text = _visible_text_from_chunk(chunk)   # 只取非 thought part，杜絕思維鏈外洩
         if not text:
             continue
         answer_text += text          # 完整累積（供 done 解析），但只串流 ```json 之前的乾淨 prose
