@@ -237,6 +237,20 @@ body::after{width:600px;height:600px;background:radial-gradient(circle,rgba(40,9
 /* 打字機游標 + 收尾淡入 */
 .tw-caret{display:inline-block;width:2px;height:1.05em;margin-left:2px;vertical-align:-2px;background:var(--cyan);border-radius:1px;animation:twblink 1s steps(1) infinite}
 @keyframes twblink{0%,50%{opacity:1}50.01%,100%{opacity:0}}
+/* QA 等待 5 階段 stepper（首 token 前；借鑑參考 bot 的 RAG 等待 UX）*/
+.qa-steps{list-style:none;display:flex;flex-direction:column;gap:11px;margin:2px 0}
+.qa-st{display:flex;align-items:center;gap:11px;font-size:14px;color:var(--text-dim);transition:color .3s}
+.qa-st .qa-st-mark{width:18px;height:18px;flex-shrink:0;border-radius:50%;border:2px solid var(--glass-brd);display:grid;place-items:center;position:relative;transition:all .3s}
+.qa-st .qa-st-mark::after{content:"";width:5px;height:5px;border-radius:50%;background:var(--glass-brd);transition:all .3s}
+.qa-st.active{color:var(--text);font-weight:600}
+.qa-st.active .qa-st-mark{border-color:var(--cyan);border-top-color:transparent;animation:qaspin .8s linear infinite}
+.qa-st.active .qa-st-mark::after{opacity:0}
+.qa-st.done{color:rgba(232,240,255,.6)}
+.qa-st.done .qa-st-mark{border-color:#37e0a6;background:#37e0a6;animation:none}
+.qa-st.done .qa-st-mark::after{content:"";width:8px;height:4px;border:2px solid var(--navy-void);border-top:none;border-right:none;border-radius:0;background:transparent;transform:translateY(-1px) rotate(-45deg);opacity:1}
+@keyframes qaspin{to{transform:rotate(360deg)}}
+.qa-stbar{height:4px;border-radius:99px;background:rgba(20,34,68,.7);overflow:hidden;margin-top:14px}
+.qa-stbar-fill{display:block;height:100%;width:8%;border-radius:99px;background:linear-gradient(90deg,#2bb6ff,#7a6cff);transition:width 2.4s cubic-bezier(.25,.8,.3,1)}
 .qa-tail.fade-in{animation:tailfade .45s ease both}
 @keyframes tailfade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 /* 表格不加淡入動畫：打字機已讓表格「整塊只渲染一次」，動畫會在最終渲染時重觸發造成一閃 */

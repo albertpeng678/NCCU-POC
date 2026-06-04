@@ -51,19 +51,21 @@ if _SENTRY_DSN:
         send_default_pii=False,
     )
 
-# 對 429(速率/配額/「high demand」)、503(過載) 積極指數退避重試 → 撐過 Gemini 2.5 常見的
-# 「ghost 429」(明明有 quota 也噴 high demand)。研究(Context7 + web)：attempts 拉高 + jitter
-# 可把高峰失敗率 ~80% 降到 99%+。retry 套在 client 層，generate_content_stream 的請求建立也會重試。
-# 窗口估算(exp_base=2)：1,2,4,8,16,20,20,20 ≈ ~91s，足以等過短暫尖峰；SSE 有 ping=15 心跳保活。
+# ⚠️ 429「high demand」風暴的真正根因：SDK 預設 timeout 僅 60s，但我們 recommend 檢索/分組
+# 單次可達 ~80-100s（thinking + File Search）> 60s → client 逾時放棄、伺服器仍在跑 → retry 再送
+# 新請求 → 同一邏輯呼叫分裂成多個併發請求 → 燒爆 RPM → 429。研究(Context7+web)：HttpOptions.timeout
+# 單位毫秒、預設 60s，轉成 X-Server-Timeout header。把 timeout 設大(>最長請求)即可讓單一請求跑完、
+# 不分裂、不誤觸發重試風暴。retry 仍保留供「真・速率/過載」429/503 退避(指數+jitter)。
 _client = genai.Client(
     api_key=_GEMINI_API_KEY,
     http_options=types.HttpOptions(
+        timeout=180_000,          # 180s（>最長請求 ~100s）→ 不再 60s 逾時、不再分裂成多請求
         retry_options=types.HttpRetryOptions(
-            attempts=8,            # 3→8（研究建議高峰期 8-10 次）
+            attempts=5,            # timeout 修好後不需太多次；保留供真 429/503 退避
             initial_delay=1.0,
-            max_delay=20.0,        # 8→20：拉長退避上限
+            max_delay=20.0,
             exp_base=2.0,
-            jitter=1.0,            # 隨機抖動，避免多請求同時重試再次撞牆
+            jitter=1.0,            # 隨機抖動，避免多請求同時重試撞牆
             http_status_codes=[429, 503],
         ),
     ),

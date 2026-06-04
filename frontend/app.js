@@ -801,30 +801,57 @@ function finishQaTurn(){
   qaInput.focus();
 }
 
+// 等待期間（首 token 前）在 bot 泡泡內顯示 5 階段垂直 stepper（借鑑參考 bot 的 RAG 等待 UX）
+const QA_STAGES = ["理解你的問題", "翻閱課綱知識庫", "比對相關重點", "整理重點段落", "最後潤飾"];
+function startQaStages(ans){
+  ans.innerHTML = `<ol class="qa-steps">` +
+    QA_STAGES.map(s => `<li class="qa-st"><span class="qa-st-mark" aria-hidden="true"></span>${escHtml(s)}…</li>`).join("") +
+    `</ol><div class="qa-stbar" aria-hidden="true"><span class="qa-stbar-fill"></span></div>`;
+  const items = ans.querySelectorAll(".qa-st");
+  const fill = ans.querySelector(".qa-stbar-fill");
+  let i = 0;
+  const apply = ()=>{
+    items.forEach((el, idx)=>{ el.classList.toggle("done", idx < i); el.classList.toggle("active", idx === i); });
+    if(fill) fill.style.width = `${Math.min(((i + 0.6) / QA_STAGES.length) * 100, 92)}%`;  // 永不到 100%（誠實，真完成才補滿）
+  };
+  apply();
+  // 時間驅動（QA 後端未暴露真實階段，與參考 bot 同為節奏推進）；推進到最後一階段就停住
+  const iv = setInterval(()=>{ if(i < QA_STAGES.length - 1){ i++; apply(); } }, 2600);
+  return { stop(){ clearInterval(iv); } };
+}
+
 function startStreamQa(question, bubble, ans){
   closeQaEs();
-  const tw = createTypewriter(ans);
-  tw.start();
+  let tw = null;                       // 延後到首 token 才建打字機；先顯示階段 loader
+  const stage = startQaStages(ans);
   let firstEvent = false, settled = false;
   const sid = qaSessionId ? `&session_id=${encodeURIComponent(qaSessionId)}` : "";
   const url = `${CONFIG.API_URL}/qa/stream?question=${encodeURIComponent(question)}${sid}`;
 
+  // 首事件逾時：8s→30s（積極 retry/high-demand 下首 token 可能較久，別誤觸發 fallback；
+  // 階段 loader 在此期間提供「持續在動」的視覺，不會像凍住）
   const guard = setTimeout(()=>{
     if(!firstEvent && !settled){
-      settled = true; closeQaEs(); tw.abort();
+      settled = true; closeQaEs(); stage.stop();
       askQuestionFallback(question, bubble, ans);
     }
-  }, 8000);
+  }, 30000);
 
   let es;
   try{ es = new EventSource(url); }
-  catch(e){ clearTimeout(guard); tw.abort(); askQuestionFallback(question, bubble, ans); return; }
+  catch(e){ clearTimeout(guard); stage.stop(); askQuestionFallback(question, bubble, ans); return; }
   _qaEs = es;
 
   es.addEventListener("token", (ev)=>{
-    firstEvent = true;
     let d; try{ d = JSON.parse(ev.data); }catch(_){ return; }
-    if(d && typeof d.text === "string") tw.push(d.text);
+    if(!(d && typeof d.text === "string")) return;
+    if(!firstEvent){
+      firstEvent = true;
+      stage.stop();                 // 停階段 loader
+      tw = createTypewriter(ans);   // 首 token 才建打字機（會清空 ans 的 loader）
+      tw.start();
+    }
+    tw.push(d.text);
   });
 
   es.addEventListener("done", (ev)=>{
@@ -833,18 +860,20 @@ function startStreamQa(question, bubble, ans){
     qaSessionId = data.session_id || qaSessionId;
     qaTurnCount = data.turn_number || (qaTurnCount + 1);
     qaSessionLabel.textContent = `SESSION · 第 ${qaTurnCount} 輪對話`;
-    // 等緩衝吐完字 → 用權威 answer 覆蓋已串流文字（套用防幻覺覆寫）→ 淡入 citations/followup
-    tw.finish(()=>{
+    const renderFinal = ()=>{
       if(typeof data.answer === "string" && data.answer) ans.innerHTML = renderSafeMarkdown(data.answer);
       attachCitesAndFollowups(bubble, data);
       finishQaTurn();
-    });
+    };
+    if(!tw){ stage.stop(); renderFinal(); return; }   // 沒收到任何 token 就 done → 停階段、直接渲染
+    // 等緩衝吐完字 → 用權威 answer 覆蓋已串流文字（套用防幻覺覆寫）→ 淡入 citations/followup
+    tw.finish(renderFinal);
   });
 
   es.addEventListener("error", (ev)=>{
     if(ev && typeof ev.data === "string" && ev.data.length){
       // 自訂 error 事件
-      settled = true; clearTimeout(guard); closeQaEs(); tw.abort();
+      settled = true; clearTimeout(guard); closeQaEs(); stage.stop(); tw && tw.abort();
       let d; try{ d = JSON.parse(ev.data); }catch(_){ d = {}; }
       if(window.Sentry) Sentry.captureMessage(`qa stream error: ${d.error_type||"unknown"}`);
       ans.innerHTML = `<span style="color:#ff9b9b">查詢失敗：${escHtml(d.message || "服務暫時繁忙")}。請稍後再試。</span>`;
@@ -852,8 +881,8 @@ function startStreamQa(question, bubble, ans){
       return;
     }
     if(settled) return;
-    clearTimeout(guard); closeQaEs(); tw.abort();
-    if(!firstEvent){ askQuestionFallback(question, bubble, ans); }  // proxy 擋 → fallback
+    clearTimeout(guard); closeQaEs(); stage.stop(); tw && tw.abort();
+    if(!firstEvent){ askQuestionFallback(question, bubble, ans); }  // proxy 擋/連線失敗 → fallback
     else { ans.innerHTML = renderSafeMarkdown(tw.getText()) + `<span style="color:#ff9b9b">（連線中斷）</span>`; finishQaTurn(); }
   });
 }
