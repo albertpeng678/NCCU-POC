@@ -113,3 +113,34 @@ async def test_insert_turn_no_db_failed_turn_marks_success_false():
     turns = await get_session_turns(None, sid)
     assert turns[0]["success"] is False
     assert turns[0]["answer"] is None
+
+
+# ---------- F3（完整多輪）：turn1→2→3 順序保存 + build_history 正確重建 + bump 推進 turn_count ----------
+
+@pytest.mark.asyncio
+async def test_multi_turn_no_db_preserves_order_and_bumps():
+    sid = await create_session(None)
+    for i in (1, 2, 3):
+        res = {"answer": f"A{i}", "citations_course_ids": [],
+               "followup_suggestions": [], "latency_ms": 0}
+        await insert_turn(None, sid, i, f"Q{i}", res, None)
+        await bump_session(None, sid, f"interaction-{i}")
+
+    sess = await get_session(None, sid)
+    assert sess["turn_count"] == 3
+    assert sess["last_interaction_id"] == "interaction-3"
+
+    turns = await get_session_turns(None, sid)
+    assert [t["question"] for t in turns] == ["Q1", "Q2", "Q3"]
+
+    history = build_history_from_turns(turns)
+    assert history == [
+        {"question": "Q1", "answer": "A1"},
+        {"question": "Q2", "answer": "A2"},
+        {"question": "Q3", "answer": "A3"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_session_turns_no_db_unknown_returns_empty():
+    assert await get_session_turns(None, "nope-nope-nope") == []

@@ -168,8 +168,12 @@ async def insert_turn(
 
 
 async def bump_session(pool, session_id: str, interaction_id: str) -> None:
-    """Update session last_interaction_id and increment turn_count."""
+    """Update session last_interaction_id and increment turn_count.
+
+    無 DB → 推進 _STORE 內的 turn_count 與 last_interaction_id。
+    """
     if pool is None:
+        _STORE.bump(session_id, interaction_id)
         return
     try:
         async with pool.acquire() as conn:
