@@ -7,7 +7,7 @@ const CONFIG = {
   API_URL: (window.__API_URL__ ||
     ((location.hostname === "localhost" || location.hostname === "127.0.0.1")
       ? "http://localhost:8000"
-      : "https://nccu-backend.up.railway.app")),
+      : "https://nccu-poc-production.up.railway.app")),
   // Sentry DSN（公開可安全放原始碼）；留空則停用。Sentry 專案 nccu-poc（org albert-ar）。
   SENTRY_DSN: "https://eb5ebaf502bf1590ef5f87da67282518@o4511451335622656.ingest.us.sentry.io/4511504292904960",
 };
