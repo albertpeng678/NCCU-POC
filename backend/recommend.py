@@ -149,6 +149,33 @@ def correct_candidate_ids(candidates: list[dict], meta: dict) -> list[dict]:
     return fixed
 
 
+def merge_fanout_results(
+    per_skill_results: list[list[dict]], meta: dict
+) -> list[dict]:
+    """把多支 fan-out 結果 round-robin 交錯合併成單一候選池。
+
+    步驟：
+    1. round-robin 交錯（技能1[0], 技能2[0], …, 技能1[1], …）以保多樣，
+       避免單技能霸佔池頭。
+    2. correct_candidate_ids：用 course_name 修正抄錯的 course_id。
+    3. deduplicate_by_name：去跨掛同名課（先到保留）。
+    4. deduplicate_by_prefix：去前6碼相同（同課不同班次）。
+    5. 截斷至 POOL_TARGET。
+    回傳新 list（不就地改 input）。
+    """
+    interleaved: list[dict] = []
+    if per_skill_results:
+        max_len = max((len(r) for r in per_skill_results), default=0)
+        for col in range(max_len):
+            for r in per_skill_results:
+                if col < len(r):
+                    interleaved.append(r[col])
+    fixed = correct_candidate_ids(interleaved, meta)
+    deduped = deduplicate_by_name(fixed, "course_name")
+    deduped = deduplicate_by_prefix(deduped)
+    return deduped[:POOL_TARGET]
+
+
 def join_metadata(raw_courses: list[dict], meta: dict) -> list[dict]:
     """Enrich course list with metadata. Skips courses not found in meta."""
     result = []

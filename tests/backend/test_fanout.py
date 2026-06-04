@@ -40,3 +40,94 @@ async def test_fanout_query_skill_empty_text_returns_empty_list():
     client = _fake_client("沒有相關課程")
     out = await fanout_query_skill_async(client, "store", "PM", "分析")
     assert out == []
+
+
+from backend.recommend import merge_fanout_results
+
+
+def _meta_for(ids_names):
+    m = {}
+    for cid, name in ids_names:
+        m[cid] = {"name": name, "department": "系", "teacher": "師",
+                  "credits": 3.0, "syllabus_url": f"https://x/{cid}"}
+    return m
+
+
+def test_merge_round_robin_interleaves_sources():
+    # 技能1 = [A0, A1]、技能2 = [B0, B1] → round-robin: A0, B0, A1, B1
+    # 使用完全不同的6碼前綴，避免 deduplicate_by_prefix 碰撞
+    s1 = [{"course_id": "000011001", "course_name": "A0", "relevance": "x"},
+          {"course_id": "000022001", "course_name": "A1", "relevance": "x"}]
+    s2 = [{"course_id": "000033001", "course_name": "B0", "relevance": "x"},
+          {"course_id": "000044001", "course_name": "B1", "relevance": "x"}]
+    meta = _meta_for([("000011001", "A0"), ("000022001", "A1"),
+                      ("000033001", "B0"), ("000044001", "B1")])
+    out = merge_fanout_results([s1, s2], meta)
+    names = [c["course_name"] for c in out]
+    assert names == ["A0", "B0", "A1", "B1"]
+
+
+def test_merge_dedup_overlapping_id_keeps_first():
+    # 兩技能都檢出同一 course_id → 只留首次（先到的技能1）
+    s1 = [{"course_id": "000010011", "course_name": "A0", "relevance": "from1"}]
+    s2 = [{"course_id": "000010011", "course_name": "A0", "relevance": "from2"}]
+    meta = _meta_for([("000010011", "A0")])
+    out = merge_fanout_results([s1, s2], meta)
+    assert len(out) == 1
+    assert out[0]["relevance"] == "from1"
+
+
+def test_merge_dedup_same_name_different_id():
+    # 跨掛同名課（同名不同 id）→ deduplicate_by_name 去同名，只留一筆
+    s1 = [{"course_id": "000010011", "course_name": "通識", "relevance": "x"}]
+    s2 = [{"course_id": "000099088", "course_name": "通識", "relevance": "y"}]
+    meta = _meta_for([("000010011", "通識"), ("000099088", "通識")])
+    out = merge_fanout_results([s1, s2], meta)
+    assert len(out) == 1
+
+
+def test_merge_dedup_by_prefix():
+    # 前6碼相同（不同班次後3碼）→ deduplicate_by_prefix 收斂一筆
+    s1 = [{"course_id": "000010011", "course_name": "微積分甲", "relevance": "x"}]
+    s2 = [{"course_id": "000010022", "course_name": "微積分乙", "relevance": "y"}]
+    meta = _meta_for([("000010011", "微積分甲"), ("000010022", "微積分乙")])
+    out = merge_fanout_results([s1, s2], meta)
+    assert len(out) == 1
+
+
+def test_merge_corrects_wrong_id_via_name():
+    # 抄錯一碼但 course_name 對得上 → correct_candidate_ids 修回真實 id
+    s1 = [{"course_id": "000010019", "course_name": "政治學", "relevance": "x"}]
+    meta = _meta_for([("000010011", "政治學")])
+    out = merge_fanout_results([s1], meta)
+    assert out[0]["course_id"] == "000010011"
+
+
+def _unique_id(i: int) -> str:
+    """Generate a 9-digit course_id with a unique 6-digit prefix for each i."""
+    return f"{(i + 1) * 1000:06d}001"
+
+
+def test_merge_caps_at_pool_target():
+    # 合併 > POOL_TARGET(30) → 截斷前 30
+    # 使用各自獨立6碼前綴，避免 deduplicate_by_prefix 誤縮
+    big = [[{"course_id": _unique_id(i), "course_name": f"課{i}", "relevance": "x"}]
+           for i in range(40)]  # 40 個單元素來源
+    meta = _meta_for([(_unique_id(i), f"課{i}") for i in range(40)])
+    out = merge_fanout_results(big, meta)
+    assert len(out) == POOL_TARGET
+
+
+def test_merge_pool_equal_target_keeps_all():
+    sources = [[{"course_id": _unique_id(i), "course_name": f"課{i}", "relevance": "x"}]
+               for i in range(POOL_TARGET)]
+    meta = _meta_for([(_unique_id(i), f"課{i}") for i in range(POOL_TARGET)])
+    out = merge_fanout_results(sources, meta)
+    assert len(out) == POOL_TARGET
+
+
+def test_merge_small_pool_no_padding():
+    sources = [[{"course_id": "000010011", "course_name": "A", "relevance": "x"}]]
+    meta = _meta_for([("000010011", "A")])
+    out = merge_fanout_results(sources, meta)
+    assert len(out) == 1  # 不補零、不報錯
