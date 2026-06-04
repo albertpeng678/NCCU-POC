@@ -154,6 +154,28 @@ def parse_qa_response(raw: str) -> dict:
     return {"answer": stripped, "followup_suggestions": []}
 
 
+# 多輪歷史：帶最近 N 輪原文進 contents（取代 interactions 的 previous_interaction_id）
+_MAX_HISTORY_TURNS = 3
+
+
+def build_qa_contents(question: str, history: Optional[list] = None) -> list:
+    """把多輪歷史 + 本輪問題組成 generate_content 的 contents。
+
+    history: [{"question": str, "answer": str}, ...]（時間升序）。
+    只保留最近 _MAX_HISTORY_TURNS 輪原文；本輪問題用 _PROMPT_TEMPLATE 包裝置於末尾。
+    """
+    contents: list = []
+    if history:
+        recent = history[-_MAX_HISTORY_TURNS:]
+        for turn in recent:
+            q = turn.get("question") or ""
+            a = turn.get("answer") or ""
+            contents.append({"role": "user", "parts": [{"text": q}]})
+            contents.append({"role": "model", "parts": [{"text": a}]})
+    contents.append({"role": "user", "parts": [{"text": _PROMPT_TEMPLATE.format(question=question)}]})
+    return contents
+
+
 def extract_citations(course_ids: list[str], meta: dict) -> list[dict]:
     """Dedup course_ids preserving order, look up meta, skip missing, return enriched dicts."""
     seen: set[str] = set()
