@@ -91,6 +91,19 @@ def deduplicate_by_prefix(courses: list[dict]) -> list[dict]:
     return result
 
 
+def deduplicate_by_name(courses: list[dict], name_key: str) -> list[dict]:
+    """依課名去重（保留首次出現），避免跨掛同名課（同名不同 course_id）重複。"""
+    seen: set[str] = set()
+    result = []
+    for c in courses:
+        name = c.get(name_key)
+        if name in seen:
+            continue
+        seen.add(name)
+        result.append(c)
+    return result
+
+
 def join_metadata(raw_courses: list[dict], meta: dict) -> list[dict]:
     """Enrich course list with metadata. Skips courses not found in meta."""
     result = []
@@ -236,9 +249,12 @@ def build_recommendation(
     candidates = stage1_retrieve(client, store_name, career, skills)
     if not candidates:
         raise ValueError("Stage 1 returned no candidate courses")
-    # 從候選池抽樣，達成跨次輪替多樣性
+    # 先依課名去重（避免跨掛同名課），再抽樣達成跨次輪替多樣性
+    candidates = deduplicate_by_name(candidates, "course_name")
     candidates = sample_candidates(candidates, seed)
     stage2 = stage2_group(client, career, skills, candidates)
+
+    seen_names: set[str] = set()
 
     def process_group(items: list[_CourseItem]) -> list[dict]:
         raw = [{
@@ -248,8 +264,14 @@ def build_recommendation(
                 "points": [{"term": p.term, "detail": p.detail} for p in i.reason_points],
             },
         } for i in items]
-        deduped = deduplicate_by_prefix(raw)
-        return join_metadata(deduped, meta)
+        enriched = join_metadata(deduplicate_by_prefix(raw), meta)
+        out = []
+        for c in enriched:
+            if c["name"] in seen_names:
+                continue
+            seen_names.add(c["name"])
+            out.append(c)
+        return out
 
     groups = {
         "core": process_group(stage2.groups.core),
@@ -279,12 +301,15 @@ def build_recommendation_instrumented(
         skills = careers[career]["skills"]
 
     candidates = stage1_retrieve(client, store_name, career, skills)
-    stage1_count = len(candidates)
     if not candidates:
         raise ValueError("Stage 1 returned no candidate courses")
-    # 從候選池抽樣，達成跨次輪替多樣性
+    # 先依課名去重（避免跨掛同名課），再抽樣達成跨次輪替多樣性
+    candidates = deduplicate_by_name(candidates, "course_name")
+    stage1_count = len(candidates)
     candidates = sample_candidates(candidates, seed)
     stage2 = stage2_group(client, career, skills, candidates)
+
+    seen_names: set[str] = set()
 
     def process_group(items):
         raw = [{
@@ -294,7 +319,15 @@ def build_recommendation_instrumented(
                 "points": [{"term": p.term, "detail": p.detail} for p in i.reason_points],
             },
         } for i in items]
-        return join_metadata(deduplicate_by_prefix(raw), meta)
+        enriched = join_metadata(deduplicate_by_prefix(raw), meta)
+        # 跨組依課名去重（core 優先），避免同名課重複出現於多組
+        out = []
+        for c in enriched:
+            if c["name"] in seen_names:
+                continue
+            seen_names.add(c["name"])
+            out.append(c)
+        return out
 
     groups = {
         "core": process_group(stage2.groups.core),
