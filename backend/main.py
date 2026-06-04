@@ -51,12 +51,19 @@ if _SENTRY_DSN:
         send_default_pii=False,
     )
 
-# 對 429(速率/配額)、503(過載) 自動指數退避重試 → 提升韌性，避免瞬間爆量直接吐錯給使用者
+# 對 429(速率/配額/「high demand」)、503(過載) 積極指數退避重試 → 撐過 Gemini 2.5 常見的
+# 「ghost 429」(明明有 quota 也噴 high demand)。研究(Context7 + web)：attempts 拉高 + jitter
+# 可把高峰失敗率 ~80% 降到 99%+。retry 套在 client 層，generate_content_stream 的請求建立也會重試。
+# 窗口估算(exp_base=2)：1,2,4,8,16,20,20,20 ≈ ~91s，足以等過短暫尖峰；SSE 有 ping=15 心跳保活。
 _client = genai.Client(
     api_key=_GEMINI_API_KEY,
     http_options=types.HttpOptions(
         retry_options=types.HttpRetryOptions(
-            attempts=3, initial_delay=1.0, max_delay=8.0,
+            attempts=8,            # 3→8（研究建議高峰期 8-10 次）
+            initial_delay=1.0,
+            max_delay=20.0,        # 8→20：拉長退避上限
+            exp_base=2.0,
+            jitter=1.0,            # 隨機抖動，避免多請求同時重試再次撞牆
             http_status_codes=[429, 503],
         ),
     ),
