@@ -807,8 +807,12 @@ function startStreamQa(question, bubble, ans){
     qaSessionId = data.session_id || qaSessionId;
     qaTurnCount = data.turn_number || (qaTurnCount + 1);
     qaSessionLabel.textContent = `SESSION · 第 ${qaTurnCount} 輪對話`;
-    // 等緩衝吐完字 → 淡入 citations/followup
-    tw.finish(()=>{ attachCitesAndFollowups(bubble, data); finishQaTurn(); });
+    // 等緩衝吐完字 → 用權威 answer 覆蓋已串流文字（套用防幻覺覆寫）→ 淡入 citations/followup
+    tw.finish(()=>{
+      if(typeof data.answer === "string" && data.answer) ans.innerHTML = renderSafeMarkdown(data.answer);
+      attachCitesAndFollowups(bubble, data);
+      finishQaTurn();
+    });
   });
 
   es.addEventListener("error", (ev)=>{
