@@ -460,40 +460,22 @@ def stage2_group(
 def build_recommendation(
     client: genai.Client, store_name: str, career: str, seed: int = 0, skills: list[str] | None = None
 ) -> dict:
-    """Full two-stage pipeline. Returns RecommendResponse-compatible dict."""
-    t0 = time.monotonic()
-    careers = load_careers()
-    meta = load_courses_meta()
-
-    if skills is None:
-        if career not in careers:
-            raise ValueError(f"Unknown career: {career}")
-        skills = careers[career]["skills"]
-
-    candidates = stage1_retrieve(client, store_name, career, skills)
-    if not candidates:
-        raise ValueError("Stage 1 returned no candidate courses")
-    # 先依課名去重（避免跨掛同名課），修正 stage1 抄錯的 course_id，再抽樣達成跨次輪替多樣性
-    candidates = deduplicate_by_name(candidates, "course_name")
-    candidates = correct_candidate_ids(candidates, meta)
-    candidates = sample_candidates(candidates, seed)
-    stage2 = stage2_group(client, career, skills, candidates)
-
-    groups = build_groups(stage2, candidates, meta)
-    latency_ms = int((time.monotonic() - t0) * 1000)
-
-    return {
-        "career": career,
-        "groups": groups,
-        "latency_ms": latency_ms,
-        "seed": seed,
-    }
+    """Full fan-out pipeline. Returns RecommendResponse-compatible dict（扁平 courses）。"""
+    result, _ = build_recommendation_instrumented(
+        client, store_name, career, seed, skills=skills
+    )
+    return result
 
 
 def build_recommendation_instrumented(
     client: genai.Client, store_name: str, career: str, seed: int = 0, skills: list[str] | None = None
 ) -> tuple[dict, int]:
-    """Same as build_recommendation but also returns stage1 candidate count."""
+    """fan-out + 整池標註 pipeline；同時回傳候選池大小（pool_count）。
+
+    同步入口（POST /recommend 用）：以 asyncio.run 驅動 async fan-out / annotate。
+    seed 保留於回應（前端續池用新 seed 呼叫；本層不再做 sample_candidates 抽樣，
+    多樣性改由前端分頁 + 續池新 seed 達成）。
+    """
     t0 = time.monotonic()
     careers = load_careers()
     meta = load_courses_meta()
@@ -502,20 +484,26 @@ def build_recommendation_instrumented(
             raise ValueError(f"Unknown career: {career}")
         skills = careers[career]["skills"]
 
-    candidates = stage1_retrieve(client, store_name, career, skills)
-    if not candidates:
-        raise ValueError("Stage 1 returned no candidate courses")
-    # 先依課名去重（避免跨掛同名課），修正 stage1 抄錯的 course_id，再抽樣達成跨次輪替多樣性
-    candidates = deduplicate_by_name(candidates, "course_name")
-    candidates = correct_candidate_ids(candidates, meta)
-    stage1_count = len(candidates)
-    candidates = sample_candidates(candidates, seed)
-    stage2 = stage2_group(client, career, skills, candidates)
+    async def _run():
+        candidates = await fanout_retrieve_async(client, store_name, career, skills)
+        if not candidates:
+            return None, 0
+        ranked = await stage2_annotate_pool_async(client, career, skills, candidates)
+        return build_ranked_courses(ranked, candidates, meta), len(candidates)
 
-    groups = build_groups(stage2, candidates, meta)
+    courses, pool_count = asyncio.run(_run())
+    if courses is None:
+        raise ValueError("Stage 1 returned no candidate courses")
+
     latency_ms = int((time.monotonic() - t0) * 1000)
-    result = {"career": career, "groups": groups, "latency_ms": latency_ms, "seed": seed}
-    return result, stage1_count
+    result = {
+        "career": career,
+        "courses": courses,
+        "batch_size": DEFAULT_BATCH_SIZE,
+        "latency_ms": latency_ms,
+        "seed": seed,
+    }
+    return result, pool_count
 
 
 # ===== async 版（供 SSE 串流逐階段呼叫；不阻塞 event loop） =====
