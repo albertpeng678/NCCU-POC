@@ -259,10 +259,10 @@ const REC_STAGES = [
   {key:"compose",    label:"編排推薦組合與理由"},
   {key:"finalize",   label:"整理課程資訊"},
 ];
-// 每階段在進度條佔的「累積上限 %」（誠實：done 才補到該段終點，active 期間 easing 推到該段 90%）
-const STAGE_END = {understand:12, retrieve:55, filter:63, compose:90, finalize:100};
-// 各階段預估剩餘秒（用於「預估還需約 N 秒」遞減估算）
-const STAGE_SEC = {understand:4, retrieve:24, filter:2, compose:18, finalize:2};
+// 每階段在進度條佔的「累積上限 %」（誠實：done 才補到該段終點；compose 封頂 94%，result 真到才 100%）
+const STAGE_END = {understand:4, retrieve:56, filter:60, compose:94, finalize:100};
+// 各階段預估剩餘秒（用於「預估還需約 N 秒」）。校準至 fan-out 實測：retrieve(並行檢索)~44s、compose(整池標註)~32s。
+const STAGE_SEC = {understand:3, retrieve:44, filter:1, compose:32, finalize:2};
 let _recEs = null;          // 當前 EventSource
 let _stageRaf = null;       // easing 動畫 rAF handle
 let _curStageIdx = -1;      // 目前 active 階段 index

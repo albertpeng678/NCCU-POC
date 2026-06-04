@@ -1,11 +1,51 @@
 # NCCU 課程推薦系統 — 交接文件（HANDOFF.md）
 
 > 專案進展史 + WBS + 待辦。給接手的 agent 快速掌握「做到哪、還剩什麼」。
-> 最後更新：2026-06-04（**Session 3**：串流 UX 實作 + 多項根因除錯）
+> 最後更新：2026-06-05（**Session 4**：fan-out 提速 + Q&A 降級 + citation/思維鏈修法 + 同源部署 + embedding 根因）
 
 ---
 
-## ★ Session 3 交接（最新，換機器接手必讀）★
+## ★ Session 4 交接（最新，換機器接手必讀）★
+
+> 分支 **`feat/streaming-ux`**（已 push 到 master，Railway 自動部署）。本回合大量功能 + 除錯，**全部 TDD 單元 + 多數 live e2e 親證**。後端測試 **196 passing**。
+
+### 已完成且已部署
+1. **推薦提速 fan-out（#11，核心）**：舊「單次大檢索」(~124s) → **每技能一支並行小檢索(top_k=8) + 整池標註 + 前端分頁換一批**。
+   - `recommend.py`：`fanout_query_skill_async` / `merge_fanout_results`(round-robin+去重+池上限) / `fanout_retrieve_async`(gather容錯) / `stage2_annotate_pool_async`(扁平 ranked) / `build_ranked_courses`。
+   - `models.py`：`RecommendResponse` 改**扁平 `courses: list[Course]`**（每課含 group/rank）+ `batch_size`。
+   - 前端 `pagination.js`（node:test 9/9）：**換一批純前端切片 0 網路請求**；池乾以新 seed 續池。`groupBatch` 改**批內排名分桶**（前40%core/中35%supporting/餘extended）→ 修「後端全標 core→前端只一區」。
+   - **live 實測：fan-out 44s + stage2 35s ≈ 79s**（vs 124s，快約 1/3）。換一批 0 網路親證、PNG 存證。
+2. **Q&A 無 DB 優雅降級（#13-15）**：`qa_logger._EphemeralStore`，無 `DATABASE_URL` 時用 uuid4 + in-memory 多輪 session；移除 `/qa`、`/qa/stream` 的硬性 503 死路。**live 親證**：無 DB 單輪+多輪上下文正常、不跳「Cannot create session」。
+3. **citation 漏顯示修法**：streaming 改讀**結構化 `custom_metadata.course_id`**（官方 canonical 法）+ regex fallback。探針鐵證：5 門 ground 舊版只顯示 4（文件中段 chunk 無代號標頭被 regex 漏）。live ×2 親證。
+4. **思維鏈外洩修法**：`stream_answer` 改 `_visible_text_from_chunk`（`part.thought` 過濾，官方法）→ 不再把 reasoning/`executable_code`(工具呼叫) 串給使用者。live 親證（回應真含 executable_code，正確排除）。
+5. **Q&A `top_k=5`**：file_search 明確設 top_k（不設會浮動，實測曾吐 14 筆）→ 參考課綱穩定 5。
+6. **部署修復（同源）**：`$PORT` 未展開(Dockerfile shell form) + `init_pool` 韌性(連不到 DB 不崩) + **backend 同源服務前端**(FastAPI StaticFiles，因 root `railway.toml` 跨服務污染、第二個 nginx service 會誤 build 後端)。**單一網址 https://nccu-poc-production.up.railway.app**，git push 觸發。
+7. 進度條 eta 校準至 fan-out 實測（STAGE_SEC retrieve 44/compose 32）。前端 `?v=17`。
+
+### 🔑 embedding 429「常態化」的最終根因（耗大量篇幅查清，務必看）
+**症狀**：推薦只回 1 門 / Q&A citation 對不上 / file_search 持續間歇 429「Failed to embed content」。
+**逐層排除（全有量測）**：
+- **不是 spend cap**：cap 已調 NT$500、花費才 23%；spend-cap 的 429 會明寫「exceeded its monthly spending cap」，我們是通用「Resource exhausted」無此字樣。
+- **不是 store 壞掉**：`file_search_stores.get` → 2714 active / **0 failed** / 19.75MB（健康）。**受控實驗**（同窗交替查舊 store vs 新建 test store）→ **兩者同進同退**（一起成功/一起 429）→ 確認是**帳號層級**、非 store。
+- **不是每日配額（RPD）**：Tier 1 embedding RPD = unlimited。
+- **真因**：`gemini-embedding-001` 的 **server-side 區域速率/容量限流**（Google 自 2025 末承認、無 ETA；連 65 檔的小庫都有人中）。**被「今天 backfill 重嵌 2718 課」+「fan-out 一次 6-8 並行 query embedding」放大**。
+- **可控緩解**（非根治，根治在 Google 端）：已有指數退避+jitter（官方第一優先）；**停止 burst** 是最有效（密集探針會加劇）；fan-out 限併發/快取可降觸發。**勿重建 store**（沒用、白燒）。
+
+### ⏳ 收工時仍卡 embedding 限流、未做完的項目
+- **#9 補 11 課**（store 2714/2718，~4 課待補）：要索引 = 要 embedding burst，限流中會更糟，**待冷卻或離峰再跑** `ONLY_FAILED=1 BACKFILL_STORE=...znuka50qq2y2 scripts/backfill_async.py`。
+- **#20 fan-out FG5 完整壓測**：壓測本質是並行 burst → 一定觸 429 且污染量測，**待 embedding 穩定再跑**（latency 已單點實測 79s）。
+- **#5 跨裝置完整 e2e**（含真實 recommend/qa）：靜態 UI 跨裝置可驗；含真實檢索的端到端待 embedding 穩。
+- **#12 wait-fatigue 進度條決策**：本回合已做誠實 eta 校準；wip 分支最終取捨待使用者拍板。
+- **（已放棄）推薦「思考揭露」UX**：研究完（NN/g + include_thoughts 可行）+ 做了 visual companion mockup，使用者決定不做。
+
+### 設計決策補充（本回合新增）
+- **fan-out 取捨**：延遲砍半，但**每請求 embedding 從 1→6-8 次**（放大花費 + 撞限流機率）——真實 trade-off。
+- **同源部署**：root `railway.toml` 被所有 repo-connected service 讀到（官方：config 不跟 Root Directory 走）→ 改 backend StaticFiles 服務前端。
+- **citation/思維鏈**：grounding 用結構化 `custom_metadata`；串流用 `part.thought` 過濾。
+
+---
+
+## ★ Session 3 交接（換機器接手必讀）★
 
 > 分支 **`feat/streaming-ux`**（已 push）。串流 UX 已端到端跑通並真實 E2E 驗證；過程踩到並查清三個關鍵根因。
 
