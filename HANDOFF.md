@@ -20,7 +20,8 @@
 4. **思維鏈外洩修法**：`stream_answer` 改 `_visible_text_from_chunk`（`part.thought` 過濾，官方法）→ 不再把 reasoning/`executable_code`(工具呼叫) 串給使用者。live 親證（回應真含 executable_code，正確排除）。
 5. **Q&A `top_k=5`**：file_search 明確設 top_k（不設會浮動，實測曾吐 14 筆）→ 參考課綱穩定 5。
 6. **部署修復（同源）**：`$PORT` 未展開(Dockerfile shell form) + `init_pool` 韌性(連不到 DB 不崩) + **backend 同源服務前端**(FastAPI StaticFiles，因 root `railway.toml` 跨服務污染、第二個 nginx service 會誤 build 後端)。**單一網址 https://nccu-poc-production.up.railway.app**，git push 觸發。
-7. 進度條 eta 校準至 fan-out 實測（STAGE_SEC retrieve 44/compose 32）。前端 `?v=17`。
+7. 進度條 eta 校準至 fan-out 實測（STAGE_SEC retrieve 44/compose 32）。
+8. **Q&A 漸進式 markdown 渲染**：新 `frontend/progressive-md.js`（`createProgressiveRenderer`，rAF 節流 + 累積緩衝重渲染，node:test 4/4）；`stream_answer` token handler 從純文字打字機 → **邊串流邊用 `renderSafeMarkdown`(marked+DOMPurify) 漸進渲染**（表格/粗體/標題隨完成即現）；done 仍權威覆蓋；fallback typewriter 保留。**code-reviewer 通過、Playwright live 親證**（done 前 `<table>` 3列+`<strong>` 已漸進、0 console 錯）。Dockerfile 補 COPY、前端 **`?v=18`**。
 
 ### 🔑 embedding 429「常態化」的最終根因（耗大量篇幅查清，務必看）
 **症狀**：推薦只回 1 門 / Q&A citation 對不上 / file_search 持續間歇 429「Failed to embed content」。
@@ -36,7 +37,8 @@
 - **#20 fan-out FG5 完整壓測**：壓測本質是並行 burst → 一定觸 429 且污染量測，**待 embedding 穩定再跑**（latency 已單點實測 79s）。
 - **#5 跨裝置完整 e2e**（含真實 recommend/qa）：靜態 UI 跨裝置可驗；含真實檢索的端到端待 embedding 穩。
 - **#12 wait-fatigue 進度條決策**：本回合已做誠實 eta 校準；wip 分支最終取捨待使用者拍板。
-- **（已放棄）推薦「思考揭露」UX**：研究完（NN/g + include_thoughts 可行）+ 做了 visual companion mockup，使用者決定不做。
+- **SSE 斷線補救（已研究、待實作）**：LLM 串流無法廉價續傳（無 server buffer、Gemini 串流不可重播）→ 業界標準＝「斷線→改非串流 POST 重抓完整結果」（ChatGPT Regenerate、Claude continuation）。**現有 fallback 骨架已在**（app.js EventSource error→POST），待硬化：關自動重連、斷線顯示「重新取得中…」、POST 補完整、再失敗給重試鈕。
+- **（已放棄）推薦「思考揭露」UX**：研究完（NN/g + `include_thoughts` 可行，技術＝`ThinkingConfig(include_thoughts=True)` 串流 `part.thought` 摘要）+ 做了 visual companion mockup，使用者決定不做。
 
 ### 設計決策補充（本回合新增）
 - **fan-out 取捨**：延遲砍半，但**每請求 embedding 從 1→6-8 次**（放大花費 + 撞限流機率）——真實 trade-off。

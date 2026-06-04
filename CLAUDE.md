@@ -1,7 +1,7 @@
 # NCCU 課程推薦系統 — 專案說明（CLAUDE.md）
 
 > 給 AI agent 的專案全貌速覽。讀完即可掌握架構、檔案、計畫與慣例。
-> 最後更新：2026-06-04（**Session 3**）。**接手第一件事：讀 `HANDOFF.md` 開頭「★ Session 3 交接」段**（含目前進度、三大根因、待辦、換機器起手式）。注意 `~/.claude` 的 memory 不會跨機器，所有必要資訊都已寫進 HANDOFF/CLAUDE。
+> 最後更新：2026-06-05（**Session 4**）。**接手第一件事：讀 `HANDOFF.md` 開頭「★ Session 4 交接」段**（fan-out 提速 / Q&A 無DB降級 / citation+思維鏈+漸進渲染修法 / 同源部署 / embedding 限流根因 / 卡住項目）。注意 `~/.claude` 的 memory 不會跨機器，所有必要資訊都已寫進 HANDOFF/CLAUDE。
 
 ## 一句話
 
@@ -12,8 +12,8 @@
 1. **職涯推薦**（`POST /recommend`）：
    - **50 種預設職涯**之一 → 用 `career_skills.json` 靜態技能。
    - **清單外職涯**（如「記者」「清潔工」）→ `derive_skills_for_career` 用 LLM 即時推導「可轉移能力」技能 → 真實檢索；推不出（亂打）或檢索空 → 回 `no_match`（前端溫和導向問答，不卡死）。
-   - 兩階段 Gemini（stage1 file_search 檢索 → stage2 分組）→ core/supporting/extended 三組課程卡，每張含結構化推薦理由（lead + 粗體 bullet）+ 課綱連結。
-   - **多樣性「換一批」**：stage1 取候選池(POOL_SIZE) → `sample_candidates`（定錨 ANCHOR_COUNT + seed 隨機抽 SAMPLE_SIZE）→ 同職涯每次回不同但相關的組合。`/recommend` 可帶 `seed`（未帶則後端亂數）；response 回 `seed`。
+   - **（Session 4 改 fan-out）** stage1＝**每技能一支並行小檢索**(`fanout_retrieve_async`，top_k=8，asyncio.gather 容錯) 合併成候選池 → stage2＝**整池標註**(`stage2_annotate_pool_async` 扁平 ranked + group) → `build_ranked_courses`。`RecommendResponse` 改**扁平 `courses: list[Course]`**(含 group/rank)+`batch_size`。**延遲 ~124s→~79s**（fan-out 44 + stage2 35）。⚠️ 代價：每請求 embedding 1→6-8 次（放大花費 + 撞 `gemini-embedding-001` 限流；見設計決策 #19）。
+   - **「換一批」改前端分頁**：首載回整池，前端 `pagination.js` 依 rank 切批每批 10、`groupBatch` 排名分桶顯示三區；換一批**純前端切片 0 網路請求**；池乾以新 seed 續池。`/recommend` 可帶 `seed`；response 回 `seed`。
    - **去重**：`deduplicate_by_prefix`（course_id 前6碼）+ `deduplicate_by_name`（課名，避免跨掛同名課重複）。
 2. **自由問答**（`POST /qa`）：任意課程問題 → Gemini Interactions API 多輪 RAG → 答案（**markdown 表格 + 克制粗體 + 文字說明**）+ citations（課綱來源）+ followup 建議。session/turn 持久化於 Postgres。離題溫和引導、citations 空時覆寫「查無資料」防幻覺。
 
@@ -26,7 +26,7 @@
 | Frontend | 原生 HTML/CSS/JS（無框架），navy glassmorphism「指揮台」風格；前端引入 marked + DOMPurify（Q&A markdown 渲染）+ @sentry/browser CDN |
 | DB | PostgreSQL（query_log + qa_session + qa_turn）— Railway Postgres |
 | 觀測 | **Sentry**（後端 sentry-sdk[fastapi] + 前端 @sentry/browser，DSN env/config 驅動；專案 `nccu-poc` @ org `albert-ar`） |
-| 部署 | Railway（backend Docker + frontend nginx static），**走 git push**（GitHub-connected service，非 `railway up`） |
+| 部署 | Railway，**走 git push**（GitHub-connected，非 `railway up`）。**（Session 4 改同源）單一 service：backend FastAPI `StaticFiles` 直接服務前端**（因 root `railway.toml` 跨服務污染、第二個 nginx service 會誤 build 後端）→ **單一網址 https://nccu-poc-production.up.railway.app**，前後端同源、零 CORS。Dockerfile shell-form `${PORT}`、`init_pool` 連不到 DB 不崩。 |
 
 ## 目錄結構
 
@@ -97,6 +97,10 @@ NCCU-poc/
 14. **SSE 串流（Session 3）**：新增 `GET /recommend/stream`（5 階段事件）、`GET /qa/stream`（逐 token + done）；舊 `POST` 保留當 fallback。前端 EventSource + 階段 stepper + 打字機。**詳見 HANDOFF「★ Session 3」**。
 15. **grounding 對 prompt 極敏感（不可踩）**：`config.system_instruction` 的人設會讓 2.5-flash 跳過 file_search → 罐頭答案。qa.py 的 `_SYSTEM_INSTRUCTION` 首段「【鐵則・最高優先】先檢索」**不可移除**。**拿掉 JSON 包裝改純 Markdown 會破壞 grounding（已回退）。**
 16. **429 真因＝SDK 預設 timeout 60s**（非單純速率）：recommend ~80-100s > 60s → 逾時→重試→請求分裂→燒 RPM。解：`HttpOptions(timeout=180_000)`（main.py）。embedding 429 同源（重試重複嵌入問句，free tier 100 RPM）。
+17. **（Session 4）embedding 429「常態化」真因＝`gemini-embedding-001` server-side 區域限流**（Google 自 2025 末承認、無 ETA；連 65 檔小庫都有人中）。**逐層排除有量測**：非 spend cap（cap NT$500、用 23%、無「spending cap」字樣）、非 store 壞（`get` → 2714 active/0 failed/19.75MB；**受控實驗**新建 test store 與舊 store「同進同退」→ 帳號層級非 store）、非 RPD（Tier1 embedding RPD unlimited）。**被「backfill 重嵌 2718 課」+「fan-out 6-8 並行 query embed」放大**。緩解＝退避(已有)+停 burst+限併發/快取；**勿重建 store**。
+18. **（Session 4）fan-out 取捨**：延遲 124s→79s，但每請求 embedding 1→6-8 次（放大花費 + 撞限流）。減量(更小 top_k/池)可省 ~10-20s + 降 embedding 壓力；真正「快」要離線預算 50 職涯快取(phase 2)。
+19. **（Session 4）citation 用結構化 `custom_metadata`、思維鏈用 `part.thought` 過濾**：grounding citation 從「regex 掃文字找代號」改讀 `grounding_chunks[].retrieved_context.custom_metadata.course_id`（官方法，修文件中段 chunk 漏顯示）；串流答案用 `_visible_text_from_chunk`(`part.thought` 過濾) 杜絕 reasoning/`executable_code` 外洩。Q&A `FileSearch(top_k=5)` 固定參考課綱數（不設會浮動到 14）。
+20. **（Session 4）Q&A 漸進 markdown 渲染**：`progressive-md.js` rAF 節流重渲染累積緩衝（復用 `renderSafeMarkdown` = marked+DOMPurify，安全不變）→ 表格/粗體邊串流邊成形；done 仍權威覆蓋。`stream_answer` token handler 改用之，fallback typewriter 保留。
 
 ## 環境變數（`.env`，gitignored）
 
