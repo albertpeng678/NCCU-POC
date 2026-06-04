@@ -40,12 +40,25 @@ class CourseGroups(BaseModel):
     extended: list[CourseCard]
 
 
+class Course(BaseModel):
+    course_id: str
+    name: str
+    department: str
+    teacher: str
+    credits: float
+    group: str            # core / supporting / extended
+    reason: Reason
+    syllabus_url: str
+    rank: int = 0
+
+
 class RecommendResponse(BaseModel):
     career: str
-    groups: CourseGroups
-    latency_ms: int
+    courses: list[Course]                # 扁平 ranked 清單（依 rank 排序，每課帶 group）
+    batch_size: int = 10                 # 前端每批顯示數
+    latency_ms: int = 0
     seed: int = 0
-    notice: str | None = None  # 清單外職涯：說明推薦依據可轉移能力
+    notice: str | None = None            # 清單外職涯：說明推薦依據可轉移能力
 
 
 class NoMatchResponse(BaseModel):

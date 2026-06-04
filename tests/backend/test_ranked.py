@@ -164,3 +164,35 @@ def test_build_ranked_course_has_full_fields():
     for k in ("course_id", "name", "department", "teacher", "credits",
               "group", "reason", "syllabus_url", "rank"):
         assert k in c
+
+
+from backend.models import Course, RecommendResponse
+
+
+def test_course_model_flat_with_group_and_rank():
+    c = Course(
+        course_id="000010011", name="政治學", department="政治系",
+        teacher="蔡中民", credits=3.0, group="core",
+        reason={"lead": "x", "points": [{"term": "分析", "detail": "拆解"}]},
+        syllabus_url="https://x/a", rank=0,
+    )
+    assert c.group == "core"
+    assert c.rank == 0
+    assert c.reason.points[0].term == "分析"
+
+
+def test_recommend_response_flat_courses_and_batch_default():
+    # D6：扁平 courses + batch_size 預設 10 + 回 seed
+    resp = RecommendResponse(
+        career="產品經理(PM)",
+        courses=[Course(
+            course_id="000010011", name="政治學", department="政治系",
+            teacher="蔡", credits=3.0, group="core",
+            reason={"lead": "x", "points": [{"term": "分析", "detail": "拆解"}]},
+            syllabus_url="https://x/a", rank=0)],
+        latency_ms=1200, seed=42,
+    )
+    assert resp.batch_size == 10
+    assert resp.seed == 42
+    assert resp.courses[0].group == "core"
+    assert resp.notice is None
