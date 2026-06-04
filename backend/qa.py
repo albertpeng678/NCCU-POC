@@ -309,6 +309,29 @@ def extract_course_ids_from_grounding(response) -> list[str]:
         return []
 
 
+def _course_id_from_retrieved_context(rc) -> Optional[str]:
+    """robust：優先讀結構化 custom_metadata 的 course_id（官方 canonical 法），
+    再退回掃文字 regex（保底）。
+
+    grounding_chunks[].retrieved_context.custom_metadata 是 list of
+    GroundingChunkCustomMetadata(key, string_value, numeric_value)——每個 chunk 都可靠帶，
+    連文件中段（文字無「課程代號:」標頭）的 chunk 也有；舊版只用 regex 會漏掉那些 chunk。
+    """
+    cm = getattr(rc, "custom_metadata", None)
+    if cm:
+        for md in cm:
+            if getattr(md, "key", None) == "course_id":
+                val = getattr(md, "string_value", None)
+                if val is None:
+                    val = getattr(md, "numeric_value", None)
+                if val is not None and re.fullmatch(r"\d{9}", str(val)):
+                    return str(val)
+    # fallback：掃 title/text/uri 找代號標頭（萬一沒有 custom_metadata）
+    blob = " ".join(str(getattr(rc, attr, "") or "") for attr in ("title", "text", "uri"))
+    m = re.search(r"課程代號[:：]\s*(\d{9})", blob) or re.search(r"\b(\d{9})\b", blob)
+    return m.group(1) if m else None
+
+
 def _grounding_course_ids_from_chunk(chunk) -> list[str]:
     """從單一 stream chunk 的 grounding_metadata 萃取 9 碼 course_id。"""
     out: list[str] = []
@@ -320,12 +343,9 @@ def _grounding_course_ids_from_chunk(chunk) -> list[str]:
             rc = getattr(gc, "retrieved_context", None)
             if rc is None:
                 continue
-            blob = " ".join(
-                str(getattr(rc, attr, "") or "") for attr in ("title", "text", "uri")
-            )
-            m = re.search(r"課程代號[:：]\s*(\d{9})", blob) or re.search(r"\b(\d{9})\b", blob)
-            if m:
-                out.append(m.group(1))
+            cid = _course_id_from_retrieved_context(rc)
+            if cid:
+                out.append(cid)
     return out
 
 
