@@ -216,6 +216,16 @@ class _Stage2Output(BaseModel):
     groups: _Groups
 
 
+class _RankedItem(BaseModel):
+    course_id: str
+    group: str                          # core / supporting / extended
+    reason_lead: str
+    reason_points: list[_ReasonPoint]
+
+class _RankedOutput(BaseModel):
+    courses: list[_RankedItem]          # 依推薦強度由高到低排序（rank = index）
+
+
 def build_groups(
     stage2: _Stage2Output, candidates: list[dict], meta: dict
 ) -> dict[str, list[dict]]:
@@ -590,6 +600,44 @@ async def stage2_group_async(
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
             response_schema=_Stage2Output,
+        ),
+    )
+    return resp.parsed
+
+
+async def stage2_annotate_pool_async(
+    client: genai.Client, career: str, skills: list[str], candidates: list[dict]
+) -> _RankedOutput:
+    """整池標註：為池中『每一門』課標 group + 理由，並依推薦強度全域排序。
+
+    取代『選 10 門分三組』；改為『標註整池、扁平 ranked 清單』。
+    回傳順序即 rank（index 0 = 最推薦）。
+    """
+    skill_str = "、".join(skills)
+    candidates_text = "\n".join(
+        f"{i + 1}. [{c['course_id']}] {c.get('course_name', '')} — {c.get('relevance', '')}"
+        for i, c in enumerate(candidates)
+    )
+    prompt = (
+        f"職涯目標：{career}\n"
+        f"核心技能：{skill_str}\n\n"
+        f"以下是 {len(candidates)} 門候選課程：\n{candidates_text}\n\n"
+        "請為『每一門』候選課程標註，並依與職涯目標的推薦強度由高到低『全域排序』"
+        "（courses 陣列第一個 = 最推薦）：\n"
+        "- course_id：照抄候選的 9 位數課程代號\n"
+        "- group：分類，必為 core（核心，直接對應職涯核心能力）/ "
+        "supporting（輔助，強化周邊能力）/ extended（延伸，跨域拓展）三者之一\n"
+        f"- reason_lead：一句總述（25 字內），點出與「{career}」的核心關聯\n"
+        "- reason_points：恰 2 個重點，每個含 term（2-6字粗體關鍵詞，如「需求分析」）"
+        "與 detail（簡短一句，20 字內，說明如何對應職涯能力）\n\n"
+        "務必涵蓋每一門候選課，不要遺漏、不要新增不在清單中的課。"
+    )
+    resp = await client.aio.models.generate_content(
+        model=_GEN_MODEL,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=_RankedOutput,
         ),
     )
     return resp.parsed
