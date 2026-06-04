@@ -220,39 +220,231 @@ function renderResults(data){
 }
 
 // ---------- States ----------
+// ---------- 推薦 5 階段（SSE 串流）----------
+const REC_STAGES = [
+  {key:"understand", label:"理解你的職涯方向"},
+  {key:"retrieve",   label:"檢索全校課綱"},
+  {key:"filter",     label:"篩選候選課程"},
+  {key:"compose",    label:"編排推薦組合與理由"},
+  {key:"finalize",   label:"整理課程資訊"},
+];
+// 每階段在進度條佔的「累積上限 %」（誠實：done 才補到該段終點，active 期間 easing 推到該段 90%）
+const STAGE_END = {understand:12, retrieve:55, filter:63, compose:90, finalize:100};
+// 各階段預估剩餘秒（用於「預估還需約 N 秒」遞減估算）
+const STAGE_SEC = {understand:4, retrieve:24, filter:2, compose:18, finalize:2};
+let _recEs = null;          // 當前 EventSource
+let _stageRaf = null;       // easing 動畫 rAF handle
+let _curStageIdx = -1;      // 目前 active 階段 index
+
+let _loadTimers = [];
+function stopLoading(){
+  _loadTimers.forEach(t=>{clearInterval(t);clearTimeout(t);}); _loadTimers = [];
+  if(_stageRaf){ cancelAnimationFrame(_stageRaf); _stageRaf = null; }
+}
+
+// --- DOM refs（loading 區）---
+function _loadRefs(){
+  return {
+    card: document.querySelector("#loading .load-card"),
+    bar:  document.getElementById("load-bar-fill"),
+    steps:Array.from(document.querySelectorAll("#load-steps .ld-step")),
+    tip:  document.getElementById("load-tip"),
+    stepNum: document.getElementById("load-step-num"),
+    etaSec:  document.getElementById("load-eta-sec"),
+  };
+}
+
+function resetStepper(){
+  const r = _loadRefs();
+  if(!r.steps.length) return;
+  _curStageIdx = -1;
+  r.card && r.card.classList.remove("done");
+  if(r.bar){ r.bar.classList.remove("done"); r.bar.style.transition = "none"; r.bar.style.width = "0%"; }
+  r.steps.forEach(s=>s.classList.remove("active","done","error"));
+  if(r.stepNum) r.stepNum.textContent = "1";
+  // 立即啟動第一階段
+  setStageActive(0);
+}
+
+// 進度條目標（％）平滑過渡到 target；用 CSS transition（Step 2.2 預設 .6s）
+function moveBar(targetPct, durationMs){
+  const r = _loadRefs(); if(!r.bar) return;
+  r.bar.style.transition = `width ${durationMs}ms cubic-bezier(.25,.8,.3,1)`;
+  requestAnimationFrame(()=>{ r.bar.style.width = `${targetPct}%`; });
+}
+
+function updateEta(){
+  const r = _loadRefs(); if(!r.etaSec) return;
+  // 從目前階段起，加總剩餘各階段預估秒
+  let sec = 0;
+  for(let i=Math.max(_curStageIdx,0); i<REC_STAGES.length; i++){
+    sec += STAGE_SEC[REC_STAGES[i].key] || 0;
+  }
+  r.etaSec.textContent = String(Math.max(sec,1));
+  if(r.stepNum) r.stepNum.textContent = String(Math.min(_curStageIdx+1, 5));
+}
+
+// active：標記脈動 + easing 把進度條推到「該段終點的 90%」就 hold（誠實安全網）
+function setStageActive(idx){
+  const r = _loadRefs(); if(!r.steps.length) return;
+  _curStageIdx = idx;
+  r.steps.forEach((s,i)=>{
+    if(i < idx) { s.classList.add("done"); s.classList.remove("active","error"); }
+    else if(i === idx){ s.classList.add("active"); s.classList.remove("done","error"); }
+    else { s.classList.remove("active","done","error"); }
+  });
+  const key = REC_STAGES[idx].key;
+  const prevEnd = idx === 0 ? 0 : STAGE_END[REC_STAGES[idx-1].key];
+  const thisEnd = STAGE_END[key];
+  const hold = prevEnd + (thisEnd - prevEnd) * 0.9;   // 推到該段 90%
+  // 用該階段預估秒 easing 推進；到 hold 就停（CSS transition 自然 hold）
+  moveBar(hold, (STAGE_SEC[key] || 4) * 1000);
+  updateEta();
+}
+
+// done：補滿該段終點、勾選；不自動跳下一段（等下一個 stage start 事件）
+function setStageDone(idx){
+  const r = _loadRefs(); if(!r.steps.length) return;
+  const step = r.steps[idx]; if(!step) return;
+  step.classList.add("done"); step.classList.remove("active","error");
+  const key = REC_STAGES[idx].key;
+  moveBar(STAGE_END[key], 500);   // 補滿該段終點，給「躍進」感
+}
+
+function setStageError(idx, msg){
+  const r = _loadRefs();
+  const step = r.steps[idx >= 0 ? idx : 0];
+  if(step){ step.classList.add("error"); step.classList.remove("active"); }
+  stopLoading();
+}
+
+// 全部完成：補滿 100% + 轉綠
+function finishProgress(){
+  const r = _loadRefs();
+  r.steps.forEach(s=>{ s.classList.add("done"); s.classList.remove("active","error"); });
+  r.bar && r.bar.classList.add("done");
+  r.card && r.card.classList.add("done");
+  moveBar(100, 400);
+  if(r.stepNum) r.stepNum.textContent = "5";
+  if(r.etaSec) r.etaSec.textContent = "0";
+}
+
+// 輪播提示文案（沿用，降低等待煎熬）
 const LOAD_TIPS = [
   "正在比對你的職涯所需技能與課程內容…",
   "從全校 2,700+ 門課綱中逐一篩選相關課程…",
   "為每門課量身生成推薦理由，請再稍候…",
   "好課值得等待，馬上就好。",
 ];
-let _loadTimers = [];
-function stopLoading(){ _loadTimers.forEach(t=>{clearInterval(t);clearTimeout(t);}); _loadTimers = []; }
-function showLoading(){
+function startTips(){
+  const r = _loadRefs(); if(!r.tip) return;
+  let i=0; r.tip.textContent = LOAD_TIPS[0];
+  _loadTimers.push(setInterval(()=>{ i=(i+1)%LOAD_TIPS.length; r.tip.textContent = LOAD_TIPS[i]; }, 5000));
+}
+
+// 顯示 loading 區（共用：SSE 與 fallback 都先呼叫）
+function showLoadingShell(){
   resultsEl.hidden = true; errorEl.hidden = true;
   const nm = document.getElementById("no-match"); if(nm) nm.hidden = true;
   loadingEl.hidden = false;
   loadingEl.scrollIntoView({behavior:"smooth",block:"center"});
   stopLoading();
-  const s1=document.getElementById("ld-step1"), s2=document.getElementById("ld-step2");
-  const bar=document.getElementById("load-bar-fill"), tip=document.getElementById("load-tip");
-  if(!s1||!s2||!bar||!tip) return;   // 防禦：缺載入元件（如快取不一致）時只顯示 loading 區、不做動畫，避免崩潰
-  s1.classList.add("active"); s1.classList.remove("done"); s2.classList.remove("active","done");
-  bar.style.transition="none"; bar.style.width="0%";
-  // 進度條 ~70s 緩慢推進到 92%（不填滿，留給真正完成時的瞬間補滿感）
-  requestAnimationFrame(()=>{ bar.style.transition="width 70s cubic-bezier(.1,.6,.25,1)"; bar.style.width="92%"; });
-  // 約 32s 後標記步驟1完成、切到步驟2
-  _loadTimers.push(setTimeout(()=>{ s1.classList.add("done"); s1.classList.remove("active"); s2.classList.add("active"); }, 32000));
-  // 輪播提示，給使用者東西看（NNgroup：降低等待煎熬）
-  let i=0; tip.textContent=LOAD_TIPS[0];
-  _loadTimers.push(setInterval(()=>{ i=(i+1)%LOAD_TIPS.length; tip.textContent=LOAD_TIPS[i]; }, 5000));
+  resetStepper();
+  startTips();
+}
+
+// fallback：校準模擬 5 階段（SSE 失敗時用；依 STAGE_SEC 時間表自動推進）
+function showLoadingSimulated(){
+  showLoadingShell();
+  let acc = 0;
+  // 依序在估計時間點把前一階段標 done、下一階段 active
+  for(let i=1; i<REC_STAGES.length; i++){
+    acc += (STAGE_SEC[REC_STAGES[i-1].key] || 4) * 1000;
+    const idx = i;
+    _loadTimers.push(setTimeout(()=>{ setStageDone(idx-1); setStageActive(idx); }, acc));
+  }
 }
 function showError(msg){ stopLoading(); loadingEl.hidden = true; resultsEl.hidden = true; errorEl.hidden = false; errorMsg.textContent = msg; }
 
-// ---------- API ----------
-async function fetchRecommendation(career){
+// ---------- API：推薦 ----------
+function closeRecEs(){ if(_recEs){ try{_recEs.close();}catch(_){} _recEs = null; } }
+
+function fetchRecommendation(career){
   lastCareer = career;            // 供「換一批」沿用（含清單外職涯）
-  showLoading();
+  showLoadingShell();
+  startStreamRecommend(career);
+}
+
+// SSE 主路徑
+function startStreamRecommend(career){
+  closeRecEs();
+  const seed = Math.floor(Math.random() * 1e9);   // 換一批多樣性
+  let firstEvent = false;
+  let settled = false;            // 已收 result/no_match/error
+  const url = `${CONFIG.API_URL}/recommend/stream?career=${encodeURIComponent(career)}&seed=${seed}`;
+
+  // 首事件逾時安全網：8s 內無任何事件 → 視為 proxy 擋串流，降級
+  const guard = setTimeout(()=>{
+    if(!firstEvent && !settled){
+      closeRecEs();
+      postRecommend(career);      // fallback
+    }
+  }, 8000);
+  _loadTimers.push(guard);
+
+  let es;
+  try{ es = new EventSource(url); }
+  catch(e){ clearTimeout(guard); postRecommend(career); return; }
+  _recEs = es;
+
+  es.addEventListener("stage", (ev)=>{
+    firstEvent = true;
+    let d; try{ d = JSON.parse(ev.data); }catch(_){ return; }
+    const idx = (d.n|0) - 1;
+    if(idx < 0 || idx >= REC_STAGES.length) return;
+    if(d.status === "start") setStageActive(idx);
+    else if(d.status === "done") setStageDone(idx);
+  });
+
+  es.addEventListener("result", (ev)=>{
+    settled = true; clearTimeout(guard); closeRecEs();
+    let data; try{ data = JSON.parse(ev.data); }catch(e){ showError("回傳資料解析失敗，請稍後再試。"); return; }
+    finishProgress();
+    setTimeout(()=>{
+      if(data && data.no_match){ showNoMatch(data.career || lastCareer, data.message || "目前沒有找到相關課程。"); }
+      else renderResults(data);
+    }, 350);   // 讓「補滿+轉綠」被看到再切結果
+  });
+
+  es.addEventListener("no_match", (ev)=>{
+    settled = true; clearTimeout(guard); closeRecEs();
+    let d; try{ d = JSON.parse(ev.data); }catch(_){ d = {}; }
+    stopLoading();
+    showNoMatch(d.career || lastCareer, d.message || "目前沒有找到相關課程。");
+  });
+
+  es.addEventListener("error_event", ()=>{});   // 佔位避免誤判（實際錯誤用 "error" 自訂事件）
+  es.addEventListener("error", (ev)=>{
+    // 區分：自訂 error 事件（有 data）vs EventSource 連線層 error（無 data）
+    if(ev && typeof ev.data === "string" && ev.data.length){
+      settled = true; clearTimeout(guard); closeRecEs();
+      let d; try{ d = JSON.parse(ev.data); }catch(_){ d = {}; }
+      setStageError(_curStageIdx, d.message);
+      if(window.Sentry) Sentry.captureMessage(`recommend stream error: ${d.error_type||"unknown"}`);
+      showError(`查詢失敗：${d.message || "服務暫時繁忙"}。請稍後再試。`);
+      return;
+    }
+    // 連線層 error：若尚未收任何事件且未 settled → 降級；已串流中途斷 → 報錯
+    if(settled) return;
+    clearTimeout(guard); closeRecEs();
+    if(!firstEvent){ postRecommend(career); }      // proxy 擋串流 → fallback
+    else { showError("連線中斷，請稍後再試。"); }
+  });
+}
+
+// fallback：舊 POST /recommend + 校準模擬動畫
+async function postRecommend(career){
+  showLoadingSimulated();
   try{
     const resp = await fetch(`${CONFIG.API_URL}/recommend`,{
       method:"POST",
@@ -264,9 +456,13 @@ async function fetchRecommendation(career){
       throw new Error(err.detail || `HTTP ${resp.status}`);
     }
     const data = await resp.json();
-    if(data && data.no_match){ showNoMatch(career, data.message || "目前沒有找到相關課程。"); return; }
-    renderResults(data);
+    finishProgress();
+    setTimeout(()=>{
+      if(data && data.no_match){ showNoMatch(career, data.message || "目前沒有找到相關課程。"); }
+      else renderResults(data);
+    }, 350);
   }catch(e){
+    if(window.Sentry) Sentry.captureException(e);
     showError(`查詢失敗：${e.message}。請稍後再試。`);
   }
 }
@@ -365,6 +561,108 @@ function renderAnswerHtml(answer){
   return `<div class="ans">${safe}</div>`;
 }
 
+// 從累積 raw markdown 取「可安全渲染的前綴」：
+// 1) 表格未收尾（最後一段是 | 開頭但後面沒有空行）整塊先藏，避免半截爆版
+// 2) 尾端未閉合的 ** 先去掉（避免粗體吃掉後文）
+function safeMarkdownPrefix(raw){
+  let text = raw;
+  // (a) 若最後一個區塊是「進行中的表格」（含 | 但尾端非空行結束）→ 砍到該表格前
+  const lines = text.split("\n");
+  // 找最後一個空行，作為「最後一個完整區塊」的安全切點候選
+  // 規則：若文字未以雙換行結尾，且尾段包含表格列（以 | 起頭），把尾段整塊延後
+  let cut = text.length;
+  const tailStart = text.lastIndexOf("\n\n");
+  const tail = tailStart >= 0 ? text.slice(tailStart+2) : text;
+  const tailIsTable = /^\s*\|/.test(tail) || /\n\s*\|/.test(tail);
+  const endsClean = /\n\s*$/.test(text);
+  if(tailIsTable && !endsClean){
+    cut = tailStart >= 0 ? tailStart : 0;   // 整塊表格延後到收尾
+  }
+  let prefix = text.slice(0, cut);
+  // (b) 未閉合的 ** ：count 為奇數則砍掉最後一個 ** 之後
+  const boldMatches = prefix.match(/\*\*/g);
+  if(boldMatches && boldMatches.length % 2 === 1){
+    const last = prefix.lastIndexOf("**");
+    prefix = prefix.slice(0, last);
+  }
+  return prefix;
+}
+
+function renderSafeMarkdown(raw){
+  const prefix = safeMarkdownPrefix(raw);
+  if (typeof marked === "undefined" || typeof DOMPurify === "undefined"){
+    return `<div class="ans">${escHtml(prefix).replace(/\n/g,"<br>")}</div>`;
+  }
+  const html = marked.parse(prefix, {breaks:true, gfm:true});
+  const safe = DOMPurify.sanitize(html, {
+    ALLOWED_TAGS: ["p","br","strong","em","u","h1","h2","h3","h4","ul","ol","li",
+                   "table","thead","tbody","tr","th","td","blockquote","code","pre","a","hr"],
+    ALLOWED_ATTR: ["href","target","rel"],
+  });
+  return safe;   // 不含外層 .ans，由打字機容器負責
+}
+
+// 固定節奏打字機：token 進緩衝，定時吐字（與到達速度脫鉤）
+const TYPE_CPS = 34;                 // 中速 34 字/秒（使用者選定）
+const TYPE_INTERVAL = 1000 / TYPE_CPS;
+const RENDER_THROTTLE = 80;          // markdown 重渲染節流
+
+function createTypewriter(ansEl){
+  let buffer = "";        // 尚未吐出的 token 文字
+  let shown = "";         // 已吐出的 raw markdown
+  let inputDone = false;  // 後端 token 是否已全部到齊（done 事件）
+  let onComplete = null;
+  let typeTimer = null;
+  let renderTimer = null;
+  let lastRender = 0;
+
+  function scheduleRender(){
+    const now = performance.now();
+    if(now - lastRender >= RENDER_THROTTLE){
+      doRender();
+    } else if(!renderTimer){
+      renderTimer = setTimeout(()=>{ renderTimer=null; doRender(); }, RENDER_THROTTLE - (now - lastRender));
+    }
+  }
+  function doRender(){
+    lastRender = performance.now();
+    ansEl.innerHTML = renderSafeMarkdown(shown) + `<span class="tw-caret"></span>`;
+    ansEl.scrollIntoView({behavior:"auto", block:"end"});
+  }
+
+  function tick(){
+    if(buffer.length){
+      // 一次吐一個字（CJK 友善；可一次吐 1 字維持中速觀感）
+      shown += buffer[0];
+      buffer = buffer.slice(1);
+      scheduleRender();
+    } else if(inputDone){
+      stop();
+      finalRender();
+      onComplete && onComplete();
+      return;
+    }
+    typeTimer = setTimeout(tick, TYPE_INTERVAL);
+  }
+
+  function finalRender(){
+    // 收尾：完整渲染（含被藏起來的表格/未閉合修正後內容）+ 移除游標
+    ansEl.innerHTML = renderSafeMarkdown(shown);
+  }
+  function stop(){
+    if(typeTimer){ clearTimeout(typeTimer); typeTimer=null; }
+    if(renderTimer){ clearTimeout(renderTimer); renderTimer=null; }
+  }
+
+  return {
+    push(text){ buffer += text; },
+    finish(cb){ inputDone = true; onComplete = cb; },   // 後端 token 完，等緩衝吐完
+    start(){ tick(); },
+    abort(){ stop(); },
+    getText(){ return shown + buffer; },
+  };
+}
+
 function appendUserBubble(text){
   const b = document.createElement("div");
   b.className = "bubble user";
@@ -403,6 +701,43 @@ function appendBotBubble(data){
   b.scrollIntoView({behavior:"smooth", block:"end"});
 }
 
+// 組 citations + followup 的 HTML（供打字機收尾後追加）
+function buildCitesAndFollowups(data){
+  let html = "";
+  if(Array.isArray(data.citations) && data.citations.length){
+    let cites = `<div class="cites"><div class="cites-label">參考課綱</div>`;
+    data.citations.forEach((c,i)=>{
+      cites += `<a class="cite" href="${escHtml(c.syllabus_url)}" target="_blank" rel="noopener noreferrer">`
+        + `<span class="num">${i+1}</span>`
+        + `<span class="cinfo"><span class="cn">${escHtml(c.name)}</span><span class="cd">${escHtml(c.department)} · ${escHtml(c.teacher)}</span></span>`
+        + `<span class="arrow">查看 →</span></a>`;
+    });
+    cites += `</div>`;
+    html += cites;
+  }
+  if(Array.isArray(data.followup_suggestions) && data.followup_suggestions.length){
+    let fu = `<div class="followups"><div class="followups-label">你可能想問</div><div class="fu-row">`;
+    data.followup_suggestions.forEach(s=>{ fu += `<span class="fu-chip" data-q="${escHtml(s)}">${escHtml(s)}</span>`; });
+    fu += `</div></div>`;
+    html += fu;
+  }
+  return html;
+}
+
+// 把 cites/followup 淡入到指定 bot 氣泡，並綁定 chip 點擊
+function attachCitesAndFollowups(bubbleEl, data){
+  const html = buildCitesAndFollowups(data);
+  if(!html) return;
+  const wrap = document.createElement("div");
+  wrap.className = "qa-tail fade-in";
+  wrap.innerHTML = html;
+  bubbleEl.appendChild(wrap);
+  wrap.querySelectorAll(".fu-chip").forEach(chip=>{
+    chip.addEventListener("click", ()=>{ if(!qaBusy) askQuestion(chip.dataset.q); });
+  });
+  bubbleEl.scrollIntoView({behavior:"smooth", block:"end"});
+}
+
 function appendLoadingBubble(){
   const b = document.createElement("div");
   b.className = "bubble bot";
@@ -412,20 +747,95 @@ function appendLoadingBubble(){
   b.scrollIntoView({behavior:"smooth", block:"end"});
 }
 
-async function askQuestion(question){
+let _qaEs = null;
+function closeQaEs(){ if(_qaEs){ try{_qaEs.close();}catch(_){} _qaEs = null; } }
+
+function askQuestion(question){
   qaBusy = true;
   qaSend.disabled = true;
   qaEmpty.hidden = true;
   qaInput.value = "";
   appendUserBubble(question);
-  appendLoadingBubble();
+
+  // 建立 bot 氣泡（含 .ans 給打字機寫）
+  const bubble = document.createElement("div");
+  bubble.className = "bubble bot";
+  const ans = document.createElement("div");
+  ans.className = "ans";
+  bubble.appendChild(ans);
+  qaConvo.appendChild(bubble);
+  bubble.scrollIntoView({behavior:"smooth", block:"end"});
+
+  startStreamQa(question, bubble, ans);
+}
+
+function finishQaTurn(){
+  qaBusy = false;
+  qaSend.disabled = !qaInput.value.trim();
+  qaInput.focus();
+}
+
+function startStreamQa(question, bubble, ans){
+  closeQaEs();
+  const tw = createTypewriter(ans);
+  tw.start();
+  let firstEvent = false, settled = false;
+  const sid = qaSessionId ? `&session_id=${encodeURIComponent(qaSessionId)}` : "";
+  const url = `${CONFIG.API_URL}/qa/stream?question=${encodeURIComponent(question)}${sid}`;
+
+  const guard = setTimeout(()=>{
+    if(!firstEvent && !settled){
+      settled = true; closeQaEs(); tw.abort();
+      askQuestionFallback(question, bubble, ans);
+    }
+  }, 8000);
+
+  let es;
+  try{ es = new EventSource(url); }
+  catch(e){ clearTimeout(guard); tw.abort(); askQuestionFallback(question, bubble, ans); return; }
+  _qaEs = es;
+
+  es.addEventListener("token", (ev)=>{
+    firstEvent = true;
+    let d; try{ d = JSON.parse(ev.data); }catch(_){ return; }
+    if(d && typeof d.text === "string") tw.push(d.text);
+  });
+
+  es.addEventListener("done", (ev)=>{
+    settled = true; clearTimeout(guard); closeQaEs();
+    let data; try{ data = JSON.parse(ev.data); }catch(_){ data = {}; }
+    qaSessionId = data.session_id || qaSessionId;
+    qaTurnCount = data.turn_number || (qaTurnCount + 1);
+    qaSessionLabel.textContent = `SESSION · 第 ${qaTurnCount} 輪對話`;
+    // 等緩衝吐完字 → 淡入 citations/followup
+    tw.finish(()=>{ attachCitesAndFollowups(bubble, data); finishQaTurn(); });
+  });
+
+  es.addEventListener("error", (ev)=>{
+    if(ev && typeof ev.data === "string" && ev.data.length){
+      // 自訂 error 事件
+      settled = true; clearTimeout(guard); closeQaEs(); tw.abort();
+      let d; try{ d = JSON.parse(ev.data); }catch(_){ d = {}; }
+      if(window.Sentry) Sentry.captureMessage(`qa stream error: ${d.error_type||"unknown"}`);
+      ans.innerHTML = `<span style="color:#ff9b9b">查詢失敗：${escHtml(d.message || "服務暫時繁忙")}。請稍後再試。</span>`;
+      finishQaTurn();
+      return;
+    }
+    if(settled) return;
+    clearTimeout(guard); closeQaEs(); tw.abort();
+    if(!firstEvent){ askQuestionFallback(question, bubble, ans); }  // proxy 擋 → fallback
+    else { ans.innerHTML = renderSafeMarkdown(tw.getText()) + `<span style="color:#ff9b9b">（連線中斷）</span>`; finishQaTurn(); }
+  });
+}
+
+// fallback：POST /qa 拿完整答案 → client 端逐字播放
+async function askQuestionFallback(question, bubble, ans){
   try{
     const resp = await fetch(`${CONFIG.API_URL}/qa`, {
       method:"POST",
       headers:{"Content-Type":"application/json"},
       body: JSON.stringify({question, session_id: qaSessionId}),
     });
-    document.getElementById("qa-loading-bubble")?.remove();
     if(!resp.ok){
       const err = await resp.json().catch(()=>({}));
       throw new Error(err.detail || `HTTP ${resp.status}`);
@@ -434,16 +844,14 @@ async function askQuestion(question){
     qaSessionId = data.session_id;
     qaTurnCount = data.turn_number || (qaTurnCount + 1);
     qaSessionLabel.textContent = `SESSION · 第 ${qaTurnCount} 輪對話`;
-    appendBotBubble(data);
+    // client 端打字機播放完整答案
+    const tw = createTypewriter(ans);
+    tw.start();
+    tw.push(data.answer || "");
+    tw.finish(()=>{ attachCitesAndFollowups(bubble, data); finishQaTurn(); });
   }catch(e){
-    document.getElementById("qa-loading-bubble")?.remove();
-    const b = document.createElement("div");
-    b.className = "bubble bot";
-    b.innerHTML = `<div class="ans" style="color:#ff9b9b">查詢失敗：${escHtml(e.message)}。請稍後再試。</div>`;
-    qaConvo.appendChild(b);
-  }finally{
-    qaBusy = false;
-    qaSend.disabled = !qaInput.value.trim();
-    qaInput.focus();
+    if(window.Sentry) Sentry.captureException(e);
+    ans.innerHTML = `<span style="color:#ff9b9b">查詢失敗：${escHtml(e.message)}。請稍後再試。</span>`;
+    finishQaTurn();
   }
 }

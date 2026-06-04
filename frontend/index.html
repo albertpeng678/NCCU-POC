@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=2">
+  <link rel="stylesheet" href="style.css?v=3">
 </head>
 <body>
   <!-- ambient background orbs handled in CSS via body::before/::after -->
@@ -68,20 +68,21 @@
         </div>
       </section>
 
-      <!-- Loading -->
+      <!-- Loading（5 階段串流進度；SSE 事件驅動，fallback 用校準模擬） -->
       <section id="loading" class="loading" hidden aria-live="polite">
         <div class="load-card">
           <div class="load-head">
-            <span class="loader-ring" aria-hidden="true"></span>
             <div class="load-head-txt">
               <p class="load-title">AI 正在為你規劃課程組合</p>
-              <p class="load-eta">預計約需 <b>1 分鐘</b>，請稍候</p>
+              <p class="load-eta" id="load-eta">第 <b id="load-step-num">1</b>/5 步 · 預估還需約 <b id="load-eta-sec">50</b> 秒</p>
             </div>
           </div>
-          <div class="load-bar" aria-hidden="true"><span id="load-bar-fill" class="load-bar-fill"></span></div>
-          <ol class="load-steps">
-            <li id="ld-step1" class="active"><span class="ld-dot"></span>從 2,700+ 門課綱檢索最相關的課程</li>
-            <li id="ld-step2"><span class="ld-dot"></span>AI 分組並為每門課生成推薦理由</li>
+          <ol class="load-steps" id="load-steps">
+            <li class="ld-step" data-key="understand"><span class="ld-mark" aria-hidden="true"></span>理解你的職涯方向</li>
+            <li class="ld-step" data-key="retrieve"><span class="ld-mark" aria-hidden="true"></span>檢索全校課綱</li>
+            <li class="ld-step" data-key="filter"><span class="ld-mark" aria-hidden="true"></span>篩選候選課程</li>
+            <li class="ld-step" data-key="compose"><span class="ld-mark" aria-hidden="true"></span>編排推薦組合與理由</li>
+            <li class="ld-step" data-key="finalize"><span class="ld-mark" aria-hidden="true"></span>整理課程資訊</li>
           </ol>
           <p class="load-tip" id="load-tip"></p>
         </div>
@@ -152,7 +153,7 @@
   <!-- Markdown 渲染（Q&A 答案）+ XSS sanitize；內容來自 LLM 故必經 DOMPurify -->
   <script src="https://cdn.jsdelivr.net/npm/marked@15.0.7/marked.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.4/dist/purify.min.js"></script>
-  <script src="careers.js?v=2"></script>
-  <script src="app.js?v=2"></script>
+  <script src="careers.js?v=3"></script>
+  <script src="app.js?v=3"></script>
 </body>
 </html>
