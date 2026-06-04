@@ -724,16 +724,17 @@ async def stream_recommendation(
     client: genai.Client, store_name: str, career: str,
     seed: int = 0, skills: list[str] | None = None,
 ):
-    """逐階段串流推薦。skills=None 表示清單內（查 careers）或需即時推導（清單外）。
+    """逐階段串流推薦（fan-out + 整池標註）。事件序列與舊版一致。
 
-    呼叫端（main.py）已先判斷清單內/外並可能傳入 skills；此處再兜底：
-    - skills 傳入 → 視為已決定（清單外推導好的或清單內查好的）。
-    - skills=None 且 career 在 careers → 用靜態技能。
-    - skills=None 且 career 不在 careers → derive_skills_for_career_async；推不出 → no_match。
+    - retrieve 階段內部 = 並行 fan-out（fanout_retrieve_async，已含去重/修正/池上限）。
+    - filter 階段保留為純標記（合併去重已在 fan-out 內完成）。
+    - compose 階段 = 整池標註（stage2_annotate_pool_async）。
+    - finalize 階段 = build_ranked_courses（前綴復原 + join meta + 同名去重）。
+    - 最終 result 帶扁平 courses + batch_size。空池行為沿用（清單外→no_match；清單內→error）。
     """
     careers = load_careers()
     meta = load_courses_meta()
-    is_open = career not in careers  # 清單外旗標（決定 no_match / notice 行為）
+    is_open = career not in careers
 
     # --- 階段 1：understand（決定技能）---
     yield _stage_event(1, "understand", "start")
@@ -750,9 +751,9 @@ async def stream_recommendation(
                 return
     yield _stage_event(1, "understand", "done")
 
-    # --- 階段 2：retrieve（File Search 海選）---
+    # --- 階段 2：retrieve（並行 fan-out 海選）---
     yield _stage_event(2, "retrieve", "start")
-    candidates = await stage1_retrieve_async(client, store_name, career, skills)
+    candidates = await fanout_retrieve_async(client, store_name, career, skills)
     if not candidates:
         if is_open:
             yield {"event": "no_match", "data": {
@@ -760,7 +761,6 @@ async def stream_recommendation(
                 "message": f"政大課程偏學術，目前沒有找到與「{career}」相關的課程，建議用問答模式探索。",
             }}
             return
-        # 清單內海選空：沿用同步版以 error 回報（與 POST 行為一致）
         yield {"event": "error", "data": {
             "error_type": "ValueError",
             "message": "Stage 1 returned no candidate courses",
@@ -768,22 +768,25 @@ async def stream_recommendation(
         return
     yield _stage_event(2, "retrieve", "done")
 
-    # --- 階段 3：filter（純程式：去重 + 修正抄錯 course_id + 抽樣）---
+    # --- 階段 3：filter（純標記：合併去重已於 fan-out 完成）---
     yield _stage_event(3, "filter", "start")
-    candidates = deduplicate_by_name(candidates, "course_name")
-    candidates = correct_candidate_ids(candidates, meta)
-    candidates = sample_candidates(candidates, seed)
     yield _stage_event(3, "filter", "done")
 
-    # --- 階段 4：compose（分組 + 生成理由）---
+    # --- 階段 4：compose（整池標註：group + 理由 + 全域排序）---
     yield _stage_event(4, "compose", "start")
-    stage2 = await stage2_group_async(client, career, skills, candidates)
+    ranked = await stage2_annotate_pool_async(client, career, skills, candidates)
     yield _stage_event(4, "compose", "done")
 
-    # --- 階段 5：finalize（補 metadata + course_id 前綴復原 + 跨組去重）---
+    # --- 階段 5：finalize（補 metadata + course_id 前綴復原 + 同名去重）---
     yield _stage_event(5, "finalize", "start")
-    groups = build_groups(stage2, candidates, meta)
-    result = {"career": career, "groups": groups, "latency_ms": 0, "seed": seed}
+    courses = build_ranked_courses(ranked, candidates, meta)
+    result = {
+        "career": career,
+        "courses": courses,
+        "batch_size": DEFAULT_BATCH_SIZE,
+        "latency_ms": 0,
+        "seed": seed,
+    }
     if is_open:
         result.setdefault(
             "notice",
