@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import json
 import random
+import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -153,21 +154,47 @@ def _sse(event: str, data: dict) -> dict:
     return {"event": event, "data": json.dumps(data, ensure_ascii=False)}
 
 
+# 背景任務強引用集合：asyncio fire-and-forget 任務需保活，避免被 GC 提前回收
+_bg_tasks: set = set()
+
+
+def _spawn_bg(coro) -> None:
+    """fire-and-forget 一個 coroutine，保留強引用直到完成（不阻塞串流回應）。"""
+    task = asyncio.ensure_future(coro)
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
+
+
 @app.get("/recommend/stream")
 async def recommend_stream(request: Request, career: str, seed: int | None = None):
     resolved_seed = seed if seed is not None else random.randrange(1_000_000)
 
     async def event_gen():
+        result = None
+        error = None
         try:
             async for ev in stream_recommendation(
                 _client, _STORE_NAME, career, resolved_seed, skills=None
             ):
                 if await request.is_disconnected():
                     break  # 前端已關閉（收到終態 es.close()）→ 中止，勿續燒 Gemini
+                if ev["event"] == "result":
+                    result = ev["data"]   # 收尾後補 logging/judge（與 POST /recommend 對齊）
+                elif ev["event"] == "error":
+                    error = Exception(ev["data"].get("message", "stream error"))
                 yield _sse(ev["event"], ev["data"])
         except Exception as e:
+            error = e
             sentry_sdk.capture_exception(e)
             yield _sse("error", {"error_type": type(e).__name__, "message": str(e)})
+
+        # 串流路徑也要 logging/judge（否則上線主走串流時 query_log 斷裂、judge 不評分）。
+        # 串流端點未回傳 stage1 候選池大小 → 以三組課程總數推估（下界，僅作量測參考）。
+        if result is not None or error is not None:
+            stage1_count = (
+                sum(len(g) for g in result["groups"].values()) if result else 0
+            )
+            _spawn_bg(_background_log_and_judge(career, result, stage1_count, error))
 
     return EventSourceResponse(event_gen(), ping=15)
 
