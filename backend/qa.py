@@ -7,6 +7,7 @@ import time
 from typing import Optional
 
 from google import genai
+from google.genai import types
 from google.genai._interactions.types.tool_param import FileSearch
 
 
@@ -377,3 +378,52 @@ def answer_question(
         "interaction_id": getattr(response, "id", None),
         "latency_ms": latency_ms,
     }
+
+
+async def stream_answer(
+    client: genai.Client,
+    store_name: str,
+    question: str,
+    history: Optional[list] = None,
+):
+    """串流回答課程問題（generate_content_stream + file_search）。
+
+    逐 chunk yield {"event":"token","data":{"text":...}}；
+    串流末 yield {"event":"done","data":{"course_ids":[...], "answer_text": 累積全文}}。
+    多輪歷史由 build_qa_contents 帶入 contents（取代 interactions 的 previous_interaction_id）。
+    citations join / 防幻覺覆寫 / session 持久化由呼叫端（main.py）處理。
+    """
+    contents = build_qa_contents(question, history)
+    config = types.GenerateContentConfig(
+        system_instruction=_SYSTEM_INSTRUCTION,
+        temperature=0.2,
+        top_p=0.95,
+        max_output_tokens=2048,
+        tools=[
+            types.Tool(
+                file_search=types.FileSearch(
+                    file_search_store_names=[store_name]
+                )
+            )
+        ],
+    )
+
+    chunks: list = []
+    answer_text = ""
+    stream = await client.aio.models.generate_content_stream(
+        model="gemini-2.5-flash",
+        contents=contents,
+        config=config,
+    )
+    async for chunk in stream:
+        chunks.append(chunk)
+        text = getattr(chunk, "text", None)
+        if text:
+            answer_text += text
+            yield {"event": "token", "data": {"text": text}}
+
+    course_ids = extract_course_ids_from_chunks(chunks)
+    yield {"event": "done", "data": {
+        "course_ids": course_ids,
+        "answer_text": answer_text,
+    }}
