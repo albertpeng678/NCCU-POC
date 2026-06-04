@@ -144,3 +144,27 @@ async def test_multi_turn_no_db_preserves_order_and_bumps():
 @pytest.mark.asyncio
 async def test_get_session_turns_no_db_unknown_returns_empty():
     assert await get_session_turns(None, "nope-nope-nope") == []
+
+
+# ---------- F5：不同 session_id 隔離不串台 ----------
+
+@pytest.mark.asyncio
+async def test_sessions_no_db_are_isolated():
+    a = await create_session(None)
+    b = await create_session(None)
+    await insert_turn(None, a, 1, "Qa", {"answer": "Aa", "citations_course_ids": [],
+                      "followup_suggestions": [], "latency_ms": 0}, None)
+    await bump_session(None, a, "ia")
+
+    # b 完全不受 a 影響
+    assert await get_session_turns(None, b) == []
+    assert (await get_session(None, b))["turn_count"] == 0
+    # a 自己有 1 輪
+    assert len(await get_session_turns(None, a)) == 1
+    assert (await get_session(None, a))["turn_count"] == 1
+
+
+# ---------- F7：build_history_from_turns 空輸入 → 空 history ----------
+
+def test_build_history_empty_input_returns_empty():
+    assert build_history_from_turns([]) == []
