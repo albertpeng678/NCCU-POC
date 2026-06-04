@@ -168,3 +168,79 @@ async def test_sessions_no_db_are_isolated():
 
 def test_build_history_empty_input_returns_empty():
     assert build_history_from_turns([]) == []
+
+
+# ---------- F6：DB 在時行為不變（回歸保護：走 asyncpg、ephemeral store 不被觸碰）----------
+
+class _FakeConn:
+    """記錄被呼叫的 SQL，模擬 asyncpg connection。"""
+    def __init__(self, store):
+        self._store = store
+
+    async def fetchval(self, sql, *args):
+        self._store["calls"].append(("fetchval", sql))
+        if "INSERT INTO qa_session" in sql:
+            return "11111111-1111-1111-1111-111111111111"
+        if "INSERT INTO qa_turn" in sql:
+            return 42
+        return None
+
+    async def fetchrow(self, sql, *args):
+        self._store["calls"].append(("fetchrow", sql))
+        return {"last_interaction_id": "prev-x", "turn_count": 2}
+
+    async def fetch(self, sql, *args):
+        self._store["calls"].append(("fetch", sql))
+        return [{"question": "Q1", "answer": "A1", "success": True, "turn_number": 1}]
+
+    async def execute(self, sql, *args):
+        self._store["calls"].append(("execute", sql))
+
+
+class _FakeAcquireCtx:
+    def __init__(self, conn):
+        self._conn = conn
+
+    async def __aenter__(self):
+        return self._conn
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+class _FakePool:
+    """最小 asyncpg pool：pool.acquire() 回 async context manager 給出 _FakeConn。"""
+    def __init__(self):
+        self.log = {"calls": []}
+        self._conn = _FakeConn(self.log)
+
+    def acquire(self):
+        return _FakeAcquireCtx(self._conn)
+
+
+@pytest.mark.asyncio
+async def test_db_present_uses_asyncpg_not_ephemeral():
+    pool = _FakePool()
+
+    sid = await create_session(pool)
+    assert sid == "11111111-1111-1111-1111-111111111111"
+
+    sess = await get_session(pool, sid)
+    assert sess == {"last_interaction_id": "prev-x", "turn_count": 2}
+
+    tid = await insert_turn(pool, sid, 3, "Q",
+                            {"answer": "A", "citations_course_ids": [],
+                             "followup_suggestions": [], "latency_ms": 0}, None)
+    assert tid == 42
+
+    await bump_session(pool, sid, "intr-3")
+    turns = await get_session_turns(pool, sid)
+    assert turns == [{"question": "Q1", "answer": "A1", "success": True, "turn_number": 1}]
+
+    # 確認真的走了 SQL（每路徑都有 call），且 ephemeral store 全程沒被寫入
+    sqls = " | ".join(s for _, s in pool.log["calls"])
+    assert "INSERT INTO qa_session" in sqls
+    assert "INSERT INTO qa_turn" in sqls
+    assert "UPDATE qa_session" in sqls
+    assert qa_logger._STORE.get(sid) is None  # store 未被觸碰
+    assert qa_logger._STORE.turns(sid) == []
