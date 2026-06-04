@@ -297,12 +297,8 @@ async def qa_stream(request: Request, question: str, session_id: str | None = No
         # 只帶成功輪進歷史：斷線半截 turn（answer=null/success=false）不污染上下文
         history = build_history_from_turns(turns)
     else:
+        # create_session 無 DB → ephemeral uuid（不再回 None）→ 移除 DB-unavailable SSE error 死路徑。
         session_id = await create_session(pool)
-        if session_id is None:
-            async def _err():
-                yield _sse("error", {"error_type": "ServiceUnavailable",
-                                     "message": "Cannot create session (DB unavailable)"})
-            return EventSourceResponse(_err(), ping=15)
 
     async def event_gen():
         meta = load_courses_meta()
