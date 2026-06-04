@@ -130,6 +130,23 @@ async def update_qa_judge(pool, turn_id: int, scores: dict) -> None:
         print(f"[qa_logger] update_qa_judge failed for turn {turn_id}: {e}")
 
 
+def build_history_from_turns(turns: list[dict]) -> list[dict]:
+    """從 qa_turn 列轉出多輪問答歷史，**過濾掉失敗/半截輪**避免污染上下文。
+
+    保留條件：success 為真（若無 success 欄則以 answer 非空為準）且 answer 去空白後非空。
+    斷線寫下的半截 turn（answer=null、success=false）會被排除，不帶進 build_qa_contents。
+    """
+    history: list[dict] = []
+    for t in turns:
+        answer = t.get("answer")
+        if not answer or not str(answer).strip():
+            continue
+        if "success" in t and not t.get("success"):
+            continue
+        history.append({"question": t.get("question"), "answer": answer})
+    return history
+
+
 async def get_session_turns(pool, session_id: str) -> list[dict]:
     """Fetch all turns for a session ordered by turn_number."""
     if pool is None:

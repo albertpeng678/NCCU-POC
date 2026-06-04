@@ -31,7 +31,7 @@ from backend.qa import (
 from backend.qa_judge import evaluate_qa
 from backend.qa_logger import (
     create_session, get_session, insert_turn, bump_session,
-    update_qa_judge, get_session_turns,
+    update_qa_judge, get_session_turns, build_history_from_turns,
 )
 
 load_dotenv()
@@ -259,7 +259,8 @@ async def qa_stream(request: Request, question: str, session_id: str | None = No
             return EventSourceResponse(_err(), ping=15)
         turn_number = (sess.get("turn_count") or 0) + 1
         turns = await get_session_turns(pool, session_id)
-        history = [{"question": t.get("question"), "answer": t.get("answer")} for t in turns]
+        # 只帶成功輪進歷史：斷線半截 turn（answer=null/success=false）不污染上下文
+        history = build_history_from_turns(turns)
     else:
         session_id = await create_session(pool)
         if session_id is None:
@@ -308,9 +309,11 @@ async def qa_stream(request: Request, question: str, session_id: str | None = No
             sentry_sdk.capture_exception(e)
             yield _sse("error", {"error_type": type(e).__name__, "message": str(e)})
 
-        # 串流末持久化 turn
-        await insert_turn(pool, session_id, turn_number, question, result_dict, error)
+        # 串流末持久化：**只在有完整 result_dict（走到 done）時才落 turn + bump**。
+        # 斷線（mid-stream return，result_dict 仍為 None）或純錯誤 → 不寫半截 turn，
+        # 避免 (1) answer=null/success=false 污染歷史 (2) turn_count 不前進導致下一輪 turn_number 重複。
         if result_dict:
+            await insert_turn(pool, session_id, turn_number, question, result_dict, error)
             await bump_session(pool, session_id, "")
 
     return EventSourceResponse(event_gen(), ping=15)
