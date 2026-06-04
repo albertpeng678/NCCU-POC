@@ -624,6 +624,7 @@ function createTypewriter(ansEl){
   // 只有尾端「打字中」的文字放 liveEl，每 tick 重渲染。→ 已完成的表格不會被每 tick 重建。
   const committedEl = document.createElement("span");
   const liveEl = document.createElement("span");
+  liveEl.style.whiteSpace = "pre-wrap";   // 純文字尾端保留換行/空白（表格原始列逐字出現）
   const caretEl = document.createElement("span");
   caretEl.className = "tw-caret";
   ansEl.innerHTML = "";
@@ -642,15 +643,15 @@ function createTypewriter(ansEl){
   }
   function doRender(){
     lastRender = performance.now();
-    const safe = safeMarkdownPrefix(shown);
-    // 把「安全前綴」中超過已 commit 的「完整區塊」(\n\n 為界) append 進 committedEl（只渲染一次，表格不重建）
-    const boundary = safe.lastIndexOf("\n\n");
+    // 已完成區塊（以 \n\n 為界）append 進 committedEl 並渲染成 markdown（只渲染一次，表格不重建→不閃）
+    const boundary = shown.lastIndexOf("\n\n");
     if(boundary > committedLen){
-      committedEl.insertAdjacentHTML("beforeend", mdToHtml(safe.slice(committedLen, boundary)));
+      committedEl.insertAdjacentHTML("beforeend", mdToHtml(shown.slice(committedLen, boundary)));
       committedLen = boundary;
     }
-    // 尾端打字中文字（多為純文字；表格在收尾前都藏著、收尾後直接進 committed）每 tick 重渲染
-    liveEl.innerHTML = mdToHtml(safe.slice(committedLen));
+    // 尾端「打字中」內容用純文字即時顯示（含進行中的表格原始列）→ 逐字有動感、不閃、不空窗；
+    // 該區塊以 \n\n 收尾時才 commit 成渲染後的 markdown（表格/粗體）。
+    liveEl.textContent = shown.slice(committedLen);
     ansEl.scrollIntoView({behavior:"auto", block:"end"});
   }
 

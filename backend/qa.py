@@ -204,6 +204,36 @@ def extract_citations(course_ids: list[str], meta: dict) -> list[dict]:
     return result
 
 
+def extract_citations_by_name(answer: str, meta: dict, limit: int = 6) -> list[dict]:
+    """Fallback：grounding 沒附 citations 時，掃描答案中出現的『知識庫真實課名』→ 視為引用。
+
+    模型常用 file_search 內容作答但未附 grounding_metadata，使 citations 空、防幻覺 override 誤觸發。
+    這裡用「答案是否提到 meta 中存在的課名」補回 citations：有真課名就不算幻覺。
+    同名（跨掛）只取一筆；課名長度 < 3 跳過避免雜訊。
+    """
+    if not answer:
+        return []
+    seen_names: set[str] = set()
+    result = []
+    for cid, m in meta.items():
+        name = (m or {}).get("name") or ""
+        if len(name) < 3 or name in seen_names:
+            continue
+        if name in answer:
+            seen_names.add(name)
+            result.append({
+                "course_id": cid,
+                "name": name,
+                "department": m.get("department", ""),
+                "teacher": m.get("teacher", ""),
+                "credits": m.get("credits"),
+                "syllabus_url": m.get("syllabus_url", ""),
+            })
+            if len(result) >= limit:
+                break
+    return result
+
+
 def _iter_text_items(response):
     """Yield text-type content items, compatible with both SDK shapes.
 
@@ -415,6 +445,8 @@ async def stream_answer(
 
     chunks: list = []
     answer_text = ""
+    emitted = 0          # 已往前端吐出的 answer_text 字元數
+    fence_done = False   # 偵測到 ```json fence 後不再吐 token（JSON 包裝不該串給使用者看）
     stream = await client.aio.models.generate_content_stream(
         model="gemini-2.5-flash",
         contents=contents,
@@ -423,9 +455,27 @@ async def stream_answer(
     async for chunk in stream:
         chunks.append(chunk)
         text = getattr(chunk, "text", None)
-        if text:
-            answer_text += text
-            yield {"event": "token", "data": {"text": text}}
+        if not text:
+            continue
+        answer_text += text          # 完整累積（供 done 解析），但只串流 ```json 之前的乾淨 prose
+        if fence_done:
+            continue
+        idx = answer_text.find("```")
+        if idx == -1:
+            # 尚無 fence：保留尾端 2 字當緩衝，避免吐出半截 `` 下一塊才湊成 ```
+            safe = max(emitted, len(answer_text) - 2)
+            if safe > emitted:
+                yield {"event": "token", "data": {"text": answer_text[emitted:safe]}}
+                emitted = safe
+        else:
+            if idx > emitted:
+                yield {"event": "token", "data": {"text": answer_text[emitted:idx]}}
+            emitted = idx
+            fence_done = True
+
+    # 全程無 ```json fence（防禦：理論上 prompt 一定有）→ 補吐保留的尾端緩衝
+    if not fence_done and emitted < len(answer_text):
+        yield {"event": "token", "data": {"text": answer_text[emitted:]}}
 
     course_ids = extract_course_ids_from_chunks(chunks)
     yield {"event": "done", "data": {

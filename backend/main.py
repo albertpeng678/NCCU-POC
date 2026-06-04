@@ -24,7 +24,7 @@ from backend.logger import build_log_record, insert_log, update_judge_scores
 from backend.judge import evaluate_recommendation
 from backend.db import init_pool, close_pool, get_pool
 from backend.qa import (
-    answer_question, extract_citations,
+    answer_question, extract_citations, extract_citations_by_name,
     should_override_no_results, NO_RESULTS_MESSAGE,
     stream_answer, parse_qa_response,
 )
@@ -283,7 +283,10 @@ async def qa_stream(request: Request, question: str, session_id: str | None = No
                     citations = extract_citations(ev["data"]["course_ids"], meta)
                     answer = parsed["answer"]
                     followups = parsed["followup_suggestions"]
-                    # 防幻覺：citations 空卻列具體課程 → 覆寫
+                    # grounding 沒附 citations → 用「答案提到的真實課名」補（模型常 grounded 卻沒帶 metadata）
+                    if not citations:
+                        citations = extract_citations_by_name(answer, meta)
+                    # 真的查無（grounding 空 + 答案沒提到任何真實課名）→ 才覆寫防幻覺，不蓋掉已串流的真答案
                     if should_override_no_results(answer, citations):
                         answer = NO_RESULTS_MESSAGE
                         followups = []

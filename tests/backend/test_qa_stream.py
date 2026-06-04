@@ -23,7 +23,6 @@ async def _aiter(items):
 
 
 def _fake_stream_client(chunks):
-    # generate_content_stream 是 async def 回傳 async iterator → AsyncMock，return_value 為 async gen
     aio = SimpleNamespace(models=SimpleNamespace(
         generate_content_stream=AsyncMock(return_value=_aiter(chunks))))
     return SimpleNamespace(aio=aio)
@@ -33,14 +32,18 @@ async def _collect(gen):
     return [ev async for ev in gen]
 
 
+def _joined_tokens(events):
+    return "".join(e["data"]["text"] for e in events if e["event"] == "token")
+
+
 @pytest.mark.asyncio
 async def test_stream_yields_tokens_then_done():
     chunks = [_chunk("政治學"), _chunk(" 很棒", course_id="000211012")]
     client = _fake_stream_client(chunks)
     events = await _collect(stream_answer(client, "store", "問政治學", history=None))
 
-    tokens = [e["data"]["text"] for e in events if e["event"] == "token"]
-    assert tokens == ["政治學", " 很棒"]
+    # token 可能被重新分塊（緩衝），驗串接後全文
+    assert _joined_tokens(events) == "政治學 很棒"
 
     done = [e for e in events if e["event"] == "done"]
     assert len(done) == 1
@@ -54,6 +57,29 @@ async def test_stream_skips_empty_text_chunks():
     chunks = [_chunk(""), _chunk("有字"), _chunk(None)]
     client = _fake_stream_client(chunks)
     events = await _collect(stream_answer(client, "store", "q", history=None))
-    tokens = [e for e in events if e["event"] == "token"]
-    assert len(tokens) == 1
-    assert tokens[0]["data"]["text"] == "有字"
+    assert _joined_tokens(events) == "有字"
+
+
+@pytest.mark.asyncio
+async def test_stream_stops_tokens_at_json_fence():
+    """串流到 ```json 包裝就停止吐 token（不串 JSON 給使用者），但 answer_text 仍含全文供解析。"""
+    chunks = [
+        _chunk("這是答案說明。\n\n"),
+        _chunk("| 課程 | 系所 |\n| --- | --- |\n| A | B |\n\n"),
+        _chunk('```json\n{"answer": "這是答案說明。", "followup_suggestions": []}\n```',
+               course_id="000211012"),
+    ]
+    client = _fake_stream_client(chunks)
+    events = await _collect(stream_answer(client, "store", "q", history=None))
+
+    streamed = _joined_tokens(events)
+    # 串給前端的不含 JSON 包裝
+    assert "```json" not in streamed
+    assert '"answer"' not in streamed
+    # 但乾淨 prose + 表格有串出去
+    assert "這是答案說明" in streamed
+    assert "| 課程 | 系所 |" in streamed
+    # done 的 answer_text 仍是完整原文（供 parse_qa_response 解析）
+    done = [e for e in events if e["event"] == "done"][0]
+    assert "```json" in done["data"]["answer_text"]
+    assert done["data"]["course_ids"] == ["000211012"]
