@@ -59,9 +59,13 @@ def reset_ephemeral_store() -> None:
 
 
 async def create_session(pool) -> Optional[str]:
-    """Insert a new qa_session row. Returns session id as str, or None on failure."""
+    """Insert a new qa_session row. Returns session id as str.
+
+    無 DB（pool is None）→ 回 ephemeral uuid 並註冊進 _STORE（不再回 None）。
+    DB 在但 INSERT 失敗 → 仍回 None（上層另行處理）。
+    """
     if pool is None:
-        return None
+        return _STORE.create()
     try:
         async with pool.acquire() as conn:
             return await conn.fetchval(

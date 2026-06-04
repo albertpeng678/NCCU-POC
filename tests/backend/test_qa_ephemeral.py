@@ -45,3 +45,24 @@ def test_reset_ephemeral_store_clears_module_singleton():
     assert qa_logger._STORE.get(sid) is not None
     reset_ephemeral_store()
     assert qa_logger._STORE.get(sid) is None
+
+
+# ---------- F1：無 DB create → uuid 格式、非 None、非 503 ----------
+
+_HEX32 = re.compile(r"^[0-9a-f]{32}$")
+
+
+@pytest.mark.asyncio
+async def test_create_session_no_db_returns_uuid():
+    sid = await create_session(None)          # pool=None → 走 ephemeral
+    assert sid is not None
+    assert _HEX32.match(sid), f"expected uuid4().hex, got {sid!r}"
+    # 已註冊進 store → 後續可讀回
+    assert qa_logger._STORE.get(sid) == {"last_interaction_id": None, "turn_count": 0}
+
+
+@pytest.mark.asyncio
+async def test_create_session_no_db_unique_ids():
+    a = await create_session(None)
+    b = await create_session(None)
+    assert a != b
