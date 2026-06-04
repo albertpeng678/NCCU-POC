@@ -94,6 +94,9 @@ NCCU-poc/
 11. **前端快取**：靜態資源連結帶 `?v=N`（cache-bust）；更新前端時 bump 版本，避免瀏覽器拿到舊 CSS/JS（曾導致「很醜/寬度跳/null.classList 崩」）。
 12. **生成模型固定 `gemini-2.5-flash`**：使用者明確要求**不可為提速換 `gemini-2.5-flash-lite`**（lite 快 3.8x 但品質低約 10%）。提速只能用不犧牲品質的手段（降輸出/合併呼叫/快取/等待UX）。
 13. **CORS 本機坑**：`.env` 的 `ALLOWED_ORIGIN` 是部署用佔位符（`https://your-frontend...`）；本機起 backend 要用 `ALLOWED_ORIGIN=* python -m uvicorn ...` 覆蓋，否則擋 localhost:3000。
+14. **SSE 串流（Session 3）**：新增 `GET /recommend/stream`（5 階段事件）、`GET /qa/stream`（逐 token + done）；舊 `POST` 保留當 fallback。前端 EventSource + 階段 stepper + 打字機。**詳見 HANDOFF「★ Session 3」**。
+15. **grounding 對 prompt 極敏感（不可踩）**：`config.system_instruction` 的人設會讓 2.5-flash 跳過 file_search → 罐頭答案。qa.py 的 `_SYSTEM_INSTRUCTION` 首段「【鐵則・最高優先】先檢索」**不可移除**。**拿掉 JSON 包裝改純 Markdown 會破壞 grounding（已回退）。**
+16. **429 真因＝SDK 預設 timeout 60s**（非單純速率）：recommend ~80-100s > 60s → 逾時→重試→請求分裂→燒 RPM。解：`HttpOptions(timeout=180_000)`（main.py）。embedding 429 同源（重試重複嵌入問句，free tier 100 RPM）。
 
 ## 環境變數（`.env`，gitignored）
 

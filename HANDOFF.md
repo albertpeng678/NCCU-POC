@@ -1,7 +1,36 @@
 # NCCU 課程推薦系統 — 交接文件（HANDOFF.md）
 
 > 專案進展史 + WBS + 待辦。給接手的 agent 快速掌握「做到哪、還剩什麼」。
-> 最後更新：2026-06-04（Session 2 後期）
+> 最後更新：2026-06-04（**Session 3**：串流 UX 實作 + 多項根因除錯）
+
+---
+
+## ★ Session 3 交接（最新，換機器接手必讀）★
+
+> 分支 **`feat/streaming-ux`**（已 push）。串流 UX 已端到端跑通並真實 E2E 驗證；過程踩到並查清三個關鍵根因。
+
+### 已完成且 E2E 驗證
+- **問答(/qa)串流**：grounding 真檢索 → 真答案 + Markdown 表格 + citations + followup，無罐頭、無 JSON 洩漏。打字機（committed/live 分離防頻閃、尾端純文字逐字避免空窗）。
+- **推薦(/recommend)串流**：5 階段 SSE 即時進度（understand/retrieve/filter/compose/finalize）+ 前端 stepper。
+- **QA 等待 UX**：借鑑使用者自己的參考 bot（Albert Assistant @ web-production-40bdc.up.railway.app）——首 token 前在泡泡內顯示 **5 階段垂直 stepper**（理解問題→翻閱課綱→比對重點→整理段落→最後潤飾，done/active/pending + 細漸層進度條）+ spinner，首 token 到切打字機。
+- 大量前端 bug 修復：拿掉巨大 spinner/進度條、矮視窗滾不到底、QA 縮成一塊、表格頻閃、副標題跑版、手機「+新對話」改 icon、QA 改穩固 flex chat 佈局。
+- 後端健壯化（F3/F5 已合併）：qa_stream 斷線不寫半截 turn + 歷史過濾失敗輪；recommend_stream 補 logging/judge。
+- 後端測試 95 passing。前端資源版本到 **?v=12**。
+
+### 🔑 三個查清的根因（詳見 memory `project-qa-grounding-429`）
+1. **grounding 對 prompt 極敏感**：`config.system_instruction` 的人設會讓 2.5-flash 跳過 file_search → grounding=0 → citations 空 → 防幻覺 override 誤觸發 → **罐頭答案**。解：system_instruction 最前面加「【鐵則・最高優先】回答前務必先檢索」（qa.py 已有，**不可移除**）。⚠️ **拿掉 JSON 包裝改純 Markdown 會破壞 grounding（實測 3/3=0），已回退**；no-JSON 要保 grounding 需 lean-prompt 重寫（未做）。
+2. **429「high demand」真因＝SDK 預設 timeout 60s**：recommend 檢索/分組單次 ~80-100s > 60s → client 逾時、伺服器仍跑 → retry 送新請求/重新嵌入 → 分裂成多併發 → 燒爆 RPM → 429 風暴。解：`HttpOptions(timeout=180_000)`（main.py 已改）。**同把 key 下參考 bot 穩、我們爆的差別就在此（它快查詢只嵌入 1 次）**。
+3. **embedding 429「Failed to embed content」**：`gemini-embedding-001` free tier 100 RPM。我們慢檢索+timeout 重試把同一問句嵌入多次 → 爆；參考 bot 快查詢只嵌入 1 次 → 不爆。timeout 修復後正常單一使用不會中（主要是密集測試燒的）。
+
+### ⛔ 待辦（換機器回家做，依優先）
+1. **★ metadata-drop 修復 port（高，會嚴重削弱資料）**：`join_metadata`(recommend.py:114) 靜默丟掉 LLM 抄錯 9 碼 course_id 的課 → topk 檢索 ~10 門最後只回 3 門。**修法已由 agent 做好**（name 索引修正 + 前 6 碼前綴復原 + 共用 build_groups helper + 14 測試），但 **agent fork 錯基底、只修了非串流的兩個 pipeline、缺 `stream_recommendation`**。已 push 分支 **`wip/recommend-courseid-recovery`**——回家 `git fetch` 後把該分支的 recommend.py 修法 port 到 feat/streaming-ux 的 `stream_recommendation`（也走 build_groups），跑 95+ 測試，live E2E（等 embedding 額度冷卻）。
+2. **F1 等待疲勞修復決策**（中）：agent 做好了（ETA 校準 50→100s、區間措辭、retrieve 微動、超時文案、輪播擴充），但**為 retrieve 微動把進度條加回來了**——與你之前「拿掉推薦進度條」衝突，**需你決定要不要那條細進度條**。已 push 分支 **`wip/wait-fatigue-f1`**。
+3. 其餘 F2（防自動重連重跑）、V（跨裝置/Sentry 驗收）、部署 D1-D6（見下）。
+
+### 換機器須知
+- `.env` gitignored，新機器要自建：`FILE_SEARCH_STORE_NAME=fileSearchStores/nccucourses1142-znuka50qq2y2`（full store 2714 docs），同一把 `GEMINI_API_KEY`，`ALLOWED_ORIGIN=*`（本機）。
+- 本機後端起法：`DATABASE_URL=... ALLOWED_ORIGIN=* python -m uvicorn backend.main:app --port 8000 --host 127.0.0.1`；前端 `python -m http.server 3000`（frontend 目錄）。前端本機測試要把 `CONFIG.API_URL` 指到 `http://127.0.0.1:8000`（避免 localhost→::1）。
+- 已 push 分支：`feat/streaming-ux`（主）、`wip/recommend-courseid-recovery`（metadata 修法待 port）、`wip/wait-fatigue-f1`（F1 待決策）。
 
 ---
 
