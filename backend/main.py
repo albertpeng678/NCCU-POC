@@ -233,9 +233,8 @@ async def qa(req: QaRequest, background_tasks: BackgroundTasks):
         prev_interaction_id = sess.get("last_interaction_id")
         turn_number = (sess.get("turn_count") or 0) + 1
     else:
+        # create_session 在無 DB 時回 ephemeral uuid（不再回 None）→ 移除硬性 503 死路徑。
         session_id = await create_session(pool)
-        if session_id is None:
-            raise HTTPException(status_code=503, detail="Cannot create session (DB unavailable)")
 
     # Call Gemini
     result = None
