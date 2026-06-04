@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=12">
+  <link rel="stylesheet" href="style.css?v=13">
 </head>
 <body>
   <!-- ambient background orbs handled in CSS via body::before/::after -->
@@ -124,7 +124,7 @@
     <!-- Q&A sticky composer (only visible in QA mode) -->
     <div id="qa-composer" class="qa-composer" hidden>
       <div class="qa-composer-inner">
-        <div class="qa-session-bar"><span id="qa-session-label">新對話</span></div>
+        <div class="qa-session-bar"><span id="qa-session-label" data-testid="qa-session-label">新對話</span></div>
         <div class="qa-input-wrap">
           <input id="qa-input" type="text" placeholder="問任何關於課程的問題…" autocomplete="off" aria-label="輸入問題">
           <button id="qa-send" class="qa-send" type="button" aria-label="送出問題" disabled>↑</button>
@@ -156,7 +156,7 @@
   <!-- Markdown 渲染（Q&A 答案）+ XSS sanitize；內容來自 LLM 故必經 DOMPurify -->
   <script src="https://cdn.jsdelivr.net/npm/marked@15.0.7/marked.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.4/dist/purify.min.js"></script>
-  <script src="careers.js?v=12"></script>
-  <script src="app.js?v=12"></script>
+  <script src="careers.js?v=13"></script>
+  <script src="app.js?v=13"></script>
 </body>
 </html>

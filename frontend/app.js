@@ -1,9 +1,11 @@
 // app.js — NCCU Course Map frontend logic
 const CONFIG = {
   // Local dev default; overwrite before Railway deploy.
-  API_URL: (location.hostname === "localhost" || location.hostname === "127.0.0.1")
-    ? "http://localhost:8000"
-    : "https://nccu-backend.up.railway.app",
+  // window.__API_URL__ 由 Playwright e2e addInitScript 注入，可覆蓋指定 backend port（qa-with-db/qa-no-db）。
+  API_URL: (window.__API_URL__ ||
+    ((location.hostname === "localhost" || location.hostname === "127.0.0.1")
+      ? "http://localhost:8000"
+      : "https://nccu-backend.up.railway.app")),
   // Sentry DSN（公開可安全放原始碼）；留空則停用。Sentry 專案 nccu-poc（org albert-ar）。
   SENTRY_DSN: "https://eb5ebaf502bf1590ef5f87da67282518@o4511451335622656.ingest.us.sentry.io/4511504292904960",
 };
@@ -702,7 +704,7 @@ function appendBotBubble(data){
   let html = renderAnswerHtml(data.answer || "");
   // citations
   if(Array.isArray(data.citations) && data.citations.length){
-    let cites = `<div class="cites"><div class="cites-label">參考課綱</div>`;
+    let cites = `<div class="cites" data-testid="qa-citations"><div class="cites-label">參考課綱</div>`;
     data.citations.forEach((c,i)=>{
       cites += `<a class="cite" href="${escHtml(c.syllabus_url)}" target="_blank" rel="noopener noreferrer">`
         + `<span class="num">${i+1}</span>`
@@ -731,7 +733,7 @@ function appendBotBubble(data){
 function buildCitesAndFollowups(data){
   let html = "";
   if(Array.isArray(data.citations) && data.citations.length){
-    let cites = `<div class="cites"><div class="cites-label">參考課綱</div>`;
+    let cites = `<div class="cites" data-testid="qa-citations"><div class="cites-label">參考課綱</div>`;
     data.citations.forEach((c,i)=>{
       cites += `<a class="cite" href="${escHtml(c.syllabus_url)}" target="_blank" rel="noopener noreferrer">`
         + `<span class="num">${i+1}</span>`
@@ -786,6 +788,7 @@ function askQuestion(question){
   // 建立 bot 氣泡（含 .ans 給打字機寫）
   const bubble = document.createElement("div");
   bubble.className = "bubble bot";
+  bubble.setAttribute("data-testid", "qa-answer");   // e2e locator anchor
   const ans = document.createElement("div");
   ans.className = "ans";
   bubble.appendChild(ans);
@@ -858,6 +861,7 @@ function startStreamQa(question, bubble, ans){
     settled = true; clearTimeout(guard); closeQaEs();
     let data; try{ data = JSON.parse(ev.data); }catch(_){ data = {}; }
     qaSessionId = data.session_id || qaSessionId;
+    window.__lastQaSessionId__ = qaSessionId;   // e2e hook: with-DB 測試讀回 session 用
     qaTurnCount = data.turn_number || (qaTurnCount + 1);
     qaSessionLabel.textContent = `SESSION · 第 ${qaTurnCount} 輪對話`;
     const renderFinal = ()=>{
@@ -901,6 +905,7 @@ async function askQuestionFallback(question, bubble, ans){
     }
     const data = await resp.json();
     qaSessionId = data.session_id;
+    window.__lastQaSessionId__ = qaSessionId;   // e2e hook: with-DB 測試讀回 session 用
     qaTurnCount = data.turn_number || (qaTurnCount + 1);
     qaSessionLabel.textContent = `SESSION · 第 ${qaTurnCount} 輪對話`;
     // client 端打字機播放完整答案
