@@ -574,9 +574,10 @@ function safeMarkdownPrefix(raw){
   const tailStart = text.lastIndexOf("\n\n");
   const tail = tailStart >= 0 ? text.slice(tailStart+2) : text;
   const tailIsTable = /^\s*\|/.test(tail) || /\n\s*\|/.test(tail);
-  const endsClean = /\n\s*$/.test(text);
+  // 表格視為「完成」只在其後出現空行(\n\n)；單一 \n 不算 → 避免表格落入尾端 live 區被每 tick 重建而頻閃
+  const endsClean = /\n[^\S\n]*\n[^\S\n]*$/.test(text);
   if(tailIsTable && !endsClean){
-    cut = tailStart >= 0 ? tailStart : 0;   // 整塊表格延後到收尾
+    cut = tailStart >= 0 ? tailStart : 0;   // 整塊表格延後到收尾（空行）
   }
   let prefix = text.slice(0, cut);
   // (b) 未閉合的 ** ：count 為奇數則砍掉最後一個 ** 之後
@@ -588,18 +589,21 @@ function safeMarkdownPrefix(raw){
   return prefix;
 }
 
-function renderSafeMarkdown(raw){
-  const prefix = safeMarkdownPrefix(raw);
+// marked + DOMPurify（不含 safe-prefix 處理）；輸入須已是可安全渲染的文字
+function mdToHtml(text){
   if (typeof marked === "undefined" || typeof DOMPurify === "undefined"){
-    return `<div class="ans">${escHtml(prefix).replace(/\n/g,"<br>")}</div>`;
+    return escHtml(text).replace(/\n/g,"<br>");
   }
-  const html = marked.parse(prefix, {breaks:true, gfm:true});
-  const safe = DOMPurify.sanitize(html, {
+  const html = marked.parse(text, {breaks:true, gfm:true});
+  return DOMPurify.sanitize(html, {
     ALLOWED_TAGS: ["p","br","strong","em","u","h1","h2","h3","h4","ul","ol","li",
                    "table","thead","tbody","tr","th","td","blockquote","code","pre","a","hr"],
     ALLOWED_ATTR: ["href","target","rel"],
   });
-  return safe;   // 不含外層 .ans，由打字機容器負責
+}
+
+function renderSafeMarkdown(raw){
+  return mdToHtml(safeMarkdownPrefix(raw));   // 不含外層 .ans，由打字機容器負責
 }
 
 // 固定節奏打字機：token 進緩衝，定時吐字（與到達速度脫鉤）
@@ -616,6 +620,18 @@ function createTypewriter(ansEl){
   let renderTimer = null;
   let lastRender = 0;
 
+  // 防頻閃：已完成的區塊（以 \n\n 為界）只渲染一次、append 進 committedEl 後不再動它；
+  // 只有尾端「打字中」的文字放 liveEl，每 tick 重渲染。→ 已完成的表格不會被每 tick 重建。
+  const committedEl = document.createElement("span");
+  const liveEl = document.createElement("span");
+  const caretEl = document.createElement("span");
+  caretEl.className = "tw-caret";
+  ansEl.innerHTML = "";
+  ansEl.appendChild(committedEl);
+  ansEl.appendChild(liveEl);
+  ansEl.appendChild(caretEl);
+  let committedLen = 0;   // 已 commit 的 shown 字元數
+
   function scheduleRender(){
     const now = performance.now();
     if(now - lastRender >= RENDER_THROTTLE){
@@ -626,7 +642,15 @@ function createTypewriter(ansEl){
   }
   function doRender(){
     lastRender = performance.now();
-    ansEl.innerHTML = renderSafeMarkdown(shown) + `<span class="tw-caret"></span>`;
+    const safe = safeMarkdownPrefix(shown);
+    // 把「安全前綴」中超過已 commit 的「完整區塊」(\n\n 為界) append 進 committedEl（只渲染一次，表格不重建）
+    const boundary = safe.lastIndexOf("\n\n");
+    if(boundary > committedLen){
+      committedEl.insertAdjacentHTML("beforeend", mdToHtml(safe.slice(committedLen, boundary)));
+      committedLen = boundary;
+    }
+    // 尾端打字中文字（多為純文字；表格在收尾前都藏著、收尾後直接進 committed）每 tick 重渲染
+    liveEl.innerHTML = mdToHtml(safe.slice(committedLen));
     ansEl.scrollIntoView({behavior:"auto", block:"end"});
   }
 
@@ -646,8 +670,9 @@ function createTypewriter(ansEl){
   }
 
   function finalRender(){
-    // 收尾：完整渲染（含被藏起來的表格/未閉合修正後內容）+ 移除游標
-    ansEl.innerHTML = renderSafeMarkdown(shown);
+    // 收尾：一次性完整渲染全文（含尾端被藏的內容），移除游標與分段容器
+    caretEl.remove();
+    ansEl.innerHTML = mdToHtml(shown);
   }
   function stop(){
     if(typeTimer){ clearTimeout(typeTimer); typeTimer=null; }
