@@ -17,7 +17,7 @@
 - 後端健壯化（F3/F5 已合併）：qa_stream 斷線不寫半截 turn + 歷史過濾失敗輪；recommend_stream 補 logging/judge。
 - 後端測試 95 passing。前端資源版本到 **?v=12**。
 
-### 🔑 三個查清的根因（詳見 memory `project-qa-grounding-429`）
+### 🔑 三個查清的根因（以下即完整版；memory 僅原機器本地有，新機器看這裡即可）
 1. **grounding 對 prompt 極敏感**：`config.system_instruction` 的人設會讓 2.5-flash 跳過 file_search → grounding=0 → citations 空 → 防幻覺 override 誤觸發 → **罐頭答案**。解：system_instruction 最前面加「【鐵則・最高優先】回答前務必先檢索」（qa.py 已有，**不可移除**）。⚠️ **拿掉 JSON 包裝改純 Markdown 會破壞 grounding（實測 3/3=0），已回退**；no-JSON 要保 grounding 需 lean-prompt 重寫（未做）。
 2. **429「high demand」真因＝SDK 預設 timeout 60s**：recommend 檢索/分組單次 ~80-100s > 60s → client 逾時、伺服器仍跑 → retry 送新請求/重新嵌入 → 分裂成多併發 → 燒爆 RPM → 429 風暴。解：`HttpOptions(timeout=180_000)`（main.py 已改）。**同把 key 下參考 bot 穩、我們爆的差別就在此（它快查詢只嵌入 1 次）**。
 3. **embedding 429「Failed to embed content」**：`gemini-embedding-001` free tier 100 RPM。我們慢檢索+timeout 重試把同一問句嵌入多次 → 爆；參考 bot 快查詢只嵌入 1 次 → 不爆。timeout 修復後正常單一使用不會中（主要是密集測試燒的）。
