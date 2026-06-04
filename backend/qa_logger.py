@@ -107,21 +107,38 @@ async def insert_turn(
 ) -> Optional[int]:
     """Insert a qa_turn row. result is the answer_question dict or None.
     Returns the new row id, or None on failure.
-    """
-    if pool is None:
-        return None
-    try:
-        success = error is None and result is not None
-        answer = result.get("answer") if result else None
-        citations = result.get("citations_course_ids", []) if result else []
-        citation_count = len(citations)
-        citations_json = json.dumps(citations) if citations else None
-        followup = result.get("followup_suggestions", []) if result else []
-        followup_json = json.dumps(followup) if followup else None
-        latency_ms = result.get("latency_ms") if result else None
-        error_type = type(error).__name__ if error else None
-        error_message = str(error)[:500] if error else None
 
+    無 DB → 把對齊 DB row 形狀的 turn dict 寫進 _STORE，回 store 內序號（>0、非 None）。
+    """
+    success = error is None and result is not None
+    answer = result.get("answer") if result else None
+    citations = result.get("citations_course_ids", []) if result else []
+    citation_count = len(citations)
+    citations_json = json.dumps(citations) if citations else None
+    followup = result.get("followup_suggestions", []) if result else []
+    followup_json = json.dumps(followup) if followup else None
+    latency_ms = result.get("latency_ms") if result else None
+    error_type = type(error).__name__ if error else None
+    error_message = str(error)[:500] if error else None
+
+    if pool is None:
+        # 形狀對齊 DB row（含 build_history_from_turns 需要的 question/answer/success）。
+        turn = {
+            "session_id": session_id,
+            "turn_number": turn_number,
+            "question": question,
+            "answer": answer,
+            "citation_count": citation_count,
+            "citations_json": citations,
+            "followup_json": followup,
+            "latency_ms": latency_ms,
+            "success": success,
+            "error_type": error_type,
+            "error_message": error_message,
+        }
+        return _STORE.add_turn(session_id, turn)
+
+    try:
         async with pool.acquire() as conn:
             return await conn.fetchval(
                 """INSERT INTO qa_turn (
@@ -208,9 +225,12 @@ def build_history_from_turns(turns: list[dict]) -> list[dict]:
 
 
 async def get_session_turns(pool, session_id: str) -> list[dict]:
-    """Fetch all turns for a session ordered by turn_number."""
+    """Fetch all turns for a session ordered by turn_number.
+
+    無 DB → 回 _STORE 內該 session 的 turns（插入順序即 turn_number 順序）；查無回 []。
+    """
     if pool is None:
-        return []
+        return _STORE.turns(session_id)
     try:
         async with pool.acquire() as conn:
             rows = await conn.fetch(

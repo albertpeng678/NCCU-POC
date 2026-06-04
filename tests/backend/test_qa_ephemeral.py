@@ -83,3 +83,33 @@ async def test_get_session_no_db_hits_just_created():
 async def test_get_session_no_db_unknown_returns_none_no_raise():
     sess = await get_session(None, "ffffffffffffffffffffffffffffffff")
     assert sess is None
+
+
+# ---------- F3（寫入）：無 DB insert_turn → 寫進 store，回非 None turn_id ----------
+
+@pytest.mark.asyncio
+async def test_insert_turn_no_db_writes_store_and_returns_id():
+    sid = await create_session(None)
+    result = {
+        "answer": "政治學不錯",
+        "citations_course_ids": ["000211012"],
+        "followup_suggestions": ["要不要看國際關係？"],
+        "latency_ms": 1234,
+    }
+    tid = await insert_turn(None, sid, 1, "問政治學", result, None)
+    assert tid is not None and tid > 0
+    turns = await get_session_turns(None, sid)
+    assert len(turns) == 1
+    assert turns[0]["question"] == "問政治學"
+    assert turns[0]["answer"] == "政治學不錯"
+    assert turns[0]["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_insert_turn_no_db_failed_turn_marks_success_false():
+    sid = await create_session(None)
+    tid = await insert_turn(None, sid, 1, "壞問題", None, RuntimeError("boom"))
+    assert tid is not None
+    turns = await get_session_turns(None, sid)
+    assert turns[0]["success"] is False
+    assert turns[0]["answer"] is None
