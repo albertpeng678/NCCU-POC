@@ -77,9 +77,12 @@ async def create_session(pool) -> Optional[str]:
 
 
 async def get_session(pool, session_id: str) -> Optional[dict]:
-    """Fetch session row. Returns {last_interaction_id, turn_count} or None."""
+    """Fetch session row. Returns {last_interaction_id, turn_count} or None.
+
+    無 DB → 查 _STORE；查無回 None（上層把 None 當「新 session 開」，不 raise/不 503）。
+    """
     if pool is None:
-        return None
+        return _STORE.get(session_id)
     try:
         async with pool.acquire() as conn:
             row = await conn.fetchrow(

@@ -66,3 +66,20 @@ async def test_create_session_no_db_unique_ids():
     a = await create_session(None)
     b = await create_session(None)
     assert a != b
+
+
+# ---------- F2：無 DB get 剛建 session → 命中 ----------
+
+@pytest.mark.asyncio
+async def test_get_session_no_db_hits_just_created():
+    sid = await create_session(None)
+    sess = await get_session(None, sid)
+    assert sess == {"last_interaction_id": None, "turn_count": 0}
+
+
+# ---------- F4（一半）：無 DB get 不存在 → None（不 raise、不 503）----------
+
+@pytest.mark.asyncio
+async def test_get_session_no_db_unknown_returns_none_no_raise():
+    sess = await get_session(None, "ffffffffffffffffffffffffffffffff")
+    assert sess is None
