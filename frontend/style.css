@@ -301,3 +301,23 @@ body.qa-active .hero{padding-bottom:200px}
 .no-match-card .nm-cta{font-family:"Chakra Petch";font-size:14px;letter-spacing:.04em;color:var(--navy-void);background:var(--cyan);border:none;border-radius:24px;padding:11px 26px;cursor:pointer;box-shadow:0 0 20px var(--cyan-dim);transition:transform .15s}
 .no-match-card .nm-cta:hover{transform:translateY(-2px)}
 .no-match-card .nm-cta:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
+
+/* 等待 UX（NNgroup：分步驟進度+預估+輪播） */
+.load-card{width:min(520px,90vw);background:var(--glass);border:1px solid var(--glass-brd);border-radius:16px;padding:24px 26px;backdrop-filter:blur(12px);text-align:left}
+.load-head{display:flex;align-items:center;gap:16px;margin-bottom:18px}
+.load-head .loader-ring{width:34px;height:34px;flex-shrink:0;margin:0}
+.load-title{font-family:"Chakra Petch";font-size:16px;color:var(--text);margin-bottom:3px}
+.load-eta{font-size:13px;color:var(--text-dim)}
+.load-eta b{color:var(--cyan);font-weight:600}
+.load-bar{height:6px;background:rgba(20,34,68,.7);border-radius:99px;overflow:hidden;margin-bottom:18px}
+.load-bar-fill{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--cyan),#7ad7ff);border-radius:99px}
+.load-steps{list-style:none;display:flex;flex-direction:column;gap:11px;margin:0}
+.load-steps li{display:flex;align-items:center;gap:10px;font-size:13.5px;color:var(--text-dim);transition:color .3s}
+.load-steps li .ld-dot{width:9px;height:9px;border-radius:50%;border:2px solid var(--glass-brd);flex-shrink:0;transition:all .3s}
+.load-steps li.active{color:var(--text)}
+.load-steps li.active .ld-dot{border-color:var(--cyan);animation:ldpulse 1.2s infinite}
+.load-steps li.done{color:rgba(232,240,255,.55)}
+.load-steps li.done .ld-dot{background:var(--cyan);border-color:var(--cyan);animation:none}
+@keyframes ldpulse{0%,100%{box-shadow:0 0 0 3px var(--cyan-dim)}50%{box-shadow:0 0 0 7px transparent}}
+.load-tip{margin-top:16px;font-size:12.5px;color:var(--text-dim);text-align:center;min-height:18px}
+.reroll-ic{vertical-align:-2px;margin-left:3px}

@@ -17,3 +17,5 @@ ingestion_run.log
 scripts/
 .env
 ingestion/docs_cache.jsonl
+backfill*.log
+ingestion/backfill_failed.json

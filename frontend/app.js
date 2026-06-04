@@ -189,6 +189,7 @@ const GROUP_META = [
   {key:"extended",    idx:"03", title:"延伸視野", desc:"跨域拓展、差異化視角"},
 ];
 function renderResults(data){
+  stopLoading();
   loadingEl.hidden = true; errorEl.hidden = true;
   const nm = document.getElementById("no-match"); if(nm) nm.hidden = true;
   resCareer.textContent = data.career;
@@ -219,8 +220,34 @@ function renderResults(data){
 }
 
 // ---------- States ----------
-function showLoading(){ resultsEl.hidden = true; errorEl.hidden = true; loadingEl.hidden = false; loadingEl.scrollIntoView({behavior:"smooth",block:"center"}); }
-function showError(msg){ loadingEl.hidden = true; resultsEl.hidden = true; errorEl.hidden = false; errorMsg.textContent = msg; }
+const LOAD_TIPS = [
+  "正在比對你的職涯所需技能與課程內容…",
+  "從全校 2,700+ 門課綱中逐一篩選相關課程…",
+  "為每門課量身生成推薦理由，請再稍候…",
+  "好課值得等待，馬上就好。",
+];
+let _loadTimers = [];
+function stopLoading(){ _loadTimers.forEach(t=>{clearInterval(t);clearTimeout(t);}); _loadTimers = []; }
+function showLoading(){
+  resultsEl.hidden = true; errorEl.hidden = true;
+  const nm = document.getElementById("no-match"); if(nm) nm.hidden = true;
+  loadingEl.hidden = false;
+  loadingEl.scrollIntoView({behavior:"smooth",block:"center"});
+  stopLoading();
+  const s1=document.getElementById("ld-step1"), s2=document.getElementById("ld-step2");
+  const bar=document.getElementById("load-bar-fill"), tip=document.getElementById("load-tip");
+  if(!s1||!s2||!bar||!tip) return;   // 防禦：缺載入元件（如快取不一致）時只顯示 loading 區、不做動畫，避免崩潰
+  s1.classList.add("active"); s1.classList.remove("done"); s2.classList.remove("active","done");
+  bar.style.transition="none"; bar.style.width="0%";
+  // 進度條 ~70s 緩慢推進到 92%（不填滿，留給真正完成時的瞬間補滿感）
+  requestAnimationFrame(()=>{ bar.style.transition="width 70s cubic-bezier(.1,.6,.25,1)"; bar.style.width="92%"; });
+  // 約 32s 後標記步驟1完成、切到步驟2
+  _loadTimers.push(setTimeout(()=>{ s1.classList.add("done"); s1.classList.remove("active"); s2.classList.add("active"); }, 32000));
+  // 輪播提示，給使用者東西看（NNgroup：降低等待煎熬）
+  let i=0; tip.textContent=LOAD_TIPS[0];
+  _loadTimers.push(setInterval(()=>{ i=(i+1)%LOAD_TIPS.length; tip.textContent=LOAD_TIPS[i]; }, 5000));
+}
+function showError(msg){ stopLoading(); loadingEl.hidden = true; resultsEl.hidden = true; errorEl.hidden = false; errorMsg.textContent = msg; }
 
 // ---------- API ----------
 async function fetchRecommendation(career){
@@ -246,6 +273,7 @@ async function fetchRecommendation(career){
 
 // 清單外且查無 → 溫和訊息卡 + 一鍵導向問答（不卡死）
 function showNoMatch(career, message){
+  stopLoading();
   loadingEl.hidden = true; errorEl.hidden = true; resultsEl.hidden = true;
   let card = document.getElementById("no-match");
   if(!card){

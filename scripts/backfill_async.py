@@ -32,7 +32,12 @@ POLL_DEADLINE = 240
 def load_docs():
     docs = [json.loads(l) for l in CACHE.read_text(encoding="utf-8").splitlines() if l.strip()]
     if ONLY_FAILED:
-        failed = set(json.loads(Path("ingestion/failed_courses.json").read_text())["upload_failed"])
+        # 優先讀本 async run 自己的失敗清單；無則退回 run.py 的 upload_failed
+        bf = Path("ingestion/backfill_failed.json")
+        if bf.exists():
+            failed = set(json.loads(bf.read_text()))
+        else:
+            failed = set(json.loads(Path("ingestion/failed_courses.json").read_text())["upload_failed"])
         docs = [d for d in docs if d["course_id"] in failed]
     if LIMIT > 0:
         docs = docs[:LIMIT]
