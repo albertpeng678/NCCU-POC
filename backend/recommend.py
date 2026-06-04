@@ -15,9 +15,8 @@ _COURSES_META: dict | None = None
 
 
 # --- 多樣性參數（跨次輪替）---
-# 生成模型：flash-lite 輸出快 ~3.8x（887 vs 232 tok/s），擅長萃取/組織任務；
-# retrieval 相關性來自嵌入庫(與模型無關)，LLM 僅整理結果 → 換 lite 大幅提速、品質影響小
-_GEN_MODEL = "gemini-2.5-flash-lite"
+# 生成模型：維持 gemini-2.5-flash（品質優先；flash-lite 雖快但品質低約 10%，使用者要求保留原模型）
+_GEN_MODEL = "gemini-2.5-flash"
 POOL_SIZE = 24       # stage1 檢索候選池大小（降輸出量→降延遲；仍足夠多樣性）
 ANCHOR_COUNT = 4     # 每次必留的最相關門數（保品質）
 SAMPLE_SIZE = 14     # 送進 stage2 的候選數
