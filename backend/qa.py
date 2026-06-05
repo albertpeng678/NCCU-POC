@@ -630,7 +630,7 @@ async def stream_answer(
         system_instruction=_SYSTEM_INSTRUCTION,
         temperature=0.2,
         top_p=0.95,
-        max_output_tokens=2048,
+        max_output_tokens=4096,   # 2048 在「prose+表格+總結」長答案易截斷（thinking 也吃預算）
         tools=[
             types.Tool(
                 file_search=types.FileSearch(

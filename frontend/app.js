@@ -982,7 +982,9 @@ function startStreamQa(question, bubble, ans){
     qaTurnCount = data.turn_number || (qaTurnCount + 1);
     qaSessionLabel.textContent = `SESSION · 第 ${qaTurnCount} 輪對話`;
     const renderFinal = ()=>{
-      if(typeof data.answer === "string" && data.answer) ans.innerHTML = renderSafeMarkdown(data.answer);
+      // 權威完整答案 → 用 mdToHtml 整段渲染（不套串流用的 safeMarkdownPrefix heal，
+      // 否則「以表格列結尾」的答案會被誤砍最後一列、看起來像沒答完）
+      if(typeof data.answer === "string" && data.answer) ans.innerHTML = mdToHtml(data.answer);
       attachCitesAndFollowups(bubble, data);
       finishQaTurn();
     };
