@@ -596,6 +596,20 @@ def answer_question_structured(
     }
 
 
+def _partial_answer(raw: str) -> str:
+    """從半截 JSON 串流文字容錯解出當前 answer 欄位值（json_repair）。失敗回 ''。"""
+    if not raw:
+        return ""
+    try:
+        data = json_repair.loads(raw)
+        if isinstance(data, dict):
+            a = data.get("answer", "")
+            return a if isinstance(a, str) else ""
+    except Exception:
+        pass
+    return ""
+
+
 async def stream_answer(
     client: genai.Client,
     store_name: str,
