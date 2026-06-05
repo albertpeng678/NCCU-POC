@@ -90,7 +90,7 @@ NCCU-poc/
 7. **兩階段非阻塞 logging**：Phase 1 立即寫 metadata，Phase 2 背景跑 LLM judge → UPDATE。`DATABASE_URL` 未設時 logging 優雅跳過（但 `/qa` 強依賴 DB → 無 DB 回 503）。
 8. **結構化推薦理由**：`reason = {lead, points:[{term,detail}]}`，前端渲染 lead + 粗體 term bullet。
 9. **Ingestion 上傳的兩個坑**：(a) `import_file` 不耐高併發 → ThreadPool x8 同步兩步會讓 store 索引佇列**雪崩 timeout**；用 **async `upload_to_file_search_store` + semaphore(16)** 反而 ~100課/分 0 失敗（見 `scripts/backfill_async.py`）。(b) 大量 embedding 會吃 **Gemini 月度 spend cap** 與 **embedding 速率上限(429)**；查詢時**只嵌入問句、不重索引**（索引一次性）。
-10. **推薦延遲**：~40-50s（兩階段 flash + RAG 本質）。**主因是 LLM 輸出 token 數**（web+context7 研究）。已做：降輸出量（POOL 40→24、理由精簡）、thinking 自動（**關掉會稀疏、品質崩，不可關**）、429/503 退避重試、前端**分步驟等待 UX**（NNgroup 感知優化）。**未解的提速方案見 HANDOFF「零」。**
+10. **推薦延遲**：**主因是 LLM 輸出 token 數**（web+context7 研究）。已做：降輸出量（POOL 40→24、理由精簡）、429/503 退避重試、前端**分步驟等待 UX**。**（Session 6 更新）compose（`stage2_annotate_pool_async` 整池標註）已設 `thinking_budget=0`**：A/B 實測（`scripts/probe_compose_thinking_ab.py`）此「分類+排序+短理由」任務關 thinking **快 ~3x（33s→11s）且 judge 品質不掉**（reason 維持滿分）。⚠️ 舊註「thinking 不可關（品質崩）」是**舊版自由文字 compose** 的結論，**不適用現在的 `response_schema` 版**（schema 約束輸出、思考邊際效益低）。**仍勿關 Q&A 串流的 thinking**（那是 grounding/品質相關，另案）。
 11. **前端快取**：靜態資源連結帶 `?v=N`（cache-bust）；更新前端時 bump 版本，避免瀏覽器拿到舊 CSS/JS（曾導致「很醜/寬度跳/null.classList 崩」）。
 12. **生成模型固定 `gemini-2.5-flash`**：使用者明確要求**不可為提速換 `gemini-2.5-flash-lite`**（lite 快 3.8x 但品質低約 10%）。提速只能用不犧牲品質的手段（降輸出/合併呼叫/快取/等待UX）。
 13. **CORS 本機坑**：`.env` 的 `ALLOWED_ORIGIN` 是部署用佔位符（`https://your-frontend...`）；本機起 backend 要用 `ALLOWED_ORIGIN=* python -m uvicorn ...` 覆蓋，否則擋 localhost:3000。

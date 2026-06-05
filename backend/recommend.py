@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 from google import genai
 from google.genai import types
+from google.genai import errors as genai_errors
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -698,6 +699,10 @@ async def stage2_annotate_pool_async(
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
             response_schema=_RankedOutput,
+            # 關 thinking：A/B 實測（probe_compose_thinking_ab）此分類+排序+短理由任務
+            # 關了快 ~3x（33s→11s）且 judge 品質不掉（reason 維持滿分）。
+            # 註：CLAUDE.md #10「不可關」是舊版自由文字 compose 的結論，不適用此 response_schema 版。
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
         ),
     )
     return resp.parsed
@@ -774,7 +779,17 @@ async def stream_recommendation(
 
     # --- 階段 4：compose（整池標註：group + 理由 + 全域排序）---
     yield _stage_event(4, "compose", "start")
-    ranked = await stage2_annotate_pool_async(client, career, skills, candidates)
+    try:
+        ranked = await stage2_annotate_pool_async(client, career, skills, candidates)
+    except genai_errors.APIError as e:
+        # 只接 Gemini API 層暫時性錯誤（503/429，退避用盡後拋）→ 優雅降級成友善 error 事件、不 unhandled 炸出去；
+        # 程式 bug（KeyError/parse 等）不在此攔，照常往上拋給 main.py 的 Sentry（保留觀測性）。
+        logger.warning("compose (annotate-pool) API error: %r", e)
+        yield {"event": "error", "data": {
+            "error_type": type(e).__name__,
+            "message": "AI 服務目前較繁忙，請稍後再試一次。",
+        }}
+        return
     yield _stage_event(4, "compose", "done")
 
     # --- 階段 5：finalize（補 metadata + course_id 前綴復原 + 同名去重）---
