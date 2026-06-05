@@ -1,6 +1,6 @@
 // app.js — NCCU Course Map frontend logic
 import { createPaginationState, nextBatch, appendPool, groupBatch } from "./pagination.js";
-import { createProgressiveRenderer } from "./progressive-md.js";
+import { createProgressiveRenderer, stripInProgressTable } from "./progressive-md.js";
 
 const CONFIG = {
   // Local dev default; overwrite before Railway deploy.
@@ -761,7 +761,8 @@ function createTypewriter(ansEl){
     }
     // 尾端「打字中」內容用純文字即時顯示（含進行中的表格原始列）→ 逐字有動感、不閃、不空窗；
     // 該區塊以 \n\n 收尾時才 commit 成渲染後的 markdown（表格/粗體）。
-    liveEl.textContent = shown.slice(committedLen);
+    // live 尾端：藏進行中表格(不露 raw |)，prose 照樣逐字；表格收尾後由 commit 渲染成 HTML
+    liveEl.textContent = stripInProgressTable(shown.slice(committedLen));
     ansEl.scrollIntoView({behavior:"auto", block:"end"});
   }
 
