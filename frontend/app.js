@@ -1,6 +1,6 @@
 // app.js — NCCU Course Map frontend logic
-import { createPaginationState, nextBatch, appendPool, groupBatch } from "./pagination.js?v=19";
-import { drainCount } from "./progressive-md.js?v=19";
+import { createPaginationState, nextBatch, appendPool, groupBatch } from "./pagination.js?v=20";
+import { drainCount } from "./progressive-md.js?v=20";
 
 const CONFIG = {
   // Local dev default; overwrite before Railway deploy.
@@ -634,6 +634,9 @@ function setMode(mode){
   modeQa.hidden = !qa;
   qaComposer.hidden = !qa;
   newChatBtn.hidden = !qa;
+  // hamburger 開的是「職涯目錄」(推薦專屬) → 問答模式隱藏，避免按了開無關面板
+  menuBtn.hidden = qa;
+  if(qa) closeOffcanvas();   // 切到問答時關掉殘留開啟的目錄
   document.body.classList.toggle("qa-active", qa);
   if(qa) qaInput.focus();
 }

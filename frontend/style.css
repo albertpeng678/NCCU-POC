@@ -13,7 +13,7 @@
 }
 *,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
 [hidden]{display:none!important}
-html{scroll-behavior:smooth}
+html{scroll-behavior:smooth;overscroll-behavior:none}   /* 防手機 rubber-band（整頁過捲彈跳）*/
 /* 不鎖 html,body 高度：height:100% 會把它們固定成 viewport 高，content 溢出時 viewport 不捲（矮視窗滾不到底）。靠 .shell 的 min-height:100vh 撐滿即可 */
 body{
   font-family:"Noto Sans TC",sans-serif;
@@ -21,6 +21,7 @@ body{
   color:var(--text);
   /* 用 clip 而非 hidden：hidden 會把 overflow-y 從 visible 升級成 auto→body 變獨立捲動容器。clip 只裁切水平溢出、不建立捲動容器 */
   overflow-x:clip;
+  overscroll-behavior:none;   /* 防手機 rubber-band（document 過捲彈跳）*/
   position:relative;
   line-height:1.6;
 }
@@ -309,7 +310,7 @@ body::after{width:600px;height:600px;background:radial-gradient(circle,rgba(40,9
 
 /* QA 模式：整頁鎖視窗高、對話區內部捲動、composer 在底部（穩固 flex chat 佈局，跨尺寸/瀏覽器一致）*/
 body.qa-active .shell{height:100vh;height:100dvh;min-height:0}
-body.qa-active .hero{flex:1 1 auto;min-height:0;overflow-y:auto;padding-bottom:24px}
+body.qa-active .hero{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:none;padding-bottom:24px}   /* none：問答內捲不 chain 到 document、不彈跳 */
 body.qa-active .site-footer{display:none}
 @media (max-width:768px){
   .qa-composer{padding:16px}
