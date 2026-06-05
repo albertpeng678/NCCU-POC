@@ -1,6 +1,6 @@
 // app.js — NCCU Course Map frontend logic
 import { createPaginationState, nextBatch, appendPool, groupBatch } from "./pagination.js";
-import { createProgressiveRenderer } from "./progressive-md.js";
+import { createProgressiveRenderer, drainCount } from "./progressive-md.js";
 
 const CONFIG = {
   // Local dev default; overwrite before Railway deploy.
@@ -767,9 +767,10 @@ function createTypewriter(ansEl){
 
   function tick(){
     if(buffer.length){
-      // 一次吐一個字（CJK 友善；可一次吐 1 字維持中速觀感）
-      shown += buffer[0];
-      buffer = buffer.slice(1);
+      // backlog 自適應：buffer 大則一次吐多字追上生成，小則逐字（CJK 友善）
+      const n = drainCount(buffer.length);
+      shown += buffer.slice(0, n);
+      buffer = buffer.slice(n);
       scheduleRender();
     } else if(inputDone){
       stop();

@@ -41,3 +41,11 @@ export function createProgressiveRenderer({ render, schedule = _raf, cancel = _c
     },
   };
 }
+
+// 依未顯示 backlog 決定本 tick 吐幾字：backlog 小逐字(打字感)，大則加速追上生成（有上限）。
+export function drainCount(backlog) {
+  if (backlog <= 40) return 1;
+  if (backlog <= 200) return 2;
+  if (backlog <= 600) return 4;
+  return 8;
+}
