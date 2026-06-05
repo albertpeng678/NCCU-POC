@@ -1,6 +1,6 @@
 // app.js — NCCU Course Map frontend logic
 import { createPaginationState, nextBatch, appendPool, groupBatch } from "./pagination.js";
-import { createProgressiveRenderer, stripInProgressTable } from "./progressive-md.js";
+import { drainCount } from "./progressive-md.js";
 
 const CONFIG = {
   // Local dev default; overwrite before Railway deploy.
@@ -734,7 +734,7 @@ function createTypewriter(ansEl){
   // 只有尾端「打字中」的文字放 liveEl，每 tick 重渲染。→ 已完成的表格不會被每 tick 重建。
   const committedEl = document.createElement("span");
   const liveEl = document.createElement("span");
-  liveEl.style.whiteSpace = "pre-wrap";   // 純文字尾端保留換行/空白（表格原始列逐字出現）
+  // live 尾端改渲染 healed markdown（safeMarkdownPrefix 藏半截表格/未閉合粗體），故不再用 pre-wrap 純文字
   const caretEl = document.createElement("span");
   caretEl.className = "tw-caret";
   ansEl.innerHTML = "";
@@ -759,18 +759,17 @@ function createTypewriter(ansEl){
       committedEl.insertAdjacentHTML("beforeend", mdToHtml(shown.slice(committedLen, boundary)));
       committedLen = boundary;
     }
-    // 尾端「打字中」內容用純文字即時顯示（含進行中的表格原始列）→ 逐字有動感、不閃、不空窗；
-    // 該區塊以 \n\n 收尾時才 commit 成渲染後的 markdown（表格/粗體）。
-    // live 尾端：藏進行中表格(不露 raw |)，prose 照樣逐字；表格收尾後由 commit 渲染成 HTML
-    liveEl.textContent = stripInProgressTable(shown.slice(committedLen));
+    // live 尾端：渲染 healed markdown（safeMarkdownPrefix 藏半截表格/未閉合粗體）→ 表格 snap-in、不露 raw |、粗體即時
+    liveEl.innerHTML = renderSafeMarkdown(shown.slice(committedLen));
     ansEl.scrollIntoView({behavior:"auto", block:"end"});
   }
 
   function tick(){
     if(buffer.length){
-      // 一次吐一個字（CJK 友善；可一次吐 1 字維持中速觀感）
-      shown += buffer[0];
-      buffer = buffer.slice(1);
+      // backlog 自適應：buffer 大則一次吐多字追上生成，小則逐字（CJK 友善）
+      const n = drainCount(buffer.length);
+      shown += buffer.slice(0, n);
+      buffer = buffer.slice(n);
       scheduleRender();
     } else if(inputDone){
       stop();
@@ -965,11 +964,11 @@ function startStreamQa(question, bubble, ans){
     if(!firstEvent){
       firstEvent = true;
       stage.stop();                 // 停階段 loader
-      ans.innerHTML = "";           // 清掉 loader
-      // 漸進 markdown：每 token rAF 節流重渲染累積緩衝 → 表格/粗體/標題隨完成即現
-      tw = createProgressiveRenderer({ render: (buf)=> ans.innerHTML = renderSafeMarkdown(buf) });
+      // 定速緩衝打字機：Gemini 一坨一坨的 chunk 進 buffer，逐字平穩放出 → 不再突兀（smoothStream 模式）
+      tw = createTypewriter(ans);
+      tw.start();
     }
-    tw.push(d.text);
+    tw.push(d.text);                // 餵 buffer（非立即渲染）
   });
 
   es.addEventListener("done", (ev)=>{

@@ -44,6 +44,7 @@ export function createProgressiveRenderer({ render, schedule = _raf, cancel = _c
 
 // 從打字機 live 尾端移除「進行中的表格」(某行以 | 起頭且整段未以空行收尾)，
 // 避免逐字打字時露出 raw `| 課程 |` 管線；表格收尾(空行)後交由 commit 邏輯渲染成 HTML。
+// （目前 app.js live 尾端改走 renderSafeMarkdown；本函式保留供測試/日後用。）
 export function stripInProgressTable(tail) {
   if (!tail) return tail;
   const endsClean = /\n[^\S\n]*\n[^\S\n]*$/.test(tail);
@@ -52,4 +53,12 @@ export function stripInProgressTable(tail) {
   if (!m) return tail;                   // 無表格列
   const lineStart = m.index + (m[1] === "\n" ? 1 : 0);
   return tail.slice(0, lineStart);
+}
+
+// 依未顯示 backlog 決定本 tick 吐幾字：backlog 小逐字(打字感)，大則加速追上生成（有上限）。
+export function drainCount(backlog) {
+  if (backlog <= 40) return 1;
+  if (backlog <= 200) return 2;
+  if (backlog <= 600) return 4;
+  return 8;
 }
