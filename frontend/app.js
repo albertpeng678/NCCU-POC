@@ -1,6 +1,6 @@
 // app.js — NCCU Course Map frontend logic
 import { createPaginationState, nextBatch, appendPool, groupBatch } from "./pagination.js";
-import { createProgressiveRenderer, drainCount } from "./progressive-md.js";
+import { drainCount } from "./progressive-md.js";
 
 const CONFIG = {
   // Local dev default; overwrite before Railway deploy.
@@ -959,11 +959,11 @@ function startStreamQa(question, bubble, ans){
     if(!firstEvent){
       firstEvent = true;
       stage.stop();                 // 停階段 loader
-      ans.innerHTML = "";           // 清掉 loader
-      // 漸進 markdown：每 token rAF 節流重渲染累積緩衝 → 表格/粗體/標題隨完成即現
-      tw = createProgressiveRenderer({ render: (buf)=> ans.innerHTML = renderSafeMarkdown(buf) });
+      // 定速緩衝打字機：Gemini 一坨一坨的 chunk 進 buffer，逐字平穩放出 → 不再突兀（smoothStream 模式）
+      tw = createTypewriter(ans);
+      tw.start();
     }
-    tw.push(d.text);
+    tw.push(d.text);                // 餵 buffer（非立即渲染）
   });
 
   es.addEventListener("done", (ev)=>{
