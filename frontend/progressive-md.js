@@ -41,3 +41,15 @@ export function createProgressiveRenderer({ render, schedule = _raf, cancel = _c
     },
   };
 }
+
+// 從打字機 live 尾端移除「進行中的表格」(某行以 | 起頭且整段未以空行收尾)，
+// 避免逐字打字時露出 raw `| 課程 |` 管線；表格收尾(空行)後交由 commit 邏輯渲染成 HTML。
+export function stripInProgressTable(tail) {
+  if (!tail) return tail;
+  const endsClean = /\n[^\S\n]*\n[^\S\n]*$/.test(tail);
+  if (endsClean) return tail;            // 已收尾 → 不動
+  const m = tail.match(/(^|\n)[^\S\n]*\|/);
+  if (!m) return tail;                   // 無表格列
+  const lineStart = m.index + (m[1] === "\n" ? 1 : 0);
+  return tail.slice(0, lineStart);
+}

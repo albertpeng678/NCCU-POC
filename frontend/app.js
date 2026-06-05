@@ -1,6 +1,6 @@
 // app.js — NCCU Course Map frontend logic
 import { createPaginationState, nextBatch, appendPool, groupBatch } from "./pagination.js";
-import { createProgressiveRenderer } from "./progressive-md.js";
+import { createProgressiveRenderer, stripInProgressTable } from "./progressive-md.js";
 
 const CONFIG = {
   // Local dev default; overwrite before Railway deploy.
@@ -761,7 +761,8 @@ function createTypewriter(ansEl){
     }
     // 尾端「打字中」內容用純文字即時顯示（含進行中的表格原始列）→ 逐字有動感、不閃、不空窗；
     // 該區塊以 \n\n 收尾時才 commit 成渲染後的 markdown（表格/粗體）。
-    liveEl.textContent = shown.slice(committedLen);
+    // live 尾端：藏進行中表格(不露 raw |)，prose 照樣逐字；表格收尾後由 commit 渲染成 HTML
+    liveEl.textContent = stripInProgressTable(shown.slice(committedLen));
     ansEl.scrollIntoView({behavior:"auto", block:"end"});
   }
 
@@ -953,6 +954,10 @@ function startStreamQa(question, bubble, ans){
   catch(e){ clearTimeout(guard); stage.stop(); askQuestionFallback(question, bubble, ans); return; }
   _qaEs = es;
 
+  es.addEventListener("stage", ()=>{
+    firstEvent = true;          // replay 模式無 token：靠 stage 事件取消首事件 guard、維持階段 loader
+  });
+
   es.addEventListener("token", (ev)=>{
     let d; try{ d = JSON.parse(ev.data); }catch(_){ return; }
     if(!(d && typeof d.text === "string")) return;
@@ -978,7 +983,19 @@ function startStreamQa(question, bubble, ans){
       attachCitesAndFollowups(bubble, data);
       finishQaTurn();
     };
-    if(!tw){ stage.stop(); renderFinal(); return; }   // 沒收到任何 token 就 done → 停階段、直接渲染
+    if(!tw){
+      stage.stop();
+      // replay 模式（無 token）：用打字機重播完整答案 → 逐字 + 表格 snap-in
+      if(typeof data.answer === "string" && data.answer){
+        const rtw = createTypewriter(ans);
+        rtw.start();
+        rtw.push(data.answer);
+        rtw.finish(()=>{ attachCitesAndFollowups(bubble, data); finishQaTurn(); });
+      } else {
+        renderFinal();
+      }
+      return;
+    }
     // 等緩衝吐完字 → 用權威 answer 覆蓋已串流文字（套用防幻覺覆寫）→ 淡入 citations/followup
     tw.finish(renderFinal);
   });
