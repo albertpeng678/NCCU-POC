@@ -175,8 +175,21 @@ def parse_qa_response(raw: str) -> dict:
         except json.JSONDecodeError:
             pass
 
-    # Fallback: treat the whole response as the answer
-    return {"answer": stripped, "followup_suggestions": []}
+    # json_repair 容錯救壞 JSON（字面換行/trailing comma/截斷/缺括號等）
+    try:
+        data = json_repair.loads(stripped)
+        if isinstance(data, dict) and "answer" in data:
+            return {
+                "answer": str(data.get("answer", "")),
+                "followup_suggestions": list(data.get("followup_suggestions", []) or []),
+            }
+    except Exception:
+        pass
+
+    # 全失敗：剝掉 ```json/``` 與外殼，**絕不回傳含 JSON 鷹架的原文**
+    cleaned = _strip_fences(stripped)
+    looks_json = cleaned.startswith("{")
+    return {"answer": "" if looks_json else cleaned, "followup_suggestions": []}
 
 
 def _strip_fences(text: str) -> str:
