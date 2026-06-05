@@ -287,6 +287,22 @@ def extract_citations_by_name(answer: str, meta: dict, limit: int = 6) -> list[d
     return result
 
 
+def finalize_qa_answer(answer: str, followups: list, course_ids: list, meta: dict):
+    """問答收尾（POST /qa、/qa/stream replay、stream 三處共用，避免邏輯三份且不一致）。
+
+    grounding course_ids → citations；citations 空則用「答案提到的真實課名」補
+    （模型常 grounded 卻沒帶 metadata）；真查無（空 citations + 答案像在列課程）→ 防幻覺覆寫。
+    回 (answer, followups, citations)。
+    """
+    citations = extract_citations(course_ids, meta)
+    if not citations:
+        citations = extract_citations_by_name(answer, meta)
+    if should_override_no_results(answer, citations):
+        answer = NO_RESULTS_MESSAGE
+        followups = []
+    return answer, followups, citations
+
+
 def _iter_text_items(response):
     """Yield text-type content items, compatible with both SDK shapes.
 
@@ -433,13 +449,7 @@ def extract_grounding_course_ids(response) -> list[str]:
     提到的課號當成「grounded citation」→ 造出假 citation 繞過防幻覺覆寫。故只信結構化 grounding。
     """
     try:
-        seen: set[str] = set()
-        unique: list[str] = []
-        for cid in _grounding_course_ids_from_chunk(response):
-            if cid not in seen:
-                seen.add(cid)
-                unique.append(cid)
-        return unique
+        return list(dict.fromkeys(_grounding_course_ids_from_chunk(response)))
     except Exception:
         return []
 

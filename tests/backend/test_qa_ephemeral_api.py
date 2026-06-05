@@ -48,7 +48,7 @@ def test_post_qa_no_db_does_not_503(client):
          patch("backend.main.get_pool", return_value=None), \
          patch("backend.main.answer_question", return_value=fake_result), \
          patch("backend.main.load_courses_meta", return_value={}), \
-         patch("backend.main.extract_citations_by_name", return_value=[]):
+         patch("backend.qa.extract_citations_by_name", return_value=[]):
         resp = client.post("/qa", json={"question": "問政治學"})
     assert resp.status_code == 200, resp.text
     body = resp.json()
@@ -67,7 +67,7 @@ def test_post_qa_no_db_multi_turn_keeps_context(client):
          patch("backend.main.get_pool", return_value=None), \
          patch("backend.main.answer_question", return_value=fake_result), \
          patch("backend.main.load_courses_meta", return_value={}), \
-         patch("backend.main.extract_citations_by_name", return_value=[]):
+         patch("backend.qa.extract_citations_by_name", return_value=[]):
         r1 = client.post("/qa", json={"question": "Q1"})
         sid = r1.json()["session_id"]
         r2 = client.post("/qa", json={"question": "Q2", "session_id": sid})
@@ -87,7 +87,7 @@ def test_qa_stream_no_db_does_not_emit_service_unavailable(client):
          patch("backend.main.get_pool", return_value=None), \
          patch("backend.main.stream_answer", return_value=_gen_ok()), \
          patch("backend.main.load_courses_meta", return_value={}), \
-         patch("backend.main.extract_citations_by_name", return_value=[]):
+         patch("backend.qa.extract_citations_by_name", return_value=[]):
         resp = client.get("/qa/stream?question=問政治學")
     assert resp.status_code == 200
     evs = _events(resp.text)
@@ -111,7 +111,7 @@ def test_qa_stream_no_db_multi_turn_increments(client):
          patch("backend.main.get_pool", return_value=None), \
          patch("backend.main.stream_answer", side_effect=lambda *a, **k: _gen()), \
          patch("backend.main.load_courses_meta", return_value={}), \
-         patch("backend.main.extract_citations_by_name", return_value=[]):
+         patch("backend.qa.extract_citations_by_name", return_value=[]):
         r1 = client.get("/qa/stream?question=Q1")
         sid = [json.loads(d) for e, d in _events(r1.text) if e == "done"][0]["session_id"]
         r2 = client.get(f"/qa/stream?question=Q2&session_id={sid}")
@@ -136,7 +136,7 @@ def test_qa_stream_no_db_feeds_prior_history_to_model(client):
          patch("backend.main.get_pool", return_value=None), \
          patch("backend.main.stream_answer", side_effect=_stream_factory), \
          patch("backend.main.load_courses_meta", return_value={}), \
-         patch("backend.main.extract_citations_by_name", return_value=[]):
+         patch("backend.qa.extract_citations_by_name", return_value=[]):
         r1 = client.get("/qa/stream?question=Q1")
         sid = [json.loads(d) for e, d in _events(r1.text) if e == "done"][0]["session_id"]
         captured.clear()

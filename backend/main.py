@@ -25,9 +25,8 @@ from backend.logger import build_log_record, insert_log, update_judge_scores
 from backend.judge import evaluate_recommendation
 from backend.db import init_pool, close_pool, get_pool
 from backend.qa import (
-    answer_question, answer_question_structured, extract_citations, extract_citations_by_name,
-    should_override_no_results, NO_RESULTS_MESSAGE,
-    stream_answer, parse_qa_response,
+    answer_question, answer_question_structured, finalize_qa_answer,
+    extract_citations, stream_answer, parse_qa_response,
 )
 from backend.qa_judge import evaluate_qa
 from backend.qa_logger import (
@@ -266,14 +265,12 @@ async def qa(req: QaRequest, background_tasks: BackgroundTasks):
     if error:
         raise HTTPException(status_code=503, detail=str(error))
 
-    # Join citations with course metadata for full display info
+    # 共用收尾：citations join + 課名補 + 防幻覺覆寫（與 /qa/stream 三處一致）
     meta = load_courses_meta()
-    citations = extract_citations(result.get("citations_course_ids", []), meta)
-
-    # 防幻覺：RAG 空命中卻列出具體課程 → 覆寫為誠實的查無資料引導，不放任模型自由文字
-    if should_override_no_results(result["answer"], citations):
-        result["answer"] = NO_RESULTS_MESSAGE
-        result["followup_suggestions"] = []
+    result["answer"], result["followup_suggestions"], citations = finalize_qa_answer(
+        result["answer"], result.get("followup_suggestions", []),
+        result.get("citations_course_ids", []), meta,
+    )
 
     # Fire-and-forget Q&A judge (Phase 2)
     if turn_id:
@@ -325,14 +322,10 @@ async def qa_stream(request: Request, question: str, session_id: str | None = No
                 result = await asyncio.to_thread(
                     answer_question_structured, _client, _STORE_NAME, question, history, _QA_MODEL
                 )
-                answer = result["answer"]
-                followups = result["followup_suggestions"]
-                citations = extract_citations(result["citations_course_ids"], meta)
-                if not citations:
-                    citations = extract_citations_by_name(answer, meta)
-                if should_override_no_results(answer, citations):
-                    answer = NO_RESULTS_MESSAGE
-                    followups = []
+                answer, followups, citations = finalize_qa_answer(
+                    result["answer"], result["followup_suggestions"],
+                    result["citations_course_ids"], meta,
+                )
                 result_dict = {
                     "answer": answer,
                     "citations_course_ids": result["citations_course_ids"],
@@ -354,16 +347,10 @@ async def qa_stream(request: Request, question: str, session_id: str | None = No
                         yield _sse("token", ev["data"])
                     elif ev["event"] == "done":
                         parsed = parse_qa_response(ev["data"]["answer_text"])
-                        citations = extract_citations(ev["data"]["course_ids"], meta)
-                        answer = parsed["answer"]
-                        followups = parsed["followup_suggestions"]
-                        # grounding 沒附 citations → 用「答案提到的真實課名」補（模型常 grounded 卻沒帶 metadata）
-                        if not citations:
-                            citations = extract_citations_by_name(answer, meta)
-                        # 真的查無（grounding 空 + 答案沒提到任何真實課名）→ 才覆寫防幻覺，不蓋掉已串流的真答案
-                        if should_override_no_results(answer, citations):
-                            answer = NO_RESULTS_MESSAGE
-                            followups = []
+                        answer, followups, citations = finalize_qa_answer(
+                            parsed["answer"], parsed["followup_suggestions"],
+                            ev["data"]["course_ids"], meta,
+                        )
                         result_dict = {
                             "answer": answer,
                             "citations_course_ids": ev["data"]["course_ids"],

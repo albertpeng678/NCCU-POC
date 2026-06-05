@@ -991,7 +991,7 @@ function startStreamQa(question, bubble, ans){
         const rtw = createTypewriter(ans);
         rtw.start();
         rtw.push(data.answer);
-        rtw.finish(()=>{ attachCitesAndFollowups(bubble, data); finishQaTurn(); });
+        rtw.finish(renderFinal);   // 與 token 路徑共用 finalizer（權威 render + citations/followup + 收尾）
       } else {
         renderFinal();
       }
