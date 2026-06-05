@@ -66,7 +66,8 @@ async def _gen_qa_ok():
 def test_qa_stream_tokens_then_done(client):
     meta = {"000211012": {"name": "政治學", "department": "政治系", "teacher": "蔡",
                           "credits": 3.0, "syllabus_url": "https://x/a"}}
-    with patch("backend.main.stream_answer", return_value=_gen_qa_ok()), \
+    with patch("backend.main._QA_MODE", "stream"), \
+         patch("backend.main.stream_answer", return_value=_gen_qa_ok()), \
          patch("backend.main.get_pool", return_value=object()), \
          patch("backend.main.create_session", new=AsyncMock(return_value="sess-1")), \
          patch("backend.main.get_session_turns", new=AsyncMock(return_value=[])), \
@@ -94,7 +95,8 @@ def test_qa_stream_hallucination_override(client):
         yield {"event": "done", "data": {"course_ids": [],
                "answer_text": "| 課程 | 系所 |\n| --- | --- |\n| 假課 | 假系 |"}}
 
-    with patch("backend.main.stream_answer", return_value=_gen_no_cite()), \
+    with patch("backend.main._QA_MODE", "stream"), \
+         patch("backend.main.stream_answer", return_value=_gen_no_cite()), \
          patch("backend.main.get_pool", return_value=object()), \
          patch("backend.main.create_session", new=AsyncMock(return_value="sess-2")), \
          patch("backend.main.get_session_turns", new=AsyncMock(return_value=[])), \
