@@ -671,32 +671,35 @@ function renderAnswerHtml(answer){
   return `<div class="ans">${safe}</div>`;
 }
 
-// 從累積 raw markdown 取「可安全渲染的前綴」：
-// 1) 表格未收尾（最後一段是 | 開頭但後面沒有空行）整塊先藏，避免半截爆版
-// 2) 尾端未閉合的 ** 先去掉（避免粗體吃掉後文）
+// 從累積 raw markdown 取「可安全渲染的前綴」（讓表格逐列滑順長出，而非整塊 snap-in）：
+// 1) prose 正常逐字；正在打字的「半截表格列」先藏（不露 raw |）
+// 2) 表格未湊齊「表頭+分隔線」整塊先藏；湊齊後「已完成的列」逐列顯示，只藏正在打的那一列
+// 3) 尾端未閉合的 ** 先去掉（避免粗體吃掉後文）
 function safeMarkdownPrefix(raw){
-  let text = raw;
-  // (a) 若最後一個區塊是「進行中的表格」（含 | 但尾端非空行結束）→ 砍到該表格前
+  const nl = raw.lastIndexOf("\n");
+  const tail = nl >= 0 ? raw.slice(nl + 1) : raw;     // 正在打字的最後一行（未以 \n 結束）
+  const tailIsTableLine = /^\s*\|/.test(tail);
+  // 正在打表格列 → 只用「已完成的行」（捨棄半截列）；prose → 用全文（逐字）
+  let text = tailIsTableLine ? (nl < 0 ? "" : raw.slice(0, nl)) : raw;
+
+  // 尾端表格區塊：未湊齊 表頭+分隔線 整塊先藏（避免 marked 把純表頭當段落露 raw |）；
+  // 湊齊則保留（已完成列逐列顯示，下一列打完才現 → 滑順長出）
   const lines = text.split("\n");
-  // 找最後一個空行，作為「最後一個完整區塊」的安全切點候選
-  // 規則：若文字未以雙換行結尾，且尾段包含表格列（以 | 起頭），把尾段整塊延後
-  let cut = text.length;
-  const tailStart = text.lastIndexOf("\n\n");
-  const tail = tailStart >= 0 ? text.slice(tailStart+2) : text;
-  const tailIsTable = /^\s*\|/.test(tail) || /\n\s*\|/.test(tail);
-  // 表格視為「完成」只在其後出現空行(\n\n)；單一 \n 不算 → 避免表格落入尾端 live 區被每 tick 重建而頻閃
-  const endsClean = /\n[^\S\n]*\n[^\S\n]*$/.test(text);
-  if(tailIsTable && !endsClean){
-    cut = tailStart >= 0 ? tailStart : 0;   // 整塊表格延後到收尾（空行）
+  let tStart = -1;
+  for(let j = lines.length - 1; j >= 0; j--){
+    if(/^\s*\|/.test(lines[j])) tStart = j; else break;
   }
-  let prefix = text.slice(0, cut);
-  // (b) 未閉合的 ** ：count 為奇數則砍掉最後一個 ** 之後
-  const boldMatches = prefix.match(/\*\*/g);
-  if(boldMatches && boldMatches.length % 2 === 1){
-    const last = prefix.lastIndexOf("**");
-    prefix = prefix.slice(0, last);
+  if(tStart >= 0){
+    const hasSep = (tStart + 1 < lines.length) && /^\s*\|?[\s:|]*-{3,}/.test(lines[tStart + 1]);
+    if(!hasSep) text = lines.slice(0, tStart).join("\n");   // 表頭/分隔線未齊 → 藏整塊
   }
-  return prefix;
+
+  // 未閉合的 ** ：奇數個則砍掉最後一個 ** 之後
+  const bolds = text.match(/\*\*/g);
+  if(bolds && bolds.length % 2 === 1){
+    text = text.slice(0, text.lastIndexOf("**"));
+  }
+  return text;
 }
 
 // marked + DOMPurify（不含 safe-prefix 處理）；輸入須已是可安全渲染的文字
@@ -717,7 +720,7 @@ function renderSafeMarkdown(raw){
 }
 
 // 固定節奏打字機：token 進緩衝，定時吐字（與到達速度脫鉤）
-const TYPE_CPS = 34;                 // 中速 34 字/秒（使用者選定）
+const TYPE_CPS = 20;                 // 慢速 20 字/秒（使用者偏好較慢、更滑順）
 const TYPE_INTERVAL = 1000 / TYPE_CPS;
 const RENDER_THROTTLE = 80;          // markdown 重渲染節流
 
