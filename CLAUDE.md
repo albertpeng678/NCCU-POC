@@ -1,7 +1,7 @@
 # NCCU 課程推薦系統 — 專案說明（CLAUDE.md）
 
 > 給 AI agent 的專案全貌速覽。讀完即可掌握架構、檔案、計畫與慣例。
-> 最後更新：2026-06-05（**Session 5**）。**接手第一件事：讀 `HANDOFF.md` 開頭「★ Session 5 交接」段**。Session 5 摘要：探索過 3.5-flash（原生 response_schema 免解析，但**現階段 high-demand 503 延遲不穩**，故未採為預設）→ 決定 **Q&A 留 2.5-flash 串流**，用 (A) JSON 三層強化（`parse_qa_response` 補 `json_repair`+`_strip_fences` 絕不漏鷹架；`stream_answer` JSON-first 守門用 `_partial_answer` 增量抽乾淨值）(B) 平滑串流打字機（SSE token 餵 `createTypewriter` 定速緩衝 + `drainCount` backlog 自適應 + live 尾端 healed markdown）壓掉「漏 JSON / 不平滑 / 表格 raw」。`QA_MODE=stream`(預設 2.5 強化) / `replay`(3.5 非串流選項)。Playwright 實測通過（串流中+最終皆無 JSON 鷹架、表格渲染成 HTML、citations/followups、0 console error）。spec/plan：`docs/superpowers/{specs,plans}/2026-06-05-qa-2.5-hardening-smooth-stream*`。分支 `feat/qa-hardening-smooth-stream`（未上線，master 乾淨）。注意 `~/.claude` 的 memory 不會跨機器，所有必要資訊都已寫進 HANDOFF/CLAUDE。
+> 最後更新：2026-06-05（**Session 5**）。**接手第一件事：讀 `HANDOFF.md` 開頭「★ Session 5 交接」段**。Session 5 摘要：探索過 3.5-flash（原生 response_schema 免解析，但**現階段 high-demand 503 延遲不穩**，故未採為預設）→ 決定 **Q&A 留 2.5-flash 串流**，用 (A) JSON 三層強化（`parse_qa_response` 補 `json_repair`+`_strip_fences` 絕不漏鷹架；`stream_answer` JSON-first 守門用 `_partial_answer` 增量抽乾淨值）(B) 平滑串流打字機（SSE token 餵 `createTypewriter` 定速 **20cps** 緩衝 + `drainCount` backlog 自適應；**表格逐列滑順長出**——`safeMarkdownPrefix` 改「保留已完成列、只藏正在打的半截列」，非整塊 snap-in；`renderFinal`/committed 用 `mdToHtml` 不套 heal，避免結尾表格列被誤砍）壓掉「漏 JSON / 不平滑 / 表格 raw」。`QA_MODE=stream`(預設 2.5 強化) / `replay`(3.5 非串流選項)。Playwright 動態實測通過（無 JSON 鷹架、表格逐列建構、0 console error）。spec/plan：`docs/superpowers/{specs,plans}/2026-06-05-qa-2.5-hardening-smooth-stream*`。**已 push master 部署（Railway）；前端 cache-bust `?v=19`**。注意 `~/.claude` 的 memory 不會跨機器，所有必要資訊都已寫進 HANDOFF/CLAUDE。
 
 ## 一句話
 

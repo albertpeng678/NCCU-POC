@@ -1,6 +1,6 @@
 // app.js — NCCU Course Map frontend logic
-import { createPaginationState, nextBatch, appendPool, groupBatch } from "./pagination.js";
-import { drainCount } from "./progressive-md.js";
+import { createPaginationState, nextBatch, appendPool, groupBatch } from "./pagination.js?v=19";
+import { drainCount } from "./progressive-md.js?v=19";
 
 const CONFIG = {
   // Local dev default; overwrite before Railway deploy.

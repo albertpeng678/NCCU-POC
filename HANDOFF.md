@@ -1,7 +1,7 @@
 # NCCU 課程推薦系統 — 交接文件（HANDOFF.md）
 
 > 專案進展史 + WBS + 待辦。給接手的 agent 快速掌握「做到哪、還剩什麼」。
-> 最後更新：2026-06-05（**Session 5**：Q&A 留 2.5 + JSON 三層強化 + 平滑串流打字機；3.5 探索後 parked）
+> 最後更新：2026-06-05（**Session 5**：Q&A 留 2.5 + JSON 三層強化 + 平滑串流打字機（表格逐列長出、20cps）；3.5 探索後 parked；已 push master 部署）
 
 ---
 
@@ -13,14 +13,15 @@
 
 **怎麼解（已實作於 `feat/qa-hardening-smooth-stream`，未上線）**：
 - **(A) JSON 三層強化**：`parse_qa_response` → `json.loads`→`json_repair`→`_strip_fences`（剝殼後仍以 `{` 開頭就 blank，**絕不漏鷹架**）；`stream_answer` 加 **JSON-first 守門**（模型若沒寫 prose 直接吐 JSON，用 `_partial_answer`(json_repair 增量)只串乾淨 answer 值）。
-- **(B) 平滑串流打字機**：SSE `token` 改餵既有 `createTypewriter`（定速緩衝，解耦 Gemini 不均 chunk）；`drainCount` backlog 自適應（buffer 大就一次吐多字追上生成）；live 尾端 `renderSafeMarkdown`（healed markdown → 表格 snap-in、不露 raw `|`、粗體即時）。
+- **(B) 平滑串流打字機**：SSE `token` 改餵既有 `createTypewriter`（定速緩衝，解耦 Gemini 不均 chunk）；`drainCount` backlog 自適應；打字 **20 cps**（使用者偏好較慢）。**表格逐列滑順長出**（借鑑參考 bot、Playwright 動態實測其逐列建構）：`safeMarkdownPrefix` 改「保留已完成列、只藏正在打字的半截列；湊齊表頭+分隔線才現」→ 不再整塊 snap-in、不露 raw `|`。
+  - **關鍵修正**：`renderFinal` 用 `mdToHtml(data.answer)`（完整權威答案**不套** streaming heal）—— 否則「以表格列結尾」的答案會被 heal 誤砍最後一列、看似沒答完。committed 區塊同理用 `mdToHtml` 不套 heal（見 doRender 註解的不變式）。
 - **(C) `QA_MODE`**：預設 `stream`(2.5 強化)；`replay`(3.5 非串流，慢但結構上不漏)為 env 一鍵回退選項。
 
-**驗證**：後端 205 + 前端 20 測試綠；**Playwright MCP 真後端實測通過**（串流中+最終皆無 `{"answer"`/```json、表格渲染成 `<table>`、citations 3 + followups 3、0 console error）。
+**驗證**：後端 206 + 前端 20 測試綠；**Playwright MCP 真後端動態實測通過**（串流中+最終皆無 `{"answer"`/```json；**表格 1→2→3→4 列逐列長出、rawPipe 全程 false**；citations/followups、0 console error）；code review + /simplify 皆過。
 
 **429 釐清**：本機開發時撞的 embedding 429 是**爆量測試**造成（每提問都 embed 問句 + SDK 重試放大），**production 正常**；使用者是 Tier 1。非阻礙。
 
-**待辦/未做**：① 上線（git push 觸發 Railway；本輪只到分支驗證）。② `/recommend` 是否遷 3.5（另議，先 probe 延遲/品質）。③ 清理：刪 `createProgressiveRenderer`/`stripInProgressTable` 死碼、收斂單一渲染器。④ Layer 4「sentinel 換格式」徹底根治（需重驗 grounding #15）。⑤ git committer email 是公司帳號，push 前宜設個人帳號。
+**待辦/未做**：① ~~上線~~（已 push master 觸發 Railway 部署；前端 cache-bust `?v=19`）。② `/recommend` 是否遷 3.5（另議，先 probe 延遲/品質）。③ 清理：刪 `createProgressiveRenderer`/`stripInProgressTable` 死碼、收斂單一渲染器、把 `safeMarkdownPrefix` 抽到 progressive-md.js 單測。④ Layer 4「sentinel 換格式」徹底根治（需重驗 grounding #15）。⑤ ~~git committer email~~（本 repo 已設 albertpeng678@gmail.com；既有 commit 仍掛公司信箱，未重寫歷史）。
 
 **spec/plan**：`docs/superpowers/{specs,plans}/2026-06-05-qa-2.5-hardening-smooth-stream*`。
 
