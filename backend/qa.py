@@ -121,6 +121,15 @@ _PROMPT_TEMPLATE = """\
 followup_suggestions 請提供 2-3 個與問題相關的後續問題建議。
 """
 
+_PROMPT_TEMPLATE_STRUCTURED = """\
+學生問題：{question}
+
+請依知識庫課綱回答。版型：先寫 3-5 句充實具體的文字說明（點出課程內容、為何適合、難度/先修）；
+若在列出/比較多門課程，接著輸出 Markdown 表格，欄位固定為「課程名稱 | 系所 | 重點」，分隔線每欄三個連字號（---），最多 6 列；
+純概念題或只談一門課則用文字即可。粗體克制：只標最關鍵的課名與 1-2 個能力關鍵詞。最後一句總結或建議。
+（引用知識庫中實際存在的課程，勿編造課名/課號/老師。）
+"""
+
 
 def parse_qa_response(raw: str) -> dict:
     """Extract JSON object {answer, followup_suggestions} from possibly-fenced text.
@@ -200,11 +209,11 @@ def parse_structured_response(response) -> dict:
 _MAX_HISTORY_TURNS = 3
 
 
-def build_qa_contents(question: str, history: Optional[list] = None) -> list:
+def build_qa_contents(question: str, history: Optional[list] = None, template: str = _PROMPT_TEMPLATE) -> list:
     """把多輪歷史 + 本輪問題組成 generate_content 的 contents。
 
     history: [{"question": str, "answer": str}, ...]（時間升序）。
-    只保留最近 _MAX_HISTORY_TURNS 輪原文；本輪問題用 _PROMPT_TEMPLATE 包裝置於末尾。
+    只保留最近 _MAX_HISTORY_TURNS 輪原文；本輪問題用 template 包裝置於末尾。
     """
     contents: list = []
     if history:
@@ -214,7 +223,7 @@ def build_qa_contents(question: str, history: Optional[list] = None) -> list:
             a = turn.get("answer") or ""
             contents.append({"role": "user", "parts": [{"text": q}]})
             contents.append({"role": "model", "parts": [{"text": a}]})
-    contents.append({"role": "user", "parts": [{"text": _PROMPT_TEMPLATE.format(question=question)}]})
+    contents.append({"role": "user", "parts": [{"text": template.format(question=question)}]})
     return contents
 
 

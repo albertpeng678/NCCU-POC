@@ -34,3 +34,13 @@ def test_history_truncated_to_last_3_turns():
 
 def test_empty_history_list_same_as_none():
     assert build_qa_contents("hi", history=[]) == build_qa_contents("hi", history=None)
+
+
+def test_structured_template_has_no_json_instruction():
+    from backend.qa import build_qa_contents, _PROMPT_TEMPLATE_STRUCTURED
+    c = build_qa_contents("我想學資料科學", history=None, template=_PROMPT_TEMPLATE_STRUCTURED)
+    last = c[-1]["parts"][0]["text"]
+    assert "我想學資料科學" in last
+    # 結構化模板不得再教模型輸出 JSON 區塊（schema 接管）
+    assert "json" not in last.lower()
+    assert "followup_suggestions" not in last
