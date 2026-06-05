@@ -47,3 +47,11 @@ def test_passes_schema_and_model_to_generate_content():
     assert cfg.response_schema is not None
     assert getattr(cfg, "thinking_config", None) is None
     assert cfg.max_output_tokens == 8192
+
+
+def test_system_instruction_keeps_retrieval_rule_drops_json_rule():
+    from backend.qa import _SYSTEM_INSTRUCTION
+    # grounding 命脈：先檢索鐵則必須留
+    assert "先" in _SYSTEM_INSTRUCTION and "檢索" in _SYSTEM_INSTRUCTION
+    # 不再教模型輸出 ```json 區塊（schema 接管結構）
+    assert "```json" not in _SYSTEM_INSTRUCTION
