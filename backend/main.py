@@ -38,7 +38,7 @@ load_dotenv()
 _GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 _STORE_NAME = os.environ["FILE_SEARCH_STORE_NAME"]
 _ALLOWED_ORIGIN = os.environ.get("ALLOWED_ORIGIN", "*")
-_QA_MODE = os.environ.get("QA_MODE", "replay")          # replay(新 3.5+schema) | stream(舊 2.5 串流)
+_QA_MODE = os.environ.get("QA_MODE", "stream")          # stream(預設 2.5 串流強化) | replay(3.5+schema 選項)
 # 啟動即驗證：打錯字(如 "Replay")不可靜默退回 stream（會悄悄改行為、忽略 GEMINI_QA_MODEL）
 if _QA_MODE not in {"replay", "stream"}:
     raise RuntimeError(f"QA_MODE 必須是 'replay' 或 'stream'，收到 {_QA_MODE!r}")
