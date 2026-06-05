@@ -954,6 +954,10 @@ function startStreamQa(question, bubble, ans){
   catch(e){ clearTimeout(guard); stage.stop(); askQuestionFallback(question, bubble, ans); return; }
   _qaEs = es;
 
+  es.addEventListener("stage", ()=>{
+    firstEvent = true;          // replay 模式無 token：靠 stage 事件取消首事件 guard、維持階段 loader
+  });
+
   es.addEventListener("token", (ev)=>{
     let d; try{ d = JSON.parse(ev.data); }catch(_){ return; }
     if(!(d && typeof d.text === "string")) return;
@@ -979,7 +983,19 @@ function startStreamQa(question, bubble, ans){
       attachCitesAndFollowups(bubble, data);
       finishQaTurn();
     };
-    if(!tw){ stage.stop(); renderFinal(); return; }   // 沒收到任何 token 就 done → 停階段、直接渲染
+    if(!tw){
+      stage.stop();
+      // replay 模式（無 token）：用打字機重播完整答案 → 逐字 + 表格 snap-in
+      if(typeof data.answer === "string" && data.answer){
+        const rtw = createTypewriter(ans);
+        rtw.start();
+        rtw.push(data.answer);
+        rtw.finish(()=>{ attachCitesAndFollowups(bubble, data); finishQaTurn(); });
+      } else {
+        renderFinal();
+      }
+      return;
+    }
     // 等緩衝吐完字 → 用權威 answer 覆蓋已串流文字（套用防幻覺覆寫）→ 淡入 citations/followup
     tw.finish(renderFinal);
   });
