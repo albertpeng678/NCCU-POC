@@ -6,6 +6,8 @@ import re
 import time
 from typing import Optional
 
+import json_repair
+
 from google import genai
 from google.genai import types
 from google.genai._interactions.types.tool_param import FileSearch
@@ -82,7 +84,6 @@ _SYSTEM_INSTRUCTION = """\
 - 當你在「列出/比較多門具體課程」時，務必接著輸出一個 Markdown 表格；欄位固定為：課程名稱 | 系所 | 重點；表格內「重點」欄要寫得具體（一句帶到學什麼/特色），只有課程名稱可視需要加粗，系所與重點用一般字；分隔線每欄只用三個連字號（---）；表格最多 6 列，不要為對齊補空白。
 - 純概念題或只談一門課時，不必硬塞表格，用文字說明即可（仍只在最關鍵處用粗體）。
 - 最後用一句話總結或給具體建議。
-- 嚴禁在說明文字裡輸出 JSON；JSON 只在指定的 ```json 區塊出現。
 """
 
 _PROMPT_TEMPLATE = """\
@@ -118,6 +119,24 @@ _PROMPT_TEMPLATE = """\
 
 followup_suggestions 請提供 2-3 個與問題相關的後續問題建議。
 """
+
+_PROMPT_TEMPLATE_STRUCTURED = """\
+學生問題：{question}
+
+請依知識庫課綱回答。版型：先寫 3-5 句充實具體的文字說明（點出課程內容、為何適合、難度/先修）；
+若在列出/比較多門課程，接著輸出 Markdown 表格，欄位固定為「課程名稱 | 系所 | 重點」，分隔線每欄三個連字號（---），最多 6 列；
+純概念題或只談一門課則用文字即可。粗體克制：只標最關鍵的課名與 1-2 個能力關鍵詞。最後一句總結或建議。
+（引用知識庫中實際存在的課程，勿編造課名/課號/老師。）
+"""
+
+_QA_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "answer": {"type": "string"},
+        "followup_suggestions": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["answer", "followup_suggestions"],
+}
 
 
 def parse_qa_response(raw: str) -> dict:
@@ -160,15 +179,49 @@ def parse_qa_response(raw: str) -> dict:
     return {"answer": stripped, "followup_suggestions": []}
 
 
+def _strip_fences(text: str) -> str:
+    """移除 ```json / ``` 鷹架，回傳內層文字（最終 fallback 用，確保鷹架絕不外洩）。"""
+    t = re.sub(r"```(?:json)?", "", text or "")
+    return t.replace("```", "").strip()
+
+
+def parse_structured_response(response) -> dict:
+    """從 response_schema 的 generate_content 回應取 {answer, followup_suggestions}。
+
+    三層容錯：response.parsed(dict) → json.loads(text) → json_repair.loads(text)；
+    全失敗才剝鷹架把文字當 answer（followups 空）。絕不讓 JSON 鷹架外洩。
+    """
+    parsed = getattr(response, "parsed", None)
+    if isinstance(parsed, dict) and "answer" in parsed:
+        return {
+            "answer": str(parsed.get("answer", "")),
+            "followup_suggestions": list(parsed.get("followup_suggestions", []) or []),
+        }
+
+    text = getattr(response, "text", None) or ""
+    for loader in (json.loads, json_repair.loads):
+        try:
+            data = loader(text)
+            if isinstance(data, dict) and "answer" in data:
+                return {
+                    "answer": str(data.get("answer", "")),
+                    "followup_suggestions": list(data.get("followup_suggestions", []) or []),
+                }
+        except Exception:
+            continue
+
+    return {"answer": _strip_fences(text), "followup_suggestions": []}
+
+
 # 多輪歷史：帶最近 N 輪原文進 contents（取代 interactions 的 previous_interaction_id）
 _MAX_HISTORY_TURNS = 3
 
 
-def build_qa_contents(question: str, history: Optional[list] = None) -> list:
+def build_qa_contents(question: str, history: Optional[list] = None, template: str = _PROMPT_TEMPLATE) -> list:
     """把多輪歷史 + 本輪問題組成 generate_content 的 contents。
 
     history: [{"question": str, "answer": str}, ...]（時間升序）。
-    只保留最近 _MAX_HISTORY_TURNS 輪原文；本輪問題用 _PROMPT_TEMPLATE 包裝置於末尾。
+    只保留最近 _MAX_HISTORY_TURNS 輪原文；本輪問題用 template 包裝置於末尾。
     """
     contents: list = []
     if history:
@@ -178,7 +231,7 @@ def build_qa_contents(question: str, history: Optional[list] = None) -> list:
             a = turn.get("answer") or ""
             contents.append({"role": "user", "parts": [{"text": q}]})
             contents.append({"role": "model", "parts": [{"text": a}]})
-    contents.append({"role": "user", "parts": [{"text": _PROMPT_TEMPLATE.format(question=question)}]})
+    contents.append({"role": "user", "parts": [{"text": template.format(question=question)}]})
     return contents
 
 
@@ -455,6 +508,49 @@ def answer_question(
         "followup_suggestions": parsed["followup_suggestions"],
         "citations_course_ids": citations_course_ids,
         "interaction_id": getattr(response, "id", None),
+        "latency_ms": latency_ms,
+    }
+
+
+def answer_question_structured(
+    client: genai.Client,
+    store_name: str,
+    question: str,
+    history: Optional[list] = None,
+    model: str = "gemini-3.5-flash",
+) -> dict:
+    """非串流：3.5 + file_search + response_schema 回乾淨結構化答案。
+
+    回 {answer, followup_suggestions, citations_course_ids, latency_ms}。
+    勿設顯式 thinking_config（Probe B：file_search+schema+thinking 三開會截斷/掉 grounding）。
+    max_output_tokens=8192：thinking 會吃輸出預算，2048 在長答案會截斷。
+    """
+    t0 = time.monotonic()
+    contents = build_qa_contents(question, history, template=_PROMPT_TEMPLATE_STRUCTURED)
+    config = types.GenerateContentConfig(
+        system_instruction=_SYSTEM_INSTRUCTION,
+        temperature=0.2,
+        top_p=0.95,
+        max_output_tokens=8192,
+        response_mime_type="application/json",
+        response_schema=_QA_RESPONSE_SCHEMA,
+        tools=[
+            types.Tool(
+                file_search=types.FileSearch(
+                    file_search_store_names=[store_name],
+                    top_k=5,
+                )
+            )
+        ],
+    )
+    response = client.models.generate_content(model=model, contents=contents, config=config)
+    parsed = parse_structured_response(response)
+    citations_course_ids = extract_course_ids_from_chunks([response])
+    latency_ms = int((time.monotonic() - t0) * 1000)
+    return {
+        "answer": parsed["answer"],
+        "followup_suggestions": parsed["followup_suggestions"],
+        "citations_course_ids": citations_course_ids,
         "latency_ms": latency_ms,
     }
 

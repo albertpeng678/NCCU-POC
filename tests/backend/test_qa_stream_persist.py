@@ -66,7 +66,8 @@ def test_qa_stream_disconnect_does_not_persist_half_turn(client):
 
     insert_mock = AsyncMock(return_value=1)
     bump_mock = AsyncMock(return_value=None)
-    with patch("backend.main.stream_answer", return_value=_gen_tokens_only()), \
+    with patch("backend.main._QA_MODE", "stream"), \
+         patch("backend.main.stream_answer", return_value=_gen_tokens_only()), \
          patch("backend.main.get_pool", return_value=object()), \
          patch("backend.main.create_session", new=AsyncMock(return_value="sess-x")), \
          patch("backend.main.get_session_turns", new=AsyncMock(return_value=[])), \
@@ -95,7 +96,8 @@ def test_qa_stream_success_persists_and_bumps(client):
                           "credits": 3.0, "syllabus_url": "https://x/a"}}
     insert_mock = AsyncMock(return_value=1)
     bump_mock = AsyncMock(return_value=None)
-    with patch("backend.main.stream_answer", return_value=_gen_ok()), \
+    with patch("backend.main._QA_MODE", "stream"), \
+         patch("backend.main.stream_answer", return_value=_gen_ok()), \
          patch("backend.main.get_pool", return_value=object()), \
          patch("backend.main.create_session", new=AsyncMock(return_value="sess-y")), \
          patch("backend.main.get_session_turns", new=AsyncMock(return_value=[])), \
@@ -116,7 +118,8 @@ def test_qa_stream_second_turn_number_increments(client):
         yield {"event": "done", "data": {"course_ids": [], "answer_text": "答案"}}
 
     insert_mock = AsyncMock(return_value=2)
-    with patch("backend.main.stream_answer", return_value=_gen_ok()), \
+    with patch("backend.main._QA_MODE", "stream"), \
+         patch("backend.main.stream_answer", return_value=_gen_ok()), \
          patch("backend.main.get_pool", return_value=object()), \
          patch("backend.main.get_session",
                new=AsyncMock(return_value={"turn_count": 1, "last_interaction_id": ""})), \

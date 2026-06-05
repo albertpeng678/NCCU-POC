@@ -44,7 +44,8 @@ def test_post_qa_no_db_does_not_503(client):
         "interaction_id": "intr-1",
         "latency_ms": 100,
     }
-    with patch("backend.main.get_pool", return_value=None), \
+    with patch("backend.main._QA_MODE", "stream"), \
+         patch("backend.main.get_pool", return_value=None), \
          patch("backend.main.answer_question", return_value=fake_result), \
          patch("backend.main.load_courses_meta", return_value={}), \
          patch("backend.main.extract_citations_by_name", return_value=[]):
@@ -62,7 +63,8 @@ def test_post_qa_no_db_multi_turn_keeps_context(client):
         "followup_suggestions": [], "interaction_id": "intr",
         "latency_ms": 0,
     }
-    with patch("backend.main.get_pool", return_value=None), \
+    with patch("backend.main._QA_MODE", "stream"), \
+         patch("backend.main.get_pool", return_value=None), \
          patch("backend.main.answer_question", return_value=fake_result), \
          patch("backend.main.load_courses_meta", return_value={}), \
          patch("backend.main.extract_citations_by_name", return_value=[]):
@@ -81,7 +83,8 @@ def test_qa_stream_no_db_does_not_emit_service_unavailable(client):
         yield {"event": "token", "data": {"text": "政治學"}}
         yield {"event": "done", "data": {"course_ids": [], "answer_text": "政治學 **不錯**"}}
 
-    with patch("backend.main.get_pool", return_value=None), \
+    with patch("backend.main._QA_MODE", "stream"), \
+         patch("backend.main.get_pool", return_value=None), \
          patch("backend.main.stream_answer", return_value=_gen_ok()), \
          patch("backend.main.load_courses_meta", return_value={}), \
          patch("backend.main.extract_citations_by_name", return_value=[]):
@@ -104,7 +107,8 @@ def test_qa_stream_no_db_multi_turn_increments(client):
             yield {"event": "done", "data": {"course_ids": [], "answer_text": "答案"}}
         return g()
 
-    with patch("backend.main.get_pool", return_value=None), \
+    with patch("backend.main._QA_MODE", "stream"), \
+         patch("backend.main.get_pool", return_value=None), \
          patch("backend.main.stream_answer", side_effect=lambda *a, **k: _gen()), \
          patch("backend.main.load_courses_meta", return_value={}), \
          patch("backend.main.extract_citations_by_name", return_value=[]):
@@ -128,7 +132,8 @@ def test_qa_stream_no_db_feeds_prior_history_to_model(client):
             yield {"event": "done", "data": {"course_ids": [], "answer_text": "回答"}}
         return g()
 
-    with patch("backend.main.get_pool", return_value=None), \
+    with patch("backend.main._QA_MODE", "stream"), \
+         patch("backend.main.get_pool", return_value=None), \
          patch("backend.main.stream_answer", side_effect=_stream_factory), \
          patch("backend.main.load_courses_meta", return_value={}), \
          patch("backend.main.extract_citations_by_name", return_value=[]):
