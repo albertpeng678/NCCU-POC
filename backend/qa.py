@@ -640,9 +640,10 @@ async def stream_answer(
     )
 
     chunks: list = []
-    answer_text = ""
-    emitted = 0          # 已往前端吐出的 answer_text 字元數
-    fence_done = False   # 偵測到 ```json fence 後不再吐 token（JSON 包裝不該串給使用者看）
+    raw = ""             # 累積原始文字
+    emitted = 0          # 已吐出的乾淨字元數
+    mode = None          # "prose" | "json"（首段非空白字判定一次）
+    fence_done = False
     stream = await client.aio.models.generate_content_stream(
         model="gemini-2.5-flash",
         contents=contents,
@@ -650,31 +651,43 @@ async def stream_answer(
     )
     async for chunk in stream:
         chunks.append(chunk)
-        text = _visible_text_from_chunk(chunk)   # 只取非 thought part，杜絕思維鏈外洩
+        text = _visible_text_from_chunk(chunk)   # 只取非 thought part
         if not text:
             continue
-        answer_text += text          # 完整累積（供 done 解析），但只串流 ```json 之前的乾淨 prose
-        if fence_done:
-            continue
-        idx = answer_text.find("```")
-        if idx == -1:
-            # 尚無 fence：保留尾端 2 字當緩衝，避免吐出半截 `` 下一塊才湊成 ```
-            safe = max(emitted, len(answer_text) - 2)
-            if safe > emitted:
-                yield {"event": "token", "data": {"text": answer_text[emitted:safe]}}
-                emitted = safe
+        raw += text
+        if mode is None:
+            s = raw.lstrip()
+            if not s:
+                continue
+            mode = "json" if s[0] == "{" else "prose"
+        if mode == "json":
+            # JSON-first：增量抽乾淨 answer 值，絕不串 raw JSON 鷹架
+            ans = _partial_answer(raw)
+            if len(ans) > emitted:
+                yield {"event": "token", "data": {"text": ans[emitted:]}}
+                emitted = len(ans)
         else:
-            if idx > emitted:
-                yield {"event": "token", "data": {"text": answer_text[emitted:idx]}}
-            emitted = idx
-            fence_done = True
+            # 常態 prose-then-fence：串 ``` 之前的乾淨 prose
+            if fence_done:
+                continue
+            idx = raw.find("```")
+            if idx == -1:
+                safe = max(emitted, len(raw) - 2)   # 留尾端 2 字緩衝，避免吐半截 ``
+                if safe > emitted:
+                    yield {"event": "token", "data": {"text": raw[emitted:safe]}}
+                    emitted = safe
+            else:
+                if idx > emitted:
+                    yield {"event": "token", "data": {"text": raw[emitted:idx]}}
+                emitted = idx
+                fence_done = True
 
-    # 全程無 ```json fence（防禦：理論上 prompt 一定有）→ 補吐保留的尾端緩衝
-    if not fence_done and emitted < len(answer_text):
-        yield {"event": "token", "data": {"text": answer_text[emitted:]}}
+    # prose 模式且全程無 fence → 補吐保留的尾端緩衝
+    if mode == "prose" and not fence_done and emitted < len(raw):
+        yield {"event": "token", "data": {"text": raw[emitted:]}}
 
     course_ids = extract_course_ids_from_chunks(chunks)
     yield {"event": "done", "data": {
         "course_ids": course_ids,
-        "answer_text": answer_text,
+        "answer_text": raw,
     }}
