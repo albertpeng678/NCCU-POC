@@ -186,7 +186,9 @@ def parse_qa_response(raw: str) -> dict:
     except Exception:
         pass
 
-    # 全失敗：剝掉 ```json/``` 與外殼，**絕不回傳含 JSON 鷹架的原文**
+    # 全失敗：剝掉 ```json/``` 與外殼，**絕不回傳含 JSON 鷹架的原文**。
+    # 刻意取捨：剝殼後仍以 `{` 開頭(壞 JSON 殘骸或 json_repair 回非 dict)→ 一律 blank，
+    # 寧可空也不漏鷹架。中文課程答案是 prose-then-fence、不會以 `{` 開頭；且串流 done 另有權威答案覆蓋。
     cleaned = _strip_fences(stripped)
     looks_json = cleaned.startswith("{")
     return {"answer": "" if looks_json else cleaned, "followup_suggestions": []}

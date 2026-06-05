@@ -23,3 +23,11 @@ def test_unrecoverable_never_leaks_scaffolding():
 def test_plain_prose_passthrough():
     out = parse_qa_response("這是一段沒有 JSON 的純文字回答。")
     assert out["answer"] == "這是一段沒有 JSON 的純文字回答。"
+
+
+def test_dict_without_answer_key_blanked_not_leaked():
+    # json 物件但無 answer 欄位 → 不得把 {"foo":"bar"} 當答案漏出，blank 較安全
+    out = parse_qa_response('{"foo": "bar", "baz": 1}')
+    assert out["answer"] == ""
+    assert "foo" not in out["answer"]
+    assert out["followup_suggestions"] == []
