@@ -756,7 +756,9 @@ function createTypewriter(ansEl){
   }
   function doRender(){
     lastRender = performance.now();
-    // 已完成區塊（以 \n\n 為界）append 進 committedEl 並渲染成 markdown（只渲染一次，表格不重建→不閃）
+    // 已完成區塊（以 \n\n 為界）append 進 committedEl，只渲染一次（表格不重建→不閃）。
+    // 不變式：切在 \n\n 邊界 = 區塊已完整（表格已收尾、粗體不跨空行），故用 mdToHtml 整段渲染、
+    // **不可套 safeMarkdownPrefix heal**（heal 會把「結尾表格列」當半截砍掉 → 丟整列）。
     const boundary = shown.lastIndexOf("\n\n");
     if(boundary > committedLen){
       committedEl.insertAdjacentHTML("beforeend", mdToHtml(shown.slice(committedLen, boundary)));
