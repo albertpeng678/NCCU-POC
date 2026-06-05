@@ -130,6 +130,15 @@ _PROMPT_TEMPLATE_STRUCTURED = """\
 （引用知識庫中實際存在的課程，勿編造課名/課號/老師。）
 """
 
+_QA_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "answer": {"type": "string"},
+        "followup_suggestions": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["answer", "followup_suggestions"],
+}
+
 
 def parse_qa_response(raw: str) -> dict:
     """Extract JSON object {answer, followup_suggestions} from possibly-fenced text.
@@ -500,6 +509,49 @@ def answer_question(
         "followup_suggestions": parsed["followup_suggestions"],
         "citations_course_ids": citations_course_ids,
         "interaction_id": getattr(response, "id", None),
+        "latency_ms": latency_ms,
+    }
+
+
+def answer_question_structured(
+    client: genai.Client,
+    store_name: str,
+    question: str,
+    history: Optional[list] = None,
+    model: str = "gemini-3.5-flash",
+) -> dict:
+    """非串流：3.5 + file_search + response_schema 回乾淨結構化答案。
+
+    回 {answer, followup_suggestions, citations_course_ids, latency_ms}。
+    勿設顯式 thinking_config（Probe B：file_search+schema+thinking 三開會截斷/掉 grounding）。
+    max_output_tokens=8192：thinking 會吃輸出預算，2048 在長答案會截斷。
+    """
+    t0 = time.monotonic()
+    contents = build_qa_contents(question, history, template=_PROMPT_TEMPLATE_STRUCTURED)
+    config = types.GenerateContentConfig(
+        system_instruction=_SYSTEM_INSTRUCTION,
+        temperature=0.2,
+        top_p=0.95,
+        max_output_tokens=8192,
+        response_mime_type="application/json",
+        response_schema=_QA_RESPONSE_SCHEMA,
+        tools=[
+            types.Tool(
+                file_search=types.FileSearch(
+                    file_search_store_names=[store_name],
+                    top_k=5,
+                )
+            )
+        ],
+    )
+    response = client.models.generate_content(model=model, contents=contents, config=config)
+    parsed = parse_structured_response(response)
+    citations_course_ids = extract_course_ids_from_chunks([response])
+    latency_ms = int((time.monotonic() - t0) * 1000)
+    return {
+        "answer": parsed["answer"],
+        "followup_suggestions": parsed["followup_suggestions"],
+        "citations_course_ids": citations_course_ids,
         "latency_ms": latency_ms,
     }
 
