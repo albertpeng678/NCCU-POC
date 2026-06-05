@@ -4,10 +4,52 @@ from backend.qa import answer_question_structured
 
 
 class _Resp:
-    def __init__(self, parsed, candidates=None):
+    def __init__(self, parsed, candidates=None, text=""):
         self.parsed = parsed
-        self.text = ""
+        self.text = text
         self.candidates = candidates or []
+
+
+# --- grounding_metadata 物件形狀 mock（對齊真實非串流 generate_content response）---
+class _MD:
+    def __init__(self, key, sv):
+        self.key = key
+        self.string_value = sv
+        self.numeric_value = None
+
+
+class _RC:
+    def __init__(self, cids):
+        self.custom_metadata = [_MD("course_id", c) for c in cids]
+        self.title = ""
+        self.text = ""
+        self.uri = ""
+
+
+class _GC:
+    def __init__(self, rc):
+        self.retrieved_context = rc
+
+
+class _GM:
+    def __init__(self, gcs):
+        self.grounding_chunks = gcs
+
+
+class _Cand:
+    def __init__(self, gm):
+        self.grounding_metadata = gm
+        self.content = None
+
+
+def _resp_with_grounding(answer, cids, text=""):
+    # 真實 grounding：一個 grounding_chunk / retrieved_context 帶一個 course_id
+    gcs = [_GC(_RC([c])) for c in cids]
+    return _Resp(
+        parsed={"answer": answer, "followup_suggestions": []},
+        candidates=[_Cand(_GM(gcs))],
+        text=text,
+    )
 
 
 class _FakeModels:
@@ -55,3 +97,22 @@ def test_system_instruction_keeps_retrieval_rule_drops_json_rule():
     assert "先" in _SYSTEM_INSTRUCTION and "檢索" in _SYSTEM_INSTRUCTION
     # 不再教模型輸出 ```json 區塊（schema 接管結構）
     assert "```json" not in _SYSTEM_INSTRUCTION
+
+
+def test_grounding_extracted_from_non_stream_candidates():
+    # 真結構化 grounding：從 candidates[].grounding_metadata 取出 course_id
+    resp = _resp_with_grounding("a", ["070415001", "356358001"])
+    out = answer_question_structured(_FakeClient(resp), "stores/x", "q", history=None)
+    assert out["citations_course_ids"] == ["070415001", "356358001"]
+
+
+def test_no_phantom_citation_from_answer_envelope():
+    # grounding 空 + answer/JSON 信封內含 9 碼 → 不得被當成 grounded citation
+    # （結構化 response.text 是整包 JSON，掃信封文字會造出假 citation、繞過防幻覺覆寫）
+    resp = _Resp(
+        parsed={"answer": "代號 123456789 很讚", "followup_suggestions": []},
+        candidates=[],
+        text='{"answer":"代號 123456789 很讚","followup_suggestions":[]}',
+    )
+    out = answer_question_structured(_FakeClient(resp), "stores/x", "q", history=None)
+    assert out["citations_course_ids"] == []

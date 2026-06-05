@@ -955,7 +955,8 @@ function startStreamQa(question, bubble, ans){
   _qaEs = es;
 
   es.addEventListener("stage", ()=>{
-    firstEvent = true;          // replay 模式無 token：靠 stage 事件取消首事件 guard、維持階段 loader
+    firstEvent = true;          // replay 模式無 token：靠 stage 事件取消首事件 guard
+    // 注意：刻意不 stage.stop()（與 token handler 不同）——生成期間階段 loader 要持續動，等 done 才停
   });
 
   es.addEventListener("token", (ev)=>{

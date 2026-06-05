@@ -426,6 +426,24 @@ def _grounding_course_ids_from_chunk(chunk) -> list[str]:
     return out
 
 
+def extract_grounding_course_ids(response) -> list[str]:
+    """只從 grounding_metadata 萃取 course_id（dedup 保序），**不掃答案文字**。
+
+    結構化(非串流)模式專用：response.text 是整包 JSON 信封，掃 9 碼 regex 會把答案內
+    提到的課號當成「grounded citation」→ 造出假 citation 繞過防幻覺覆寫。故只信結構化 grounding。
+    """
+    try:
+        seen: set[str] = set()
+        unique: list[str] = []
+        for cid in _grounding_course_ids_from_chunk(response):
+            if cid not in seen:
+                seen.add(cid)
+                unique.append(cid)
+        return unique
+    except Exception:
+        return []
+
+
 def extract_course_ids_from_chunks(chunks) -> list[str]:
     """從 generate_content_stream 累積的 chunks 萃取 grounded course_id。
 
@@ -545,7 +563,7 @@ def answer_question_structured(
     )
     response = client.models.generate_content(model=model, contents=contents, config=config)
     parsed = parse_structured_response(response)
-    citations_course_ids = extract_course_ids_from_chunks([response])
+    citations_course_ids = extract_grounding_course_ids(response)
     latency_ms = int((time.monotonic() - t0) * 1000)
     return {
         "answer": parsed["answer"],
