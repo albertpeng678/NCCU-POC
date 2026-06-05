@@ -6,6 +6,8 @@ import re
 import time
 from typing import Optional
 
+import json_repair
+
 from google import genai
 from google.genai import types
 from google.genai._interactions.types.tool_param import FileSearch
@@ -158,6 +160,40 @@ def parse_qa_response(raw: str) -> dict:
 
     # Fallback: treat the whole response as the answer
     return {"answer": stripped, "followup_suggestions": []}
+
+
+def _strip_fences(text: str) -> str:
+    """移除 ```json / ``` 鷹架，回傳內層文字（最終 fallback 用，確保鷹架絕不外洩）。"""
+    t = re.sub(r"```(?:json)?", "", text or "")
+    return t.replace("```", "").strip()
+
+
+def parse_structured_response(response) -> dict:
+    """從 response_schema 的 generate_content 回應取 {answer, followup_suggestions}。
+
+    三層容錯：response.parsed(dict) → json.loads(text) → json_repair.loads(text)；
+    全失敗才剝鷹架把文字當 answer（followups 空）。絕不讓 JSON 鷹架外洩。
+    """
+    parsed = getattr(response, "parsed", None)
+    if isinstance(parsed, dict) and "answer" in parsed:
+        return {
+            "answer": str(parsed.get("answer", "")),
+            "followup_suggestions": list(parsed.get("followup_suggestions", []) or []),
+        }
+
+    text = getattr(response, "text", None) or ""
+    for loader in (json.loads, json_repair.loads):
+        try:
+            data = loader(text)
+            if isinstance(data, dict) and "answer" in data:
+                return {
+                    "answer": str(data.get("answer", "")),
+                    "followup_suggestions": list(data.get("followup_suggestions", []) or []),
+                }
+        except Exception:
+            continue
+
+    return {"answer": _strip_fences(text), "followup_suggestions": []}
 
 
 # 多輪歷史：帶最近 N 輪原文進 contents（取代 interactions 的 previous_interaction_id）
