@@ -1,11 +1,32 @@
 # NCCU 課程推薦系統 — 交接文件（HANDOFF.md）
 
 > 專案進展史 + WBS + 待辦。給接手的 agent 快速掌握「做到哪、還剩什麼」。
-> 最後更新：2026-06-05（**Session 4**：fan-out 提速 + Q&A 降級 + citation/思維鏈修法 + 同源部署 + embedding 根因）
+> 最後更新：2026-06-05（**Session 5**：Q&A 留 2.5 + JSON 三層強化 + 平滑串流打字機；3.5 探索後 parked）
 
 ---
 
-## ★ Session 4 交接（最新，換機器接手必讀）★
+## ★ Session 5 交接（最新，換機器接手必讀）★
+
+**做了什麼**：解決 Q&A 三個體感問題 ——「串流會漏 JSON 鷹架 / Gemini 一坨一坨吐 chunk 不平滑 / 表格以 raw markdown 顯示」。
+
+**關鍵決策**：探索過 `gemini-3.5-flash`（掛 file_search 時能原生 `response_schema`，2.5 不行會 400 → 從源頭免「自由文字解析 JSON」）。但 **3.5 現階段 high-demand 503 嚴重、延遲變異大（13~39s）**，production 跑 2.5 才穩 → **決定 Q&A 留 2.5 串流**，用程式手段壓問題。3.5 成果保留：`answer_question_structured`（replay 模式）已 commit；3.5 *真串流* 實驗在 `git stash`。
+
+**怎麼解（已實作於 `feat/qa-hardening-smooth-stream`，未上線）**：
+- **(A) JSON 三層強化**：`parse_qa_response` → `json.loads`→`json_repair`→`_strip_fences`（剝殼後仍以 `{` 開頭就 blank，**絕不漏鷹架**）；`stream_answer` 加 **JSON-first 守門**（模型若沒寫 prose 直接吐 JSON，用 `_partial_answer`(json_repair 增量)只串乾淨 answer 值）。
+- **(B) 平滑串流打字機**：SSE `token` 改餵既有 `createTypewriter`（定速緩衝，解耦 Gemini 不均 chunk）；`drainCount` backlog 自適應（buffer 大就一次吐多字追上生成）；live 尾端 `renderSafeMarkdown`（healed markdown → 表格 snap-in、不露 raw `|`、粗體即時）。
+- **(C) `QA_MODE`**：預設 `stream`(2.5 強化)；`replay`(3.5 非串流，慢但結構上不漏)為 env 一鍵回退選項。
+
+**驗證**：後端 205 + 前端 20 測試綠；**Playwright MCP 真後端實測通過**（串流中+最終皆無 `{"answer"`/```json、表格渲染成 `<table>`、citations 3 + followups 3、0 console error）。
+
+**429 釐清**：本機開發時撞的 embedding 429 是**爆量測試**造成（每提問都 embed 問句 + SDK 重試放大），**production 正常**；使用者是 Tier 1。非阻礙。
+
+**待辦/未做**：① 上線（git push 觸發 Railway；本輪只到分支驗證）。② `/recommend` 是否遷 3.5（另議，先 probe 延遲/品質）。③ 清理：刪 `createProgressiveRenderer`/`stripInProgressTable` 死碼、收斂單一渲染器。④ Layer 4「sentinel 換格式」徹底根治（需重驗 grounding #15）。⑤ git committer email 是公司帳號，push 前宜設個人帳號。
+
+**spec/plan**：`docs/superpowers/{specs,plans}/2026-06-05-qa-2.5-hardening-smooth-stream*`。
+
+---
+
+## ★ Session 4 交接 ★
 
 > 分支 **`feat/streaming-ux`**（已 push 到 master，Railway 自動部署）。本回合大量功能 + 除錯，**全部 TDD 單元 + 多數 live e2e 親證**。後端測試 **196 passing**。
 
