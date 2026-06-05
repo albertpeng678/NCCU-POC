@@ -315,36 +315,65 @@ async def qa_stream(request: Request, question: str, session_id: str | None = No
         result_dict = None
         error = None
         try:
-            async for ev in stream_answer(_client, _STORE_NAME, question, history):
+            if _QA_MODE == "replay":
+                yield _sse("stage", {"label": "檢索課綱中…"})   # 立即觸發前端 firstEvent
                 if await request.is_disconnected():
-                    return  # 前端已關閉 → 中止
-                if ev["event"] == "token":
-                    yield _sse("token", ev["data"])
-                elif ev["event"] == "done":
-                    parsed = parse_qa_response(ev["data"]["answer_text"])
-                    citations = extract_citations(ev["data"]["course_ids"], meta)
-                    answer = parsed["answer"]
-                    followups = parsed["followup_suggestions"]
-                    # grounding 沒附 citations → 用「答案提到的真實課名」補（模型常 grounded 卻沒帶 metadata）
-                    if not citations:
-                        citations = extract_citations_by_name(answer, meta)
-                    # 真的查無（grounding 空 + 答案沒提到任何真實課名）→ 才覆寫防幻覺，不蓋掉已串流的真答案
-                    if should_override_no_results(answer, citations):
-                        answer = NO_RESULTS_MESSAGE
-                        followups = []
-                    result_dict = {
-                        "answer": answer,
-                        "citations_course_ids": ev["data"]["course_ids"],
-                        "followup_suggestions": followups,
-                        "latency_ms": 0,
-                    }
-                    yield _sse("done", {
-                        "answer": answer,   # 最終權威答案（含防幻覺覆寫）；前端據此覆蓋已串流文字
-                        "citations": citations,
-                        "followup_suggestions": followups,
-                        "session_id": session_id,
-                        "turn_number": turn_number,
-                    })
+                    return
+                result = await asyncio.to_thread(
+                    answer_question_structured, _client, _STORE_NAME, question, history, _QA_MODEL
+                )
+                answer = result["answer"]
+                followups = result["followup_suggestions"]
+                citations = extract_citations(result["citations_course_ids"], meta)
+                if not citations:
+                    citations = extract_citations_by_name(answer, meta)
+                if should_override_no_results(answer, citations):
+                    answer = NO_RESULTS_MESSAGE
+                    followups = []
+                result_dict = {
+                    "answer": answer,
+                    "citations_course_ids": result["citations_course_ids"],
+                    "followup_suggestions": followups,
+                    "latency_ms": result["latency_ms"],
+                }
+                yield _sse("done", {
+                    "answer": answer,
+                    "citations": citations,
+                    "followup_suggestions": followups,
+                    "session_id": session_id,
+                    "turn_number": turn_number,
+                })
+            else:
+                async for ev in stream_answer(_client, _STORE_NAME, question, history):
+                    if await request.is_disconnected():
+                        return  # 前端已關閉 → 中止
+                    if ev["event"] == "token":
+                        yield _sse("token", ev["data"])
+                    elif ev["event"] == "done":
+                        parsed = parse_qa_response(ev["data"]["answer_text"])
+                        citations = extract_citations(ev["data"]["course_ids"], meta)
+                        answer = parsed["answer"]
+                        followups = parsed["followup_suggestions"]
+                        # grounding 沒附 citations → 用「答案提到的真實課名」補（模型常 grounded 卻沒帶 metadata）
+                        if not citations:
+                            citations = extract_citations_by_name(answer, meta)
+                        # 真的查無（grounding 空 + 答案沒提到任何真實課名）→ 才覆寫防幻覺，不蓋掉已串流的真答案
+                        if should_override_no_results(answer, citations):
+                            answer = NO_RESULTS_MESSAGE
+                            followups = []
+                        result_dict = {
+                            "answer": answer,
+                            "citations_course_ids": ev["data"]["course_ids"],
+                            "followup_suggestions": followups,
+                            "latency_ms": 0,
+                        }
+                        yield _sse("done", {
+                            "answer": answer,   # 最終權威答案（含防幻覺覆寫）；前端據此覆蓋已串流文字
+                            "citations": citations,
+                            "followup_suggestions": followups,
+                            "session_id": session_id,
+                            "turn_number": turn_number,
+                        })
         except Exception as e:
             error = e
             sentry_sdk.capture_exception(e)
