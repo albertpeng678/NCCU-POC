@@ -226,51 +226,67 @@ async def qa(req: QaRequest, background_tasks: BackgroundTasks):
 
     # Resolve session: new or existing
     session_id = req.session_id
-    prev_interaction_id = None
     turn_number = 1
     if session_id:
         sess = await get_session(pool, session_id)
         if sess is None:
             raise HTTPException(status_code=404, detail="Session not found")
-        prev_interaction_id = sess.get("last_interaction_id")
         turn_number = (sess.get("turn_count") or 0) + 1
     else:
         # create_session 在無 DB 時回 ephemeral uuid（不再回 None）→ 移除硬性 503 死路徑。
         session_id = await create_session(pool)
 
-    # Call Gemini（QA_MODE 切換新舊堆疊）
+    # Call Gemini（QA_MODE 切換新舊堆疊）。
+    # 兩模式都用 history-based 多輪（stateless、穩定）；不碰 interactions API/`previous_interaction_id`
+    # （beta 易碎，且串流回合把 last_interaction_id 存成 "" → 傳空字串給 interactions 必 400「Invalid previous_interaction_id」）。
     result = None
     error = None
     try:
+        history = []
+        if req.session_id:
+            turns = await get_session_turns(pool, session_id)
+            history = build_history_from_turns(turns)
         if _QA_MODE == "replay":
-            history = []
-            if req.session_id:
-                turns = await get_session_turns(pool, session_id)
-                history = build_history_from_turns(turns)
             result = await asyncio.to_thread(
                 answer_question_structured, _client, _STORE_NAME, req.question, history, _QA_MODEL
             )
         else:
-            result = answer_question(_client, _STORE_NAME, req.question, prev_interaction_id)
+            # stream 模式 POST（前端 SSE 斷線時的 fallback）：drain 與 /qa/stream 同一條 history-based
+            # 生成路徑（stream_answer）成完整答案 → 兩路徑一致、零 interactions 依賴。
+            answer_text, course_ids = "", []
+            async for ev in stream_answer(_client, _STORE_NAME, req.question, history):
+                if ev["event"] == "done":
+                    course_ids = ev["data"].get("course_ids", []) or []
+                    answer_text = ev["data"].get("answer_text", "") or ""
+            parsed = parse_qa_response(answer_text)
+            result = {
+                "answer": parsed["answer"],
+                "followup_suggestions": parsed["followup_suggestions"],
+                "citations_course_ids": course_ids,
+                "latency_ms": 0,
+            }
     except Exception as e:
         error = e
         sentry_sdk.capture_exception(e)   # 回報被吞掉的 Gemini 問答錯誤（Sentry 未啟用時 no-op）
 
-    # Persist turn (Phase 1)
-    turn_id = await insert_turn(pool, session_id, turn_number, req.question, result, error)
-    if result:
-        # replay 無 interaction_id → bump 空字串推進 turn_count；stream 沿用 interaction_id
-        await bump_session(pool, session_id, result.get("interaction_id") or "")
-
     if error:
+        # 失敗也記一筆 turn（result=None）以利後續排查，再回 503
+        await insert_turn(pool, session_id, turn_number, req.question, None, error)
         raise HTTPException(status_code=503, detail=str(error))
 
-    # 共用收尾：citations join + 課名補 + 防幻覺覆寫（與 /qa/stream 三處一致）
+    # 共用收尾：citations join + 課名補 + 防幻覺覆寫（與 /qa/stream 三處一致）。
+    # ⚠️ 必須在 insert_turn 之前：否則幻覺答案（空 citations 卻像列課程）會以未覆寫原文存進 qa_turn，
+    #    再經 build_history_from_turns 餵回下一輪污染上下文（/qa/stream 同樣持久化 finalize 後答案）。
     meta = load_courses_meta()
     result["answer"], result["followup_suggestions"], citations = finalize_qa_answer(
         result["answer"], result.get("followup_suggestions", []),
         result.get("citations_course_ids", []), meta,
     )
+
+    # Persist turn (Phase 1) — 存 finalize 後答案
+    turn_id = await insert_turn(pool, session_id, turn_number, req.question, result, error)
+    # 兩模式皆 history-based、無 interaction_id → bump 空字串推進 turn_count（欄位已淘汰）
+    await bump_session(pool, session_id, "")
 
     # Fire-and-forget Q&A judge (Phase 2)
     if turn_id:

@@ -36,17 +36,16 @@ def _events(text):
 
 # ---------- POST /qa：無 DB → 不 503、回 ephemeral session_id ----------
 
+async def _fake_qa_stream(*a, **k):
+    """stream 模式 POST /qa 現在 drain stream_answer（history-based），故 mock 此處而非 interactions。"""
+    yield {"event": "token", "data": {"text": "政治學 **不錯**"}}
+    yield {"event": "done", "data": {"course_ids": [], "answer_text": "政治學 **不錯**"}}
+
+
 def test_post_qa_no_db_does_not_503(client):
-    fake_result = {
-        "answer": "政治學 **不錯**",
-        "citations_course_ids": [],
-        "followup_suggestions": ["要不要看國際關係？"],
-        "interaction_id": "intr-1",
-        "latency_ms": 100,
-    }
     with patch("backend.main._QA_MODE", "stream"), \
          patch("backend.main.get_pool", return_value=None), \
-         patch("backend.main.answer_question", return_value=fake_result), \
+         patch("backend.main.stream_answer", _fake_qa_stream), \
          patch("backend.main.load_courses_meta", return_value={}), \
          patch("backend.qa.extract_citations_by_name", return_value=[]):
         resp = client.post("/qa", json={"question": "問政治學"})
@@ -58,14 +57,9 @@ def test_post_qa_no_db_does_not_503(client):
 
 def test_post_qa_no_db_multi_turn_keeps_context(client):
     """無 DB 第二輪帶回首輪建立的 ephemeral session_id → turn_number 遞增、不 404/503。"""
-    fake_result = {
-        "answer": "答案", "citations_course_ids": [],
-        "followup_suggestions": [], "interaction_id": "intr",
-        "latency_ms": 0,
-    }
     with patch("backend.main._QA_MODE", "stream"), \
          patch("backend.main.get_pool", return_value=None), \
-         patch("backend.main.answer_question", return_value=fake_result), \
+         patch("backend.main.stream_answer", _fake_qa_stream), \
          patch("backend.main.load_courses_meta", return_value={}), \
          patch("backend.qa.extract_citations_by_name", return_value=[]):
         r1 = client.post("/qa", json={"question": "Q1"})
