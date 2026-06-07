@@ -61,3 +61,14 @@ CREATE TABLE IF NOT EXISTS qa_turn (
 CREATE INDEX IF NOT EXISTS idx_qa_turn_session ON qa_turn(session_id);
 CREATE INDEX IF NOT EXISTS idx_qa_turn_created ON qa_turn(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_qa_turn_judge ON qa_turn(judge_overall);
+
+-- 職涯推薦離線預算：50 固定職涯整池結果預先算好存此，線上命中直接讀（秒出、0 即時 AI）
+CREATE TABLE IF NOT EXISTS career_budget (
+    career          VARCHAR(120) PRIMARY KEY,   -- career_skills.json 的 key（命中比對）
+    payload_json    JSONB NOT NULL,             -- 扁平整池 courses（每課含 group/rank/reason）
+    pool_size       INTEGER NOT NULL,           -- 整池門數
+    model           VARCHAR(40) NOT NULL,       -- 生成模型版本（gemini-2.5-flash）
+    seed            INTEGER NOT NULL DEFAULT 0,  -- 可重現用
+    built_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()  -- 新鮮度（一學期 rebuild 一次）
+);
+CREATE INDEX IF NOT EXISTS idx_career_budget_built_at ON career_budget(built_at DESC);

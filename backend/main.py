@@ -20,7 +20,9 @@ from backend.models import (
 from backend.recommend import (
     build_recommendation_instrumented, derive_skills_for_career,
     load_careers, load_courses_meta, stream_recommendation,
+    stream_recommendation_from_budget, DEFAULT_BATCH_SIZE,
 )
+from backend.career_budget import get_budget
 from backend.logger import build_log_record, insert_log, update_judge_scores
 from backend.judge import evaluate_recommendation
 from backend.db import init_pool, close_pool, get_pool
@@ -121,6 +123,16 @@ async def recommend(req: RecommendRequest, background_tasks: BackgroundTasks):
     # 清單外職涯：用 LLM 推導可轉移技能；推導不出 → no_match（不再 400）
     if req.career in careers:
         skills = None
+        # 命中離線預算 → 直接回整池（秒出、0 次即時 fan-out/stage2）。未命中/無 DB → 落回即時。
+        budget = await get_budget(get_pool(), req.career)
+        if budget:
+            return {
+                "career": req.career,
+                "courses": budget["courses"],
+                "batch_size": DEFAULT_BATCH_SIZE,
+                "latency_ms": 0,
+                "seed": seed,
+            }
     else:
         skills = derive_skills_for_career(_client, req.career)
         if not skills:
@@ -189,10 +201,12 @@ async def recommend_stream(request: Request, career: str, seed: int | None = Non
     async def event_gen():
         result = None
         error = None
+        # 命中離線預算 → 瞬間串流（0 即時 AI）；未命中/無 DB/清單外 → 即時串流
+        budget = await get_budget(get_pool(), career) if career in load_careers() else None
+        gen = (stream_recommendation_from_budget(career, budget, resolved_seed) if budget
+               else stream_recommendation(_client, _STORE_NAME, career, resolved_seed, skills=None))
         try:
-            async for ev in stream_recommendation(
-                _client, _STORE_NAME, career, resolved_seed, skills=None
-            ):
+            async for ev in gen:
                 if await request.is_disconnected():
                     break  # 前端已關閉（收到終態 es.close()）→ 中止，勿續燒 Gemini
                 if ev["event"] == "result":

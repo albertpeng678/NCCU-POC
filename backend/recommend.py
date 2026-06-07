@@ -809,3 +809,18 @@ async def stream_recommendation(
         )
     yield _stage_event(5, "finalize", "done")
     yield {"event": "result", "data": result}
+
+
+async def stream_recommendation_from_budget(career: str, budget: dict, seed: int = 0):
+    """命中離線預算 → 瞬間吐完 5 階段(start+done) + result（courses 來自預算），0 次即時 AI。
+    讓前端柴犬等候動畫有最短展示、且事件序列與即時路徑完全一致。"""
+    for n, key in _STAGES:
+        yield _stage_event(n, key, "start")
+        yield _stage_event(n, key, "done")
+    yield {"event": "result", "data": {
+        "career": career,
+        "courses": budget["courses"],
+        "batch_size": DEFAULT_BATCH_SIZE,
+        "latency_ms": 0,
+        "seed": seed,
+    }}
