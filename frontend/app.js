@@ -1,7 +1,8 @@
 // app.js — NCCU Course Map frontend logic
-import { createPaginationState, nextBatch, appendPool, groupBatch } from "./pagination.js?v=23";
-import { drainCount } from "./progressive-md.js?v=23";
-import { stageNarration, easeApproach, fillToDone, SHIBA_TOTAL } from "./shiba-progress.js?v=23";
+import { createPaginationState, nextBatch, appendPool, groupBatch } from "./pagination.js?v=25";
+import { drainCount } from "./progressive-md.js?v=25";
+import { stageNarration, easeApproach, fillToDone, SHIBA_TOTAL } from "./shiba-progress.js?v=25";
+import { qaErrorUiState, buildRetryState, noMatchChips, TRANSIENT_MSG, NO_MATCH_MSG } from "./qa-recovery.js?v=25";
 
 const CONFIG = {
   // Local dev default; overwrite before Railway deploy.
@@ -297,7 +298,7 @@ function _initShibaAnim(){
   const myGen = ++_shibaGen;   // 防重入 token
   try{ if(_shibaAnim){ _shibaAnim.destroy(); _shibaAnim = null; } }catch(_){}
   r.anim.innerHTML = "";       // 清舊 SVG，避免重入時殘留多個渲染樹
-  fetch(`shiba.json?v=23`).then(res=>res.json()).then(data=>{
+  fetch(`shiba.json?v=25`).then(res=>res.json()).then(data=>{
     if(myGen !== _shibaGen || !r.anim.isConnected) return;   // 已被更新的載入取代 → 放棄
     _shibaAnim = window.lottie.loadAnimation({
       container: r.anim, renderer: "svg", loop: true,
@@ -869,6 +870,46 @@ function attachCitesAndFollowups(bubbleEl, data){
   bubbleEl.scrollIntoView({behavior:"smooth", block:"end"});
 }
 
+// 暫時性過載（503/429/timeout）→ 忙線泡泡 + 「重新提問」（回填原問題、防連點）
+function renderTransientError(bubble, ans, question){
+  const st = buildRetryState(question);
+  ans.innerHTML =
+    `<div class="qa-err"><span class="qa-bang" aria-hidden="true">!</span>${escHtml(TRANSIENT_MSG)}</div>` +
+    `<div class="qa-recover-act"><button class="qa-recover-btn" type="button" data-testid="qa-retry">${escHtml(st.buttonLabel)}</button></div>`;
+  qaInput.value = st.refillValue;                 // 回填原問題（可直接送或改字）
+  qaInput.dispatchEvent(new Event("input"));
+  const btn = ans.querySelector('[data-testid="qa-retry"]');
+  if(btn) btn.addEventListener("click", ()=>{
+    if(qaBusy) return;                             // 防連點放大限流
+    btn.disabled = true; btn.textContent = st.disabledLabel;
+    qaBusy = true; qaSend.disabled = true;
+    startStreamQa(question, bubble, ans);          // 沿用原問題、原地重跑
+  });
+  finishQaTurn();                                  // 重啟輸入（retry 點下去才重設 busy）
+}
+
+// 真查無資料（no_match）→ 不給重試，改「換個問法」+ followup chips（沿用既有 chip 行為）
+function renderNoMatch(bubble, ans, data){
+  const answer = (typeof data.answer === "string" && data.answer) ? data.answer : NO_MATCH_MSG;
+  ans.innerHTML = mdToHtml(answer);
+  const chips = noMatchChips(data.followup_suggestions);
+  const wrap = document.createElement("div");
+  wrap.className = "qa-tail fade-in";
+  wrap.innerHTML =
+    `<div class="followups"><div class="fu-row">` +     // 沿用既有 followup 結構（上分隔線+間距，與答案隔開）
+    chips.map(q=>`<button class="fu-chip" type="button" data-q="${escHtml(q)}">${escHtml(q)}</button>`).join("") +
+    `</div></div>` +
+    `<div class="qa-recover-act"><button class="qa-recover-btn ghost" type="button" data-testid="qa-rephrase">換個問法</button></div>`;
+  bubble.appendChild(wrap);
+  wrap.querySelectorAll(".fu-chip").forEach(chip=>{
+    chip.addEventListener("click", ()=>{ if(!qaBusy) askQuestion(chip.dataset.q); });
+  });
+  const rb = wrap.querySelector('[data-testid="qa-rephrase"]');
+  if(rb) rb.addEventListener("click", ()=>{ qaInput.focus(); });   // 不回填、不重送
+  bubble.scrollIntoView({behavior:"smooth", block:"end"});
+  finishQaTurn();
+}
+
 function appendLoadingBubble(){
   const b = document.createElement("div");
   b.className = "bubble bot";
@@ -974,6 +1015,8 @@ function startStreamQa(question, bubble, ans){
     qaTurnCount = data.turn_number || (qaTurnCount + 1);
     qaSessionLabel.textContent = `SESSION · 第 ${qaTurnCount} 輪對話`;
     const renderFinal = ()=>{
+      // 查無資料 → 走「換個問法」引導（不給重試）
+      if(data.no_match){ renderNoMatch(bubble, ans, data); return; }
       // 權威完整答案 → 用 mdToHtml 整段渲染（不套串流用的 safeMarkdownPrefix heal，
       // 否則「以表格列結尾」的答案會被誤砍最後一列、看起來像沒答完）
       if(typeof data.answer === "string" && data.answer) ans.innerHTML = mdToHtml(data.answer);
@@ -1003,8 +1046,10 @@ function startStreamQa(question, bubble, ans){
       settled = true; clearTimeout(guard); closeQaEs(); stage.stop(); tw && tw.abort();
       let d; try{ d = JSON.parse(ev.data); }catch(_){ d = {}; }
       if(window.Sentry) Sentry.captureMessage(`qa stream error: ${d.error_type||"unknown"}`);
-      ans.innerHTML = `<span style="color:#ff9b9b">查詢失敗：${escHtml(d.message || "服務暫時繁忙")}。請稍後再試。</span>`;
-      finishQaTurn();
+      // 依 error_type 走差異化：暫時性過載→忙線泡泡+重新提問；查無資料→換個問法引導
+      const ui = qaErrorUiState(d.error_type);
+      if(ui.kind === "no_match") renderNoMatch(bubble, ans, {answer: NO_MATCH_MSG, followup_suggestions: []});
+      else renderTransientError(bubble, ans, question);
       return;
     }
     if(settled) return;

@@ -362,3 +362,12 @@ body.qa-active .site-footer{display:none}
   .shiba-now,.shiba-tip{transition:none}
 }
 .reroll-ic{vertical-align:-2px;margin-left:3px}
+
+/* 問答失敗復原（暫時性過載 / 查無資料）·三色 navy/cyan/白·無 emoji·無左線 */
+.qa-err{display:flex;align-items:flex-start;gap:8px;color:var(--text);font-size:14px;line-height:1.6}
+.qa-bang{flex-shrink:0;display:inline-flex;width:18px;height:18px;border:1.6px solid var(--cyan);color:var(--cyan);border-radius:50%;align-items:center;justify-content:center;font-weight:800;font-size:12px;margin-top:1px}
+.qa-recover-act{margin-top:18px}
+.qa-recover-btn{padding:7px 14px;border-radius:20px;border:1.4px solid var(--cyan);background:var(--cyan-dim);color:var(--cyan);font-size:12.5px;font-weight:700;cursor:pointer;transition:opacity .2s}
+.qa-recover-btn:hover{opacity:.85}
+.qa-recover-btn:disabled{opacity:.5;cursor:default;border-style:dashed}
+.qa-recover-btn.ghost{border-color:var(--glass-brd);background:transparent;color:var(--text-dim);font-weight:500}
