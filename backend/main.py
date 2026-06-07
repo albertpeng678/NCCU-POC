@@ -219,9 +219,9 @@ async def recommend_stream(request: Request, career: str, seed: int | None = Non
             sentry_sdk.capture_exception(e)
             yield _sse("error", {"error_type": type(e).__name__, "message": str(e)})
 
-        # 串流路徑也要 logging/judge（否則上線主走串流時 query_log 斷裂、judge 不評分）。
-        # 串流端點未回傳 stage1 候選池大小 → 以三組課程總數推估（下界，僅作量測參考）。
-        if result is not None or error is not None:
+        # 串流路徑 logging/judge（即時路徑才需）。**命中預算（budget）跳過**：那是預先算好的池，
+        # 重新 judge = 秒出卻背景燒一次 LLM（與 POST 命中一致、守「命中→0 即時 AI」不變式）。
+        if not budget and (result is not None or error is not None):
             stage1_count = len(result["courses"]) if result else 0
             _spawn_bg(_background_log_and_judge(career, result, stage1_count, error))
 

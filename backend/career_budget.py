@@ -18,11 +18,16 @@ def serialize_pool(courses: list) -> list:
 
 
 def deserialize_pool(payload: list) -> list:
-    """payload → 扁平 courses：只留已知欄位、缺 rank 補 0（課綱結構漂移也不會線上崩）。"""
+    """payload → 扁平 courses：只留已知欄位、補前端渲染必需的安全預設（rank/group/reason），
+    缺 course_id/name 的壞資料直接跳過 → payload 形狀漂移也不會讓前端崩（CLAUDE.md #11 教訓）。"""
     out = []
     for c in (payload or []):
+        if not c.get("course_id") or not c.get("name"):
+            continue
         d = {k: c[k] for k in _COURSE_KEYS if k in c}
         d.setdefault("rank", 0)
+        d.setdefault("group", "core")
+        d.setdefault("reason", {"lead": "", "points": []})
         out.append(d)
     return out
 

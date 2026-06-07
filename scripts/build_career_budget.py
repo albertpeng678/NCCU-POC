@@ -81,6 +81,8 @@ async def main():
     existing = {r["career"] for r in rows}
 
     careers = load_careers()
+    if only and only not in careers:
+        sys.exit(f"[budget] ONLY={only!r} 不在 50 職涯清單中（打錯字？）→ 不做任何事")
     targets = select_careers_to_build(list(careers.keys()), existing, only, only_missing)
     print(f"[budget] 既有 {len(existing)} / 目標 {len(targets)} 個職涯 · 併發 {concurrency}")
 

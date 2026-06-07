@@ -31,7 +31,7 @@ def test_stream_hit_emits_5_stages_and_result_without_ai():
          patch("backend.main.get_pool", return_value=MagicMock()), \
          patch("backend.main.stream_recommendation", _boom_stream), \
          patch("backend.main._spawn_bg", MagicMock()), \
-         patch("backend.main._background_log_and_judge", MagicMock()):
+         patch("backend.main._background_log_and_judge", MagicMock()) as judge:
         resp = TestClient(app).get("/recommend/stream?career=資料科學家")
     evs = _events(resp.text)
     stages = [json.loads(d)["key"] for e, d in evs if e == "stage"]
@@ -40,6 +40,8 @@ def test_stream_hit_emits_5_stages_and_result_without_ai():
     results = [json.loads(d) for e, d in evs if e == "result"]
     assert len(results) == 1
     assert [c["course_id"] for c in results[0]["courses"]] == ["070415001"]
+    # 命中 → 絕不背景叫 judge（杜絕「秒出卻背景燒錢」；與 POST 命中一致）
+    judge.assert_not_called()
 
 
 def test_stream_miss_uses_live_stream():

@@ -31,6 +31,18 @@ def test_deserialize_empty():
     assert deserialize_pool([]) == []
 
 
+def test_deserialize_fills_group_and_reason_defaults():
+    # payload 形狀漂移（缺 group/reason）→ 補安全預設，前端不崩
+    back = deserialize_pool([{"course_id": "x", "name": "課"}])
+    assert back[0]["group"] == "core"
+    assert back[0]["reason"] == {"lead": "", "points": []}
+
+
+def test_deserialize_skips_courses_missing_id_or_name():
+    back = deserialize_pool([{"course_id": "", "name": "課"}, {"name": "無id"}, {"course_id": "ok", "name": "好"}])
+    assert [c["course_id"] for c in back] == ["ok"]
+
+
 def test_deserialize_ignores_unknown_keys_and_fills_rank():
     payload = [{"course_id": "x", "name": "課", "extra_junk": 1}]
     back = deserialize_pool(payload)
