@@ -1,8 +1,8 @@
 // app.js — NCCU Course Map frontend logic
-import { createPaginationState, nextBatch, appendPool, groupBatch } from "./pagination.js?v=26";
-import { drainCount } from "./progressive-md.js?v=26";
-import { stageNarration, easeApproach, fillToDone, SHIBA_TOTAL } from "./shiba-progress.js?v=26";
-import { qaErrorUiState, buildRetryState, noMatchChips, TRANSIENT_MSG, NO_MATCH_MSG } from "./qa-recovery.js?v=26";
+import { createPaginationState, nextBatch, appendPool, groupBatch } from "./pagination.js?v=27";
+import { drainCount } from "./progressive-md.js?v=27";
+import { stageNarration, easeApproach, fillToDone, SHIBA_TOTAL } from "./shiba-progress.js?v=27";
+import { qaErrorUiState, buildRetryState, noMatchChips, TRANSIENT_MSG, NO_MATCH_MSG } from "./qa-recovery.js?v=27";
 
 const CONFIG = {
   // Local dev default; overwrite before Railway deploy.
@@ -15,12 +15,14 @@ const CONFIG = {
   SENTRY_DSN: "https://eb5ebaf502bf1590ef5f87da67282518@o4511451335622656.ingest.us.sentry.io/4511504292904960",
 };
 
-// Sentry：DSN 有設且 SDK 載入才啟用（錯誤監控 + tracing）
-if (window.Sentry && CONFIG.SENTRY_DSN) {
+// Sentry：DSN 有設且 SDK 載入才啟用（錯誤監控 + tracing）。
+// 本機(localhost/127.0.0.1)一律不啟用 → e2e/開發觸發的錯誤不會污染正式 Sentry 專案。
+const _isLocalhost = location.hostname === "localhost" || location.hostname === "127.0.0.1";
+if (window.Sentry && CONFIG.SENTRY_DSN && !_isLocalhost) {
   Sentry.init({
     dsn: CONFIG.SENTRY_DSN,
     tracesSampleRate: 1.0,
-    environment: (location.hostname === "localhost" || location.hostname === "127.0.0.1") ? "development" : "production",
+    environment: "production",
   });
 }
 
@@ -298,7 +300,7 @@ function _initShibaAnim(){
   const myGen = ++_shibaGen;   // 防重入 token
   try{ if(_shibaAnim){ _shibaAnim.destroy(); _shibaAnim = null; } }catch(_){}
   r.anim.innerHTML = "";       // 清舊 SVG，避免重入時殘留多個渲染樹
-  fetch(`shiba.json?v=26`).then(res=>res.json()).then(data=>{
+  fetch(`shiba.json?v=27`).then(res=>res.json()).then(data=>{
     if(myGen !== _shibaGen || !r.anim.isConnected) return;   // 已被更新的載入取代 → 放棄
     _shibaAnim = window.lottie.loadAnimation({
       container: r.anim, renderer: "svg", loop: true,
