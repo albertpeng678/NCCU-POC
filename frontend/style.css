@@ -334,50 +334,31 @@ body.qa-active .site-footer{display:none}
 .no-match-card .nm-cta:hover{transform:translateY(-2px)}
 .no-match-card .nm-cta:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
 
-/* 等待 UX（NNgroup：分步驟進度+預估+輪播） */
-.load-card{width:min(520px,90vw);background:var(--glass);border:1px solid var(--glass-brd);border-radius:16px;padding:24px 26px;backdrop-filter:blur(12px);text-align:left}
-.load-head{display:flex;align-items:center;gap:16px;margin-bottom:18px}
-.load-head .loader-ring{width:34px;height:34px;flex-shrink:0;margin:0}
-.load-title{font-family:"Chakra Petch";font-size:16px;color:var(--text);margin-bottom:3px}
-.load-eta{font-size:13px;color:var(--text-dim)}
-.load-eta b{color:var(--cyan);font-weight:600}
-.load-bar{height:6px;background:rgba(20,34,68,.7);border-radius:99px;overflow:hidden;margin-bottom:18px}
-.load-bar-fill{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--cyan),#7ad7ff);border-radius:99px;transition:width .6s cubic-bezier(.25,.8,.3,1)}
-.load-bar-fill.done{background:linear-gradient(90deg,#37e0a6,#7af0c8)}
-.load-card.done .load-title{color:#37e0a6}
-.load-card.done .loader-ring{border-top-color:#37e0a6;animation:none;opacity:.4}
+/* 等待 UX：柴犬館員（done-driven 數字、累積不倒數；三色 navy/cyan/白） */
+.shiba-card{width:min(440px,92vw);background:var(--glass);border:1px solid var(--glass-brd);border-radius:22px;overflow:hidden;backdrop-filter:blur(12px)}
+.shiba-stage{position:relative;height:300px;background:radial-gradient(120% 95% at 50% 8%,var(--navy-panel),var(--navy-deep) 55%,var(--navy-void));display:flex;align-items:center;justify-content:center;overflow:hidden}
+.shiba-glow{position:absolute;left:50%;top:46%;width:210px;height:210px;transform:translate(-50%,-50%);border-radius:50%;background:radial-gradient(circle,rgba(232,240,255,.06),transparent 62%)}
+.shiba-shadow{position:absolute;left:50%;bottom:30px;width:150px;height:20px;transform:translateX(-50%);border-radius:50%;background:radial-gradient(ellipse,rgba(7,13,31,.6),transparent 70%)}
+.shiba-anim{position:relative;width:250px;height:250px;z-index:1}
+.shiba-status{padding:20px 20px 22px;text-align:center}
+.shiba-now{color:var(--cyan);font-size:14px;font-weight:700;letter-spacing:.02em;min-height:20px;transition:opacity .4s}
+.shiba-count{margin-top:13px;color:var(--text);font-size:19px;font-weight:800}
+.shiba-count b{color:var(--cyan);font-variant-numeric:tabular-nums}
+.shiba-tip{margin-top:8px;color:var(--text-dim);font-size:13px;min-height:36px;transition:opacity .5s}
 
-/* ===== 5 階段 stepper（SSE 進度）===== */
-.load-steps{list-style:none;display:flex;flex-direction:column;gap:13px;margin:0}
-.ld-step{display:flex;align-items:center;gap:11px;font-size:13.5px;color:var(--text-dim);transition:color .3s}
-.ld-step .ld-mark{
-  width:20px;height:20px;flex-shrink:0;border-radius:50%;
-  border:2px solid var(--glass-brd);background:transparent;
-  display:grid;place-items:center;position:relative;transition:all .3s;
+@media (max-width:768px){
+  .shiba-stage{height:260px}
+  .shiba-anim{width:210px;height:210px}
 }
-/* pending：灰圈 */
-.ld-step .ld-mark::after{content:"";width:6px;height:6px;border-radius:50%;background:var(--glass-brd);transition:all .3s}
-/* active：cyan 脈動 + 旋轉 spinner（蓋掉內點）*/
-.ld-step.active{color:var(--text)}
-.ld-step.active .ld-mark{border-color:var(--cyan);border-top-color:transparent;animation:ldspin .8s linear infinite,ldpulse 1.4s ease-in-out infinite}
-.ld-step.active .ld-mark::after{opacity:0}
-/* done：綠勾 */
-.ld-step.done{color:rgba(232,240,255,.6)}
-.ld-step.done .ld-mark{border-color:#37e0a6;background:#37e0a6;animation:none}
-.ld-step.done .ld-mark::after{content:"";width:9px;height:5px;border:2px solid var(--navy-void);border-top:none;border-right:none;border-radius:0;background:transparent;transform:translateY(-1px) rotate(-45deg);opacity:1}
-/* error：紅圈叉 */
-.ld-step.error{color:#ff9b9b}
-.ld-step.error .ld-mark{border-color:#ff8181;background:transparent;animation:none}
-.ld-step.error .ld-mark::after{content:"×";width:auto;height:auto;color:#ff8181;font-size:14px;line-height:1;background:transparent}
-@keyframes ldspin{to{transform:rotate(360deg)}}
-@keyframes ldpulse{0%,100%{box-shadow:0 0 0 2px var(--cyan-dim)}50%{box-shadow:0 0 0 6px transparent}}
-
 @media (max-width:480px){
-  .load-card{padding:20px 18px;width:min(520px,94vw)}
-  .ld-step{font-size:12.5px;gap:9px}
-  .ld-step .ld-mark{width:18px;height:18px}
-  .load-title{font-size:15px}
-  .load-eta{font-size:12px}
+  .shiba-stage{height:220px}
+  .shiba-anim{width:180px;height:180px}
+  .shiba-count{font-size:17px}
+  .shiba-now{font-size:13px}
+  .shiba-tip{font-size:12px}
 }
-.load-tip{margin-top:16px;font-size:12.5px;color:var(--text-dim);text-align:center;min-height:18px}
+@media (prefers-reduced-motion:reduce){
+  .shiba-glow{animation:none}
+  .shiba-now,.shiba-tip{transition:none}
+}
 .reroll-ic{vertical-align:-2px;margin-left:3px}

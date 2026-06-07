@@ -33,12 +33,14 @@ test("easeApproach: 0ms→0、單調遞增、封頂於 holdCount（永不到 tot
   assert.ok(huge < SHIBA_TOTAL, "永遠到不了 2718（杜絕數字跑完還在等）");
 });
 
-test("easeApproach: 早期增量 < 中期增量（slow-to-fast 起步），且早期 < 半", () => {
-  assert.ok(easeApproach({ elapsedMs: 1000 }) < SHIBA_HOLD * 0.5);
-  assert.ok(easeApproach({ elapsedMs: 20000 }) > SHIBA_HOLD * 0.8);
-  const incEarly = easeApproach({ elapsedMs: 2000 }) - easeApproach({ elapsedMs: 1000 });
-  const incMid = easeApproach({ elapsedMs: 6000 }) - easeApproach({ elapsedMs: 5000 });
-  assert.ok(incEarly < incMid, "起步比中段慢");
+test("easeApproach: 起步低、且整段長等待都在動（不會中途凍住）", () => {
+  // 起步低（不要一開始就衝頂）
+  assert.ok(easeApproach({ elapsedMs: 5000 }) < SHIBA_HOLD * 0.4);
+  // 關鍵：~2 分鐘的等待裡，45s→90s 仍明顯遞增（杜絕「30s 就到頂、剩 90s 凍住」）
+  const moveLate = easeApproach({ elapsedMs: 90000 }) - easeApproach({ elapsedMs: 45000 });
+  assert.ok(moveLate > 200, `中後段仍要明顯移動，實得 ${moveLate}`);
+  // 接近尾段才逼近上限（但仍 < total）
+  assert.ok(easeApproach({ elapsedMs: 120000 }) > SHIBA_HOLD * 0.85);
 });
 
 test("fillToDone：唯一補滿入口，補到 total，且 > easeApproach 任何時刻", () => {

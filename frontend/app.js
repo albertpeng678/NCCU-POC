@@ -1,6 +1,7 @@
 // app.js — NCCU Course Map frontend logic
-import { createPaginationState, nextBatch, appendPool, groupBatch } from "./pagination.js?v=20";
-import { drainCount } from "./progressive-md.js?v=20";
+import { createPaginationState, nextBatch, appendPool, groupBatch } from "./pagination.js?v=22";
+import { drainCount } from "./progressive-md.js?v=22";
+import { stageNarration, easeApproach, fillToDone, SHIBA_TOTAL } from "./shiba-progress.js?v=22";
 
 const CONFIG = {
   // Local dev default; overwrite before Railway deploy.
@@ -260,118 +261,96 @@ const REC_STAGES = [
   {key:"compose",    label:"編排推薦組合與理由"},
   {key:"finalize",   label:"整理課程資訊"},
 ];
-// 每階段在進度條佔的「累積上限 %」（誠實：done 才補到該段終點；compose 封頂 94%，result 真到才 100%）
-const STAGE_END = {understand:4, retrieve:56, filter:60, compose:94, finalize:100};
-// 各階段預估剩餘秒（用於「預估還需約 N 秒」）。校準至 fan-out 實測：retrieve(並行檢索)~44s、compose(整池標註)~32s。
+// 各階段預估秒（fallback 模擬推進用）：retrieve(並行檢索)~44s、compose(整池標註)~32s。
 const STAGE_SEC = {understand:3, retrieve:44, filter:1, compose:32, finalize:2};
 let _recEs = null;          // 當前 EventSource
-let _stageRaf = null;       // easing 動畫 rAF handle
 let _curStageIdx = -1;      // 目前 active 階段 index
 
+// 柴犬等候動畫狀態
 let _loadTimers = [];
+let _countRaf = null;       // 「已嗅過 N」數字 rAF handle
+let _countStart = 0;
+let _shibaAnim = null;      // lottie 動畫實例
+const _reduceMotion = !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+const _now = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
+
 function stopLoading(){
   _loadTimers.forEach(t=>{clearInterval(t);clearTimeout(t);}); _loadTimers = [];
-  if(_stageRaf){ cancelAnimationFrame(_stageRaf); _stageRaf = null; }
+  if(_countRaf){ cancelAnimationFrame(_countRaf); _countRaf = null; }   // 停數字 loop，勿背景空轉
 }
 
-// --- DOM refs（loading 區）---
-function _loadRefs(){
+function _shibaRefs(){
   return {
-    card: document.querySelector("#loading .load-card"),
-    bar:  document.getElementById("load-bar-fill"),
-    steps:Array.from(document.querySelectorAll("#load-steps .ld-step")),
-    tip:  document.getElementById("load-tip"),
-    stepNum: document.getElementById("load-step-num"),
-    etaSec:  document.getElementById("load-eta-sec"),
+    card:  document.querySelector("#loading .shiba-card"),
+    anim:  document.getElementById("shiba-anim"),
+    now:   document.getElementById("shiba-now"),
+    count: document.getElementById("shiba-count"),
+    tip:   document.getElementById("shiba-tip"),
   };
 }
 
-function resetStepper(){
-  const r = _loadRefs();
-  if(!r.steps.length) return;
-  _curStageIdx = -1;
-  r.card && r.card.classList.remove("done");
-  if(r.bar){ r.bar.classList.remove("done"); r.bar.style.transition = "none"; r.bar.style.width = "0%"; }
-  r.steps.forEach(s=>s.classList.remove("active","done","error"));
-  if(r.stepNum) r.stepNum.textContent = "1";
-  // 立即啟動第一階段
-  setStageActive(0);
+// 載入柴犬 Lottie（失敗靜默：舞台仍有旁白+數字，不崩、不空白）
+function _initShibaAnim(){
+  const r = _shibaRefs();
+  if(!r.anim || !window.lottie) return;
+  try{ if(_shibaAnim){ _shibaAnim.destroy(); _shibaAnim = null; } }catch(_){}
+  fetch(`shiba.json?v=22`).then(res=>res.json()).then(data=>{
+    if(!r.anim.isConnected) return;
+    _shibaAnim = window.lottie.loadAnimation({
+      container: r.anim, renderer: "svg", loop: true,
+      autoplay: !_reduceMotion, animationData: data,
+    });
+    if(_reduceMotion && _shibaAnim){
+      try{ _shibaAnim.goToAndStop(Math.floor((_shibaAnim.totalFrames||30)/2), true); }catch(_){}
+    }
+  }).catch(()=>{});
 }
 
-// 進度條目標（％）平滑過渡到 target；用 CSS transition（Step 2.2 預設 .6s）
-function moveBar(targetPct, durationMs){
-  const r = _loadRefs(); if(!r.bar) return;
-  r.bar.style.transition = `width ${durationMs}ms cubic-bezier(.25,.8,.3,1)`;
-  requestAnimationFrame(()=>{ r.bar.style.width = `${targetPct}%`; });
+// 旁白（now + tip）依柴犬視角階段切換（淡入淡出）
+function _setNarration(key){
+  const r = _shibaRefs(); const n = stageNarration(key);
+  if(r.now){ r.now.style.opacity = 0; setTimeout(()=>{ r.now.textContent = n.now; r.now.style.opacity = 1; }, 180); }
+  if(r.tip){ r.tip.style.opacity = 0; setTimeout(()=>{ r.tip.textContent = n.tip; r.tip.style.opacity = 1; }, 180); }
 }
 
-function updateEta(){
-  const r = _loadRefs(); if(!r.etaSec) return;
-  // 從目前階段起，加總剩餘各階段預估秒
-  let sec = 0;
-  for(let i=Math.max(_curStageIdx,0); i<REC_STAGES.length; i++){
-    sec += STAGE_SEC[REC_STAGES[i].key] || 0;
+// 「已嗅過 N / 2,718」數字：rAF 連續逼近但封頂（done 前永遠到不了 2718）
+function _startCount(){
+  const r = _shibaRefs(); if(!r.count) return;
+  _countStart = _now();
+  if(_reduceMotion){
+    const tick = ()=>{ r.count.textContent = easeApproach({elapsedMs:_now()-_countStart}).toLocaleString(); };
+    tick(); _loadTimers.push(setInterval(tick, 900)); return;   // 降頻，不跑每 frame
   }
-  r.etaSec.textContent = String(Math.max(sec,1));
-  if(r.stepNum) r.stepNum.textContent = String(Math.min(_curStageIdx+1, 5));
+  const loop = ()=>{
+    r.count.textContent = easeApproach({elapsedMs:_now()-_countStart}).toLocaleString();
+    _countRaf = requestAnimationFrame(loop);
+  };
+  _countRaf = requestAnimationFrame(loop);
 }
 
-// active：標記脈動 + easing 把進度條推到「該段終點的 90%」就 hold（誠實安全網）
+// active：切柴犬旁白（數字由 _startCount 自走，不在此動）
 function setStageActive(idx){
-  const r = _loadRefs(); if(!r.steps.length) return;
   _curStageIdx = idx;
-  r.steps.forEach((s,i)=>{
-    if(i < idx) { s.classList.add("done"); s.classList.remove("active","error"); }
-    else if(i === idx){ s.classList.add("active"); s.classList.remove("done","error"); }
-    else { s.classList.remove("active","done","error"); }
-  });
-  const key = REC_STAGES[idx].key;
-  const prevEnd = idx === 0 ? 0 : STAGE_END[REC_STAGES[idx-1].key];
-  const thisEnd = STAGE_END[key];
-  const hold = prevEnd + (thisEnd - prevEnd) * 0.9;   // 推到該段 90%
-  // 用該階段預估秒 easing 推進；到 hold 就停（CSS transition 自然 hold）
-  moveBar(hold, (STAGE_SEC[key] || 4) * 1000);
-  updateEta();
+  const stage = REC_STAGES[idx];
+  if(stage) _setNarration(stage.key);
 }
 
-// done：補滿該段終點、勾選；不自動跳下一段（等下一個 stage start 事件）
-function setStageDone(idx){
-  const r = _loadRefs(); if(!r.steps.length) return;
-  const step = r.steps[idx]; if(!step) return;
-  step.classList.add("done"); step.classList.remove("active","error");
-  const key = REC_STAGES[idx].key;
-  moveBar(STAGE_END[key], 500);   // 補滿該段終點，給「躍進」感
-}
+// done：數字由 ease 控、唯一補滿入口是 finishProgress；此處 no-op（守 done-driven 不變式）
+function setStageDone(idx){ /* no-op：絕不在這把數字推到 2718 */ }
 
 function setStageError(idx, msg){
-  const r = _loadRefs();
-  const step = r.steps[idx >= 0 ? idx : 0];
-  if(step){ step.classList.add("error"); step.classList.remove("active"); }
+  const r = _shibaRefs();
   stopLoading();
+  try{ if(_shibaAnim) _shibaAnim.stop(); }catch(_){}
+  r.card && r.card.classList.add("error");
 }
 
-// 全部完成：補滿 100% + 轉綠
+// 全部完成（後端 result/done）：停數字 loop + 補滿到 2,718（唯一補滿入口）
 function finishProgress(){
-  const r = _loadRefs();
-  r.steps.forEach(s=>{ s.classList.add("done"); s.classList.remove("active","error"); });
-  r.bar && r.bar.classList.add("done");
+  const r = _shibaRefs();
+  stopLoading();
+  if(r.count) r.count.textContent = fillToDone().toLocaleString();
   r.card && r.card.classList.add("done");
-  moveBar(100, 400);
-  if(r.stepNum) r.stepNum.textContent = "5";
-  if(r.etaSec) r.etaSec.textContent = "0";
-}
-
-// 輪播提示文案（沿用，降低等待煎熬）
-const LOAD_TIPS = [
-  "正在比對你的職涯所需技能與課程內容…",
-  "從全校 2,700+ 門課綱中逐一篩選相關課程…",
-  "為每門課量身生成推薦理由，請再稍候…",
-  "好課值得等待，馬上就好。",
-];
-function startTips(){
-  const r = _loadRefs(); if(!r.tip) return;
-  let i=0; r.tip.textContent = LOAD_TIPS[0];
-  _loadTimers.push(setInterval(()=>{ i=(i+1)%LOAD_TIPS.length; r.tip.textContent = LOAD_TIPS[i]; }, 5000));
 }
 
 // 顯示 loading 區（共用：SSE 與 fallback 都先呼叫）
@@ -381,19 +360,23 @@ function showLoadingShell(){
   loadingEl.hidden = false;
   loadingEl.scrollIntoView({behavior:"smooth",block:"center"});
   stopLoading();
-  resetStepper();
-  startTips();
+  const r = _shibaRefs();
+  _curStageIdx = -1;
+  r.card && r.card.classList.remove("done","error");
+  if(r.count) r.count.textContent = "0";
+  _initShibaAnim();
+  _setNarration("understand");
+  _startCount();
 }
 
-// fallback：校準模擬 5 階段（SSE 失敗時用；依 STAGE_SEC 時間表自動推進）
+// fallback：校準模擬 5 階段（SSE 失敗時用；依 STAGE_SEC 時間表推進旁白）
 function showLoadingSimulated(){
   showLoadingShell();
   let acc = 0;
-  // 依序在估計時間點把前一階段標 done、下一階段 active
   for(let i=1; i<REC_STAGES.length; i++){
     acc += (STAGE_SEC[REC_STAGES[i-1].key] || 4) * 1000;
     const idx = i;
-    _loadTimers.push(setTimeout(()=>{ setStageDone(idx-1); setStageActive(idx); }, acc));
+    _loadTimers.push(setTimeout(()=>{ setStageActive(idx); }, acc));
   }
 }
 function showError(msg){ stopLoading(); loadingEl.hidden = true; resultsEl.hidden = true; errorEl.hidden = false; errorMsg.textContent = msg; }

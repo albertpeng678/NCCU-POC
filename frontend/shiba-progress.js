@@ -22,10 +22,12 @@ export function stageNarration(key) {
   return STAGE_NARRATION[key] || STAGE_FALLBACK;
 }
 
-// Weibull 形狀（p>1 → 起步慢、中段加速、末段趨平），再硬封頂於 holdCount。
+// Weibull 逼近，時間尺度 τ≈55s 對齊「推薦約 80–135s」的真實等待：
+// 整段都在緩緩往上爬，接近尾段才逼近 holdCount，再硬封頂（done 前永遠 < total）。
+// τ 太小(如 8s)會在 ~30s 就到頂、剩餘等待數字凍住——故對齊實測等待長度。
 export function easeApproach({ elapsedMs = 0, total = SHIBA_TOTAL, holdCount = SHIBA_HOLD } = {}) {
   const t = Math.max(0, elapsedMs) / 1000;
-  const frac = 1 - Math.exp(-Math.pow(t / 8, 1.6));
+  const frac = 1 - Math.exp(-Math.pow(t / 55, 1.15));
   return Math.min(holdCount, Math.round(holdCount * frac));
 }
 
