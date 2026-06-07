@@ -1,9 +1,9 @@
 // app.js — NCCU Course Map frontend logic
-import { createPaginationState, nextBatch, appendPool, groupBatch } from "./pagination.js?v=32";
-import { drainCount } from "./progressive-md.js?v=32";
-import { stageNarration, easeApproach, fillToDone, SHIBA_TOTAL } from "./shiba-progress.js?v=32";
-import { qaErrorUiState, buildRetryState, noMatchChips, TRANSIENT_MSG, NO_MATCH_MSG } from "./qa-recovery.js?v=32";
-import { buildEndStateHtml } from "./end-state.js?v=32";
+import { createPaginationState, nextBatch, appendPool, groupBatch } from "./pagination.js?v=34";
+import { drainCount } from "./progressive-md.js?v=34";
+import { stageNarration, easeApproach, fillToDone, SHIBA_TOTAL } from "./shiba-progress.js?v=34";
+import { qaErrorUiState, buildRetryState, noMatchChips, TRANSIENT_MSG, NO_MATCH_MSG } from "./qa-recovery.js?v=34";
+import { buildEndStateHtml } from "./end-state.js?v=34";
 
 const CONFIG = {
   // Local dev default; overwrite before Railway deploy.
@@ -210,6 +210,9 @@ const GROUP_META = [
 ];
 function renderResults(data){
   stopLoading();
+  // 換新職涯/重新推薦時，清掉前一次殘留的「看完了」end-state + 還原被收起的換一批鈕
+  const oldEnd = document.querySelector("#results .end-state"); if(oldEnd) oldEnd.remove();
+  const rb = document.getElementById("reroll-btn"); if(rb) rb.style.display = "";
   loadingEl.hidden = true; errorEl.hidden = true;
   const nm = document.getElementById("no-match"); if(nm) nm.hidden = true;
   resCareer.textContent = data.career;
@@ -302,7 +305,7 @@ function _initShibaAnim(){
   const myGen = ++_shibaGen;   // 防重入 token
   try{ if(_shibaAnim){ _shibaAnim.destroy(); _shibaAnim = null; } }catch(_){}
   r.anim.innerHTML = "";       // 清舊 SVG，避免重入時殘留多個渲染樹
-  fetch(`shiba.json?v=32`).then(res=>res.json()).then(data=>{
+  fetch(`shiba.json?v=34`).then(res=>res.json()).then(data=>{
     if(myGen !== _shibaGen || !r.anim.isConnected) return;   // 已被更新的載入取代 → 放棄
     _shibaAnim = window.lottie.loadAnimation({
       container: r.anim, renderer: "svg", loop: true,
@@ -365,6 +368,10 @@ function finishProgress(){
 // 顯示 loading 區（共用：SSE 與 fallback 都先呼叫）
 function showLoadingShell(){
   resultsEl.hidden = true; errorEl.hidden = true;
+  // 每次新推薦一開始就清掉上一次殘留的「看完了」end-state + 還原換一批鈕
+  // （放這裡覆蓋所有後續結果：成功/錯誤/查無資料都不會留舊 end-state）
+  const oldEnd = document.querySelector("#results .end-state"); if(oldEnd) oldEnd.remove();
+  const rb = document.getElementById("reroll-btn"); if(rb) rb.style.display = "";
   const nm = document.getElementById("no-match"); if(nm) nm.hidden = true;
   loadingEl.hidden = false;
   loadingEl.scrollIntoView({behavior:"smooth",block:"center"});
