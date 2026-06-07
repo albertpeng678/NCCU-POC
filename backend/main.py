@@ -24,6 +24,7 @@ from backend.recommend import (
 from backend.logger import build_log_record, insert_log, update_judge_scores
 from backend.judge import evaluate_recommendation
 from backend.db import init_pool, close_pool, get_pool
+from backend.observability import before_send as sentry_before_send, stream_traces_sampler
 from backend.qa import (
     answer_question, answer_question_structured, finalize_qa_answer,
     extract_citations, stream_answer, parse_qa_response,
@@ -51,7 +52,10 @@ if _SENTRY_DSN:
     sentry_sdk.init(
         dsn=_SENTRY_DSN,
         environment=os.environ.get("SENTRY_ENVIRONMENT", "production"),
-        traces_sample_rate=float(os.environ.get("SENTRY_TRACES_SAMPLE_RATE", "1.0")),
+        # 預期內暫時性 Gemini 錯誤(429/503/spending cap)降 warning+歸群、真 bug 維持 error；降級不丟棄
+        before_send=sentry_before_send,
+        # 超長串流端點(/recommend/stream ~2m、/qa/stream)取樣降至 0.1，避免污染 performance 報表
+        traces_sampler=stream_traces_sampler,
         send_default_pii=False,
     )
 
