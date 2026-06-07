@@ -9,28 +9,31 @@ _META = {
 
 
 def test_grounded_course_ids_become_citations():
-    answer, followups, citations = finalize_qa_answer(
+    answer, followups, citations, no_match = finalize_qa_answer(
         "推薦 **資料科學基礎**。", ["q1"], ["070415001"], _META,
     )
     assert [c["course_id"] for c in citations] == ["070415001"]
     assert answer == "推薦 **資料科學基礎**。"
     assert followups == ["q1"]
+    assert no_match is False
 
 
 def test_empty_grounding_falls_back_to_name_match():
     # 無 course_ids，但答案提到知識庫真實課名 → 用課名補 citations
-    answer, followups, citations = finalize_qa_answer(
+    answer, followups, citations, no_match = finalize_qa_answer(
         "我推薦資料科學基礎這門課。", ["q1"], [], _META,
     )
     assert [c["name"] for c in citations] == ["資料科學基礎"]
     assert answer == "我推薦資料科學基礎這門課。"  # 有 citation → 不覆寫
+    assert no_match is False
 
 
 def test_no_match_course_listing_triggers_override():
-    # 空 citations + 答案像在列課程（含 9 碼代號）→ 防幻覺覆寫
-    answer, followups, citations = finalize_qa_answer(
+    # 空 citations + 答案像在列課程（含 9 碼代號）→ 防幻覺覆寫 + no_match 旗標
+    answer, followups, citations, no_match = finalize_qa_answer(
         "課號 999999999 是一門好課。", ["q1"], [], _META,
     )
     assert citations == []
     assert answer == NO_RESULTS_MESSAGE
     assert followups == []
+    assert no_match is True

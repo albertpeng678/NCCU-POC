@@ -27,7 +27,7 @@ from backend.db import init_pool, close_pool, get_pool
 from backend.observability import before_send as sentry_before_send, stream_traces_sampler
 from backend.qa import (
     answer_question, answer_question_structured, finalize_qa_answer,
-    extract_citations, stream_answer, parse_qa_response,
+    extract_citations, stream_answer, parse_qa_response, classify_qa_error,
 )
 from backend.qa_judge import evaluate_qa
 from backend.qa_logger import (
@@ -282,10 +282,10 @@ async def qa(req: QaRequest, background_tasks: BackgroundTasks):
     # ⚠️ 必須在 insert_turn 之前：否則幻覺答案（空 citations 卻像列課程）會以未覆寫原文存進 qa_turn，
     #    再經 build_history_from_turns 餵回下一輪污染上下文（/qa/stream 同樣持久化 finalize 後答案）。
     meta = load_courses_meta()
-    result["answer"], result["followup_suggestions"], citations = finalize_qa_answer(
+    result["answer"], result["followup_suggestions"], citations, _no_match = finalize_qa_answer(
         result["answer"], result.get("followup_suggestions", []),
         result.get("citations_course_ids", []), meta,
-    )
+    )  # POST 是 fallback 路徑，不走分支③，no_match 略過
 
     # Persist turn (Phase 1) — 存 finalize 後答案
     turn_id = await insert_turn(pool, session_id, turn_number, req.question, result, error)
@@ -342,7 +342,7 @@ async def qa_stream(request: Request, question: str, session_id: str | None = No
                 result = await asyncio.to_thread(
                     answer_question_structured, _client, _STORE_NAME, question, history, _QA_MODEL
                 )
-                answer, followups, citations = finalize_qa_answer(
+                answer, followups, citations, no_match = finalize_qa_answer(
                     result["answer"], result["followup_suggestions"],
                     result["citations_course_ids"], meta,
                 )
@@ -356,6 +356,7 @@ async def qa_stream(request: Request, question: str, session_id: str | None = No
                     "answer": answer,
                     "citations": citations,
                     "followup_suggestions": followups,
+                    "no_match": no_match,   # 查無資料 → 前端走「換個問法」引導而非重試
                     "session_id": session_id,
                     "turn_number": turn_number,
                 })
@@ -367,7 +368,7 @@ async def qa_stream(request: Request, question: str, session_id: str | None = No
                         yield _sse("token", ev["data"])
                     elif ev["event"] == "done":
                         parsed = parse_qa_response(ev["data"]["answer_text"])
-                        answer, followups, citations = finalize_qa_answer(
+                        answer, followups, citations, no_match = finalize_qa_answer(
                             parsed["answer"], parsed["followup_suggestions"],
                             ev["data"]["course_ids"], meta,
                         )
@@ -381,13 +382,15 @@ async def qa_stream(request: Request, question: str, session_id: str | None = No
                             "answer": answer,   # 最終權威答案（含防幻覺覆寫）；前端據此覆蓋已串流文字
                             "citations": citations,
                             "followup_suggestions": followups,
+                            "no_match": no_match,   # 查無資料 → 前端走「換個問法」引導而非重試
                             "session_id": session_id,
                             "turn_number": turn_number,
                         })
         except Exception as e:
             error = e
             sentry_sdk.capture_exception(e)
-            yield _sse("error", {"error_type": type(e).__name__, "message": str(e)})
+            # 語意化 error_type（rate_limited/timeout/unknown）→ 前端走差異化重試分支
+            yield _sse("error", {"error_type": classify_qa_error(e), "message": str(e)})
 
         # 串流末持久化：**只在有完整 result_dict（走到 done）時才落 turn + bump**。
         # 斷線（mid-stream return，result_dict 仍為 None）或純錯誤 → 不寫半截 turn，

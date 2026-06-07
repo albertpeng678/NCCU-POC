@@ -1,15 +1,18 @@
 # backend/qa.py
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
 from typing import Optional
 
+import httpx
 import json_repair
 
 from google import genai
 from google.genai import types
+from google.genai import errors as genai_errors
 from google.genai._interactions.types.tool_param import FileSearch
 
 
@@ -47,6 +50,23 @@ def should_override_no_results(answer: str, citations: list) -> bool:
     if citations:
         return False
     return looks_like_course_listing(answer)
+
+
+def classify_qa_error(exc) -> str:
+    """把 Q&A 例外映射成語意 error_type 給前端走差異化分支。
+    rate_limited（429/503 暫時性過載→鼓勵重試）/ timeout / unknown。
+    no_match（查無資料）不由此產生——它源自 grounding 空，由 finalize 的 no_match 旗標走 done 事件。
+    """
+    if exc is None:
+        return "unknown"
+    if isinstance(exc, genai_errors.APIError):
+        return "rate_limited" if getattr(exc, "code", None) in (429, 503) else "unknown"
+    if isinstance(exc, (httpx.TimeoutException, asyncio.TimeoutError)):
+        return "timeout"
+    msg = str(exc).lower()
+    if "timeout" in msg or "deadline" in msg:
+        return "timeout"
+    return "unknown"
 
 
 def needs_format_retry(answer: str) -> bool:
@@ -310,15 +330,17 @@ def finalize_qa_answer(answer: str, followups: list, course_ids: list, meta: dic
 
     grounding course_ids → citations；citations 空則用「答案提到的真實課名」補
     （模型常 grounded 卻沒帶 metadata）；真查無（空 citations + 答案像在列課程）→ 防幻覺覆寫。
-    回 (answer, followups, citations)。
+    回 (answer, followups, citations, no_match)。no_match=True 時前端走「換個問法」引導而非重試。
     """
     citations = extract_citations(course_ids, meta)
     if not citations:
         citations = extract_citations_by_name(answer, meta)
+    no_match = False
     if should_override_no_results(answer, citations):
         answer = NO_RESULTS_MESSAGE
         followups = []
-    return answer, followups, citations
+        no_match = True
+    return answer, followups, citations, no_match
 
 
 def _iter_text_items(response):
