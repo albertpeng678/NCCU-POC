@@ -1,8 +1,8 @@
 // app.js — NCCU Course Map frontend logic
-import { createPaginationState, nextBatch, appendPool, groupBatch } from "./pagination.js?v=27";
-import { drainCount } from "./progressive-md.js?v=27";
-import { stageNarration, easeApproach, fillToDone, SHIBA_TOTAL } from "./shiba-progress.js?v=27";
-import { qaErrorUiState, buildRetryState, noMatchChips, TRANSIENT_MSG, NO_MATCH_MSG } from "./qa-recovery.js?v=27";
+import { createPaginationState, nextBatch, appendPool, groupBatch } from "./pagination.js?v=28";
+import { drainCount } from "./progressive-md.js?v=28";
+import { stageNarration, easeApproach, fillToDone, SHIBA_TOTAL } from "./shiba-progress.js?v=28";
+import { qaErrorUiState, buildRetryState, noMatchChips, TRANSIENT_MSG, NO_MATCH_MSG } from "./qa-recovery.js?v=28";
 
 const CONFIG = {
   // Local dev default; overwrite before Railway deploy.
@@ -300,7 +300,7 @@ function _initShibaAnim(){
   const myGen = ++_shibaGen;   // 防重入 token
   try{ if(_shibaAnim){ _shibaAnim.destroy(); _shibaAnim = null; } }catch(_){}
   r.anim.innerHTML = "";       // 清舊 SVG，避免重入時殘留多個渲染樹
-  fetch(`shiba.json?v=27`).then(res=>res.json()).then(data=>{
+  fetch(`shiba.json?v=28`).then(res=>res.json()).then(data=>{
     if(myGen !== _shibaGen || !r.anim.isConnected) return;   // 已被更新的載入取代 → 放棄
     _shibaAnim = window.lottie.loadAnimation({
       container: r.anim, renderer: "svg", loop: true,
