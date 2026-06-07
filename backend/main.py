@@ -146,8 +146,11 @@ async def recommend(req: RecommendRequest, background_tasks: BackgroundTasks):
     stage1_count = 0
     error = None
     try:
-        result, stage1_count = build_recommendation_instrumented(
-            _client, _STORE_NAME, req.career, seed, skills=skills
+        # build_recommendation_instrumented 是同步函式、內部用 asyncio.run 跑 async pipeline；
+        # 必須 to_thread（不可在此 async handler 的運行中 loop 直接呼叫，否則 asyncio.run 崩）。
+        # 與本檔 POST /qa replay(:268/:356) 同一 pattern。
+        result, stage1_count = await asyncio.to_thread(
+            build_recommendation_instrumented, _client, _STORE_NAME, req.career, seed, skills=skills
         )
     except Exception as e:
         error = e

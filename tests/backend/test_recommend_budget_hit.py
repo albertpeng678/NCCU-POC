@@ -1,9 +1,19 @@
 # tests/backend/test_recommend_budget_hit.py
 """POST /recommend 命中 career_budget → 直接讀整池回傳（0 次即時 AI）；未命中 → 落回即時路徑。"""
+import asyncio
 from unittest.mock import patch, MagicMock, AsyncMock
 from fastapi.testclient import TestClient
 
 from backend.main import app
+
+
+def _sync_with_asyncio_run(*a, **k):
+    """模擬真實 build_recommendation_instrumented：同步函式內部用 asyncio.run 跑 async pipeline。
+    若被 async handler 直接(非 to_thread)呼叫，會在運行中的 loop 裡 asyncio.run → RuntimeError。"""
+    async def _coro():
+        return {"career": "x", "courses": [{"course_id": "y", "name": "課", "group": "core", "rank": 1}],
+                "batch_size": 10, "latency_ms": 1, "seed": 1}
+    return asyncio.run(_coro()), 1
 
 
 _BUDGET = {
@@ -40,6 +50,17 @@ def test_post_recommend_miss_falls_back_to_live():
     assert resp.status_code == 200, resp.text
     assert [c["course_id"] for c in resp.json()["courses"]] == ["y"]
     live.assert_called_once()           # 未命中 → 走即時
+
+
+def test_post_recommend_live_path_no_running_loop_crash():
+    # 清單外/未命中 → 走即時 build_recommendation_instrumented（內部 asyncio.run）。
+    # 必須在執行緒跑（asyncio.to_thread），否則在 async handler 的 loop 內 asyncio.run → RuntimeError → 503。
+    with patch("backend.main.get_budget", AsyncMock(return_value=None)), \
+         patch("backend.main.get_pool", return_value=MagicMock()), \
+         patch("backend.main.build_recommendation_instrumented", _sync_with_asyncio_run), \
+         patch("backend.main._background_log_and_judge", MagicMock()):
+        resp = TestClient(app).post("/recommend", json={"career": "資料科學家"})
+    assert resp.status_code == 200, resp.text   # 不可因 asyncio.run-in-running-loop 崩成 503
 
 
 def test_post_recommend_no_db_falls_back_to_live():
