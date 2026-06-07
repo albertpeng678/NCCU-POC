@@ -1,7 +1,7 @@
 // app.js — NCCU Course Map frontend logic
-import { createPaginationState, nextBatch, appendPool, groupBatch } from "./pagination.js?v=22";
-import { drainCount } from "./progressive-md.js?v=22";
-import { stageNarration, easeApproach, fillToDone, SHIBA_TOTAL } from "./shiba-progress.js?v=22";
+import { createPaginationState, nextBatch, appendPool, groupBatch } from "./pagination.js?v=23";
+import { drainCount } from "./progressive-md.js?v=23";
+import { stageNarration, easeApproach, fillToDone, SHIBA_TOTAL } from "./shiba-progress.js?v=23";
 
 const CONFIG = {
   // Local dev default; overwrite before Railway deploy.
@@ -271,6 +271,7 @@ let _loadTimers = [];
 let _countRaf = null;       // 「已嗅過 N」數字 rAF handle
 let _countStart = 0;
 let _shibaAnim = null;      // lottie 動畫實例
+let _shibaGen = 0;          // 防重入：async 載入競態時只認最後一次
 const _reduceMotion = !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
 const _now = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
 
@@ -293,9 +294,11 @@ function _shibaRefs(){
 function _initShibaAnim(){
   const r = _shibaRefs();
   if(!r.anim || !window.lottie) return;
+  const myGen = ++_shibaGen;   // 防重入 token
   try{ if(_shibaAnim){ _shibaAnim.destroy(); _shibaAnim = null; } }catch(_){}
-  fetch(`shiba.json?v=22`).then(res=>res.json()).then(data=>{
-    if(!r.anim.isConnected) return;
+  r.anim.innerHTML = "";       // 清舊 SVG，避免重入時殘留多個渲染樹
+  fetch(`shiba.json?v=23`).then(res=>res.json()).then(data=>{
+    if(myGen !== _shibaGen || !r.anim.isConnected) return;   // 已被更新的載入取代 → 放棄
     _shibaAnim = window.lottie.loadAnimation({
       container: r.anim, renderer: "svg", loop: true,
       autoplay: !_reduceMotion, animationData: data,
@@ -309,8 +312,9 @@ function _initShibaAnim(){
 // 旁白（now + tip）依柴犬視角階段切換（淡入淡出）
 function _setNarration(key){
   const r = _shibaRefs(); const n = stageNarration(key);
-  if(r.now){ r.now.style.opacity = 0; setTimeout(()=>{ r.now.textContent = n.now; r.now.style.opacity = 1; }, 180); }
-  if(r.tip){ r.tip.style.opacity = 0; setTimeout(()=>{ r.tip.textContent = n.tip; r.tip.style.opacity = 1; }, 180); }
+  // setTimeout 納入 _loadTimers 清理，避免 stop 後仍寫入殘影
+  if(r.now){ r.now.style.opacity = 0; _loadTimers.push(setTimeout(()=>{ r.now.textContent = n.now; r.now.style.opacity = 1; }, 180)); }
+  if(r.tip){ r.tip.style.opacity = 0; _loadTimers.push(setTimeout(()=>{ r.tip.textContent = n.tip; r.tip.style.opacity = 1; }, 180)); }
 }
 
 // 「已嗅過 N / 2,718」數字：rAF 連續逼近但封頂（done 前永遠到不了 2718）
