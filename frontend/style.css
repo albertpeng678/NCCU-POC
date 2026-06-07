@@ -371,3 +371,12 @@ body.qa-active .site-footer{display:none}
 .qa-recover-btn:hover{opacity:.85}
 .qa-recover-btn:disabled{opacity:.5;cursor:default;border-style:dashed}
 .qa-recover-btn.ghost{border-color:var(--glass-brd);background:transparent;color:var(--text-dim);font-weight:500}
+
+/* 翻到底「看完了」end-state（對齊 .card：glass/border/radius；置中卡片寬度、三色） */
+.end-state{max-width:420px;margin:38px auto 8px;padding:24px 22px;border-radius:16px;background:var(--glass);border:1px solid var(--glass-brd);backdrop-filter:blur(12px);text-align:center}
+.end-title{color:var(--text);font-size:15.5px;font-weight:700;line-height:1.5;margin-bottom:6px}
+.end-sub{color:var(--text-dim);font-size:13px;margin-bottom:18px}
+.end-actions{display:flex;flex-direction:column;gap:9px;align-items:stretch}
+.end-btn{padding:10px 16px;border-radius:11px;border:1.4px solid var(--cyan);background:var(--cyan-dim);color:var(--cyan);font-size:13.5px;font-weight:700;cursor:pointer;transition:opacity .2s,transform .15s}
+.end-btn:hover{opacity:.9;transform:translateY(-1px)}
+.end-btn.ghost{border-color:var(--glass-brd);background:transparent;color:var(--text-dim);font-weight:500}

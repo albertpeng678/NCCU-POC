@@ -1,8 +1,9 @@
 // app.js — NCCU Course Map frontend logic
-import { createPaginationState, nextBatch, appendPool, groupBatch } from "./pagination.js?v=28";
-import { drainCount } from "./progressive-md.js?v=28";
-import { stageNarration, easeApproach, fillToDone, SHIBA_TOTAL } from "./shiba-progress.js?v=28";
-import { qaErrorUiState, buildRetryState, noMatchChips, TRANSIENT_MSG, NO_MATCH_MSG } from "./qa-recovery.js?v=28";
+import { createPaginationState, nextBatch, appendPool, groupBatch } from "./pagination.js?v=32";
+import { drainCount } from "./progressive-md.js?v=32";
+import { stageNarration, easeApproach, fillToDone, SHIBA_TOTAL } from "./shiba-progress.js?v=32";
+import { qaErrorUiState, buildRetryState, noMatchChips, TRANSIENT_MSG, NO_MATCH_MSG } from "./qa-recovery.js?v=32";
+import { buildEndStateHtml } from "./end-state.js?v=32";
 
 const CONFIG = {
   // Local dev default; overwrite before Railway deploy.
@@ -102,6 +103,7 @@ function renderOcList(items){
     div.addEventListener("click", ()=>{
       selectCareer(c);
       closeOffcanvas();
+      fetchRecommendation(c);   // 抽屜點職涯 → 直接推薦（與熱門 pill 一致、少一步）
     });
     ocList.appendChild(div);
   });
@@ -300,7 +302,7 @@ function _initShibaAnim(){
   const myGen = ++_shibaGen;   // 防重入 token
   try{ if(_shibaAnim){ _shibaAnim.destroy(); _shibaAnim = null; } }catch(_){}
   r.anim.innerHTML = "";       // 清舊 SVG，避免重入時殘留多個渲染樹
-  fetch(`shiba.json?v=28`).then(res=>res.json()).then(data=>{
+  fetch(`shiba.json?v=32`).then(res=>res.json()).then(data=>{
     if(myGen !== _shibaGen || !r.anim.isConnected) return;   // 已被更新的載入取代 → 放棄
     _shibaAnim = window.lottie.loadAnimation({
       container: r.anim, renderer: "svg", loop: true,
@@ -526,12 +528,33 @@ rerollBtn.addEventListener("click", ()=>{
     resultsEl.scrollIntoView({behavior:"smooth", block:"start"});
     return;
   }
-  // 池乾 → 以新 seed 呼叫 /recommend/stream 續池
-  if(!lastCareer) return;
-  rerolling = true;
-  rerollBtn.disabled = true;
-  continuePool(lastCareer);
+  // 池乾 → 顯示「看完了」end-state（不再即時叫 AI；user 定案 1+2）
+  renderEndState(lastCareer);
 });
+
+// 翻到底「看完了」：柴犬都叼來了 + 三個下一步（不再叫 AI）
+function renderEndState(career){
+  const old = document.querySelector("#results .end-state"); if(old) old.remove();
+  const wrap = document.createElement("div");
+  wrap.innerHTML = buildEndStateHtml({career});
+  const node = wrap.firstElementChild;
+  groupsEl.insertAdjacentElement("afterend", node);
+  if(rerollBtn) rerollBtn.style.display = "none";          // 已到底 → 收起換一批
+  node.querySelector('[data-action="new-career"]').addEventListener("click", ()=>{
+    setMode("recommend");
+    openOffcanvas();          // 打開左側「職涯目錄」抽屜讓使用者直接挑新職涯
+  });
+  node.querySelector('[data-action="to-qa"]').addEventListener("click", ()=> setMode("qa"));
+  node.querySelector('[data-action="rewatch"]').addEventListener("click", ()=>{
+    if(!pageState) return;
+    pageState.shown = 0; pageState.exhausted = false;       // 從頭再看
+    node.remove();
+    if(rerollBtn) rerollBtn.style.display = "";
+    renderBatch(nextBatch(pageState));
+    resultsEl.scrollIntoView({behavior:"smooth", block:"start"});
+  });
+  node.scrollIntoView({behavior:"smooth", block:"center"});
+}
 
 // 續池：新 seed 取一池 → append 去重 → 切下一批；UI 沿用 streaming stepper
 function continuePool(career){
