@@ -28,7 +28,7 @@
 | Frontend | 原生 HTML/CSS/JS（無框架），navy glassmorphism「指揮台」風格；前端引入 marked + DOMPurify（Q&A markdown 渲染）+ @sentry/browser CDN |
 | DB | PostgreSQL（query_log + qa_session + qa_turn）— Railway Postgres |
 | 觀測 | **Sentry**（後端 sentry-sdk[fastapi] + 前端 @sentry/browser，DSN env/config 驅動；專案 `nccu-poc` @ org `albert-ar`） |
-| 部署 | Railway，**走 git push**（GitHub-connected，非 `railway up`）。**（Session 4 改同源）單一 service：backend FastAPI `StaticFiles` 直接服務前端**（因 root `railway.toml` 跨服務污染、第二個 nginx service 會誤 build 後端）→ **單一網址 https://nccu-poc-production.up.railway.app**，前後端同源、零 CORS。Dockerfile shell-form `${PORT}`、`init_pool` 連不到 DB 不崩。 |
+| 部署 | Railway，**走 git push**（GitHub-connected，非 `railway up`）。**（Session 4 改同源）單一 service：backend FastAPI `StaticFiles` 直接服務前端**（因 root `railway.toml` 跨服務污染、第二個 nginx service 會誤 build 後端）→ **單一網址 https://nccu-course.up.railway.app**（使用者於 Railway 改過；舊 `nccu-poc-production…` 已失效回 "Application not found"），前後端同源、零 CORS。Dockerfile shell-form `${PORT}`、`init_pool` 連不到 DB 不崩。**前端靜態檔用整包 `COPY frontend/ ./frontend/`（勿改回寫死列舉——Session 8 曾因列舉漏檔導致 app.js ESM import 404 → 全站死；`tests/backend/test_frontend_assets_shipped.py` 守門）。** |
 
 ## 目錄結構
 

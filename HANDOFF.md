@@ -90,7 +90,7 @@
 3. **citation 漏顯示修法**：streaming 改讀**結構化 `custom_metadata.course_id`**（官方 canonical 法）+ regex fallback。探針鐵證：5 門 ground 舊版只顯示 4（文件中段 chunk 無代號標頭被 regex 漏）。live ×2 親證。
 4. **思維鏈外洩修法**：`stream_answer` 改 `_visible_text_from_chunk`（`part.thought` 過濾，官方法）→ 不再把 reasoning/`executable_code`(工具呼叫) 串給使用者。live 親證（回應真含 executable_code，正確排除）。
 5. **Q&A `top_k=5`**：file_search 明確設 top_k（不設會浮動，實測曾吐 14 筆）→ 參考課綱穩定 5。
-6. **部署修復（同源）**：`$PORT` 未展開(Dockerfile shell form) + `init_pool` 韌性(連不到 DB 不崩) + **backend 同源服務前端**(FastAPI StaticFiles，因 root `railway.toml` 跨服務污染、第二個 nginx service 會誤 build 後端)。**單一網址 https://nccu-poc-production.up.railway.app**，git push 觸發。
+6. **部署修復（同源）**：`$PORT` 未展開(Dockerfile shell form) + `init_pool` 韌性(連不到 DB 不崩) + **backend 同源服務前端**(FastAPI StaticFiles，因 root `railway.toml` 跨服務污染、第二個 nginx service 會誤 build 後端)。**單一網址 https://nccu-course.up.railway.app**（使用者後改；舊 `nccu-poc-production…` 已失效），git push 觸發。⚠️ 前端靜態檔務必整包 `COPY frontend/ ./frontend/`——Session 8 曾因 Dockerfile 寫死列舉漏掉新增檔 → 線上 404 → app.js ESM import 失敗全站死（`tests/backend/test_frontend_assets_shipped.py` 已守門）。
 7. 進度條 eta 校準至 fan-out 實測（STAGE_SEC retrieve 44/compose 32）。
 8. **Q&A 漸進式 markdown 渲染**：新 `frontend/progressive-md.js`（`createProgressiveRenderer`，rAF 節流 + 累積緩衝重渲染，node:test 4/4）；`stream_answer` token handler 從純文字打字機 → **邊串流邊用 `renderSafeMarkdown`(marked+DOMPurify) 漸進渲染**（表格/粗體/標題隨完成即現）；done 仍權威覆蓋；fallback typewriter 保留。**code-reviewer 通過、Playwright live 親證**（done 前 `<table>` 3列+`<strong>` 已漸進、0 console 錯）。Dockerfile 補 COPY、前端 **`?v=18`**。
 
