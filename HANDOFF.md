@@ -14,7 +14,7 @@
 - **動作**：`backend/main.py` `_QA_MODE` 預設 `stream35`→**`stream`**（2.5 串流）。**已 commit + push `origin/master` → Railway 重新部署。**
 - **為什麼**：實測 2026-06-08 **`gemini-3.5-flash` 持續 503 "high demand"、`gemini-2.5-flash` 正常**。問答 production 跑 3.5，雖有 SDK full-jitter 重試（429/503×5）能最終成功，但**退避階梯 1→2→4→8→16s 會讓問答回應時間爆長**——問答時間敏感，這是錯的取捨。
 - **web 研究結論**（為何 Google API 這麼不穩）：**不是壞掉、不是我們的錯**，是「新模型 GA 上線潮 + dynamic shared quota」的**可預期現象**：3.5 才 GA ~3 週（2026-05-19），全球搶用、容量還沒擴到位 → 用 503 背壓擋流量，**約 1-3 週緩解**。`status.cloud.google.com` 不會顯示（容量節流不算事故）；**付費/Vertex 救不了 503**（只解 429），唯一真解是 provisioned throughput（企業級、PoC 不值得）或等待/降級。2.5 沒事是因為容量已擴一年。
-- **驗證**：回退前實打 production `/qa/stream`「傳院有沒有 AI 課」→ 3.5 路徑當下仍能回完整答案（重試吸收了 503），但有延遲風險；回退到 2.5 即避開。**部署後請再實打一次確認 2.5 路徑正常。**
+- **驗證（已確認）**：`/health` 已外露 `qa_mode`（commit `c50e102`）→ `curl https://nccu-course.up.railway.app/health` 回 `{"status":"ok","qa_mode":"stream"}` 即線上跑 2.5。**已實測線上 = `stream`（2.5）。** 以後查線上模式都用這個，**不要在 Railway 釘 `QA_MODE` 環境變數**（會變隱形覆蓋的技術債、與程式碼真相來源打架——使用者明確要求避免）。Railway 目前**無** QA_MODE/REC_ 等 env 覆蓋（已用 `railway variables` 確認），程式碼預設即真相。
 
 ### B. ⚠️ 戰略決策（使用者拍板，不可再迴避）：必須正面治本 2.5 的 JSON 問題
 
