@@ -69,12 +69,17 @@ async def test_fanout_query_skill_empty_results_returns_empty():
 
 
 @pytest.mark.asyncio
-async def test_fanout_query_skill_course_name_is_empty():
-    """Fix C：fanout 不再把 chunk 全文塞進 course_name（灌爆 stage2 prompt + 讓 dedup_by_name 失效）；
-    course_name 應為空字串，由後續 join_metadata 用 courses_meta.json 補真實課名。"""
+async def test_fanout_query_skill_course_name_from_meta_not_chunk():
+    """fanout 的 course_name 應從 courses_meta.json 查真實短課名，不得為空字串（否則 dedup_by_name 全去重）
+    也不得為 chunk 全文（否則灌爆 stage2 prompt）。
+
+    若 course_id 在 meta 中存在 → course_name 為真實短課名（非空、非 chunk 內容）。
+    若 course_id 查不到 meta → course_name 為 ""（join_metadata 後續會過濾，可接受）。
+    """
     from backend.recommend import fanout_query_skill_async
+
     fake_results = [
-        {"course_id": "070415001", "score": 0.85, "content": "資料科學概論"},
+        {"course_id": "070415001", "score": 0.85, "content": "很長的課綱全文..." * 50},
     ]
     mock_client = MagicMock()
 
@@ -84,8 +89,13 @@ async def test_fanout_query_skill_course_name_is_empty():
     assert len(out) == 1
     c = out[0]
     assert c["course_id"] == "070415001"
-    # course_name 應為空字串（不塞 chunk 全文）
-    assert c["course_name"] == ""
+    # course_name 不得是 chunk 全文（防 stage2 prompt 爆炸）
+    assert len(c["course_name"]) < 100, f"course_name 過長（疑為 chunk 全文）: {c['course_name'][:100]}"
+    # course_name 不得是空字串（防 dedup_by_name 全去重 regression）
+    # 070415001 在 courses_meta.json 中存在 → 應有真實短課名
+    assert c["course_name"] != "", (
+        "course_name 不應為空字串：空 name 會讓 deduplicate_by_name 把所有課視為同名 → 合併池塌成 1 門"
+    )
 
 
 # ── 4. _openai_structured helper 存在且可呼叫 ────────────────────────────────
@@ -232,6 +242,51 @@ async def test_fanout_query_skill_deduplicates_by_course_id():
     assert len(out) == 2
     assert out[0]["course_id"] == "702744001"
     assert out[1]["course_id"] == "652150001"
+
+
+# ── Regression：fanout 合併池不應因空 course_name 塌成 1 門 ────────────────────
+# 根因：course_name="" → deduplicate_by_name 視所有課為同名 → 全部去重 → 只剩 1 筆。
+# 修法：course_name 應從 courses_meta.json 查真實短課名，而非留空字串。
+
+@pytest.mark.asyncio
+async def test_fanout_retrieve_pool_not_collapsed_by_empty_course_name():
+    """Regression：多技能不同 course_id → 合併池數量應 == 各技能不重疊 id 總和，不因空 name 塌成 1。
+
+    技能A 回 [000211012（政治學）, 000216001（社會學）]
+    技能B 回 [000217012（個體經濟學）]
+    三門課 course_id 不重疊 → 合併池應有 3 門，不得 < 3。
+    """
+    from backend.recommend import fanout_retrieve_async
+
+    # 使用 courses_meta.json 中確定存在的真實 course_id
+    skill_a_results = [
+        {"course_id": "000211012", "score": 0.9, "content": "政治學課綱"},
+        {"course_id": "000216001", "score": 0.85, "content": "社會學課綱"},
+    ]
+    skill_b_results = [
+        {"course_id": "000217012", "score": 0.88, "content": "個體經濟學課綱"},
+    ]
+
+    async def fake_search_skill(client, vs_id, query, top_k, score_threshold):
+        if query == "技能A":
+            return skill_a_results
+        elif query == "技能B":
+            return skill_b_results
+        return []
+
+    with patch("backend.recommend.search_skill", new=AsyncMock(side_effect=fake_search_skill)):
+        pool = await fanout_retrieve_async(
+            object(), "vs_test", "職涯", ["技能A", "技能B"]
+        )
+
+    pool_ids = {c["course_id"] for c in pool}
+    assert len(pool) == 3, (
+        f"合併池應有 3 門（regression：空 course_name 造成 deduplicate_by_name 全去重），"
+        f"實際得到 {len(pool)} 門：{pool_ids}"
+    )
+    assert "000211012" in pool_ids
+    assert "000216001" in pool_ids
+    assert "000217012" in pool_ids
 
 
 # ── 7. /health 回應包含 retrieval_backend 與 model ────────────────────────────

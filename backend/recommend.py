@@ -626,8 +626,10 @@ async def fanout_query_skill_async(
     )
     # search_skill 回 list[{course_id, score, content}]
     # 轉成 pipeline 期望的 {course_id, course_name, relevance} 形狀。
-    # course_name 留空字串：塞 chunk 全文（數百字）會灌爆 stage2 prompt 且讓 dedup_by_name 失效；
-    # join_metadata 之後會用 courses_meta.json 補入真實課名。
+    # course_name 從 courses_meta.json 查真實短課名：
+    #   - 不用 ""（空字串）：deduplicate_by_name 會把所有空名視為同名 → 全去重成 1 門（regression）。
+    #   - 不用 chunk 全文（content）：數百字會灌爆 stage2 prompt。
+    meta = load_courses_meta()
     seen_ids: set[str] = set()  # Fix D：依 course_id 去重保序（同課多 chunk 只保第一筆）
     candidates = []
     for item in raw:
@@ -637,10 +639,11 @@ async def fanout_query_skill_async(
         if cid in seen_ids:
             continue
         seen_ids.add(cid)
+        course_name = meta.get(cid, {}).get("name", "")
         candidates.append({
             "course_id": cid,
-            "course_name": "",   # 留空；join_metadata 用 courses_meta.json 填真實課名
-            "relevance": skill,  # 檢索技能關鍵字作為 relevance
+            "course_name": course_name,  # 真實短課名；查不到則 "" (join_metadata 後續會過濾)
+            "relevance": skill,          # 檢索技能關鍵字作為 relevance
         })
     return candidates
 
