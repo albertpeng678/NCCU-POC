@@ -1,13 +1,13 @@
 # NCCU 課程推薦系統 — 專案說明（CLAUDE.md）
 
 > 給 AI agent 的專案全貌速覽。讀完即可掌握架構、檔案、計畫與慣例。
-> 最後更新：2026-06-08（**Session 9**）。**Session 9 重點**：(1) **問答預設回退 2.5**（`QA_MODE=stream`）——3.5 GA 上線窗口 high-demand 503 嚴重、問答時間敏感經不起重試延遲（web 研究證實是可預期的上線潮現象，~1-3 週緩解）；**戰略決策：不能用「切 3.5」迴避 2.5 JSON 脆弱性，必須正面治本**（見設計決策 #12，待辦見 HANDOFF Session 9）。(2) **Track C 推薦遷 3.5 + fan-out 合併**（成本砍~6-8x）已在分支 `feat/recommend-3.5` 完成（6 commits + docs、309 測試綠、含 503 自動降級 + 空池安全網），**未 merge，live 驗證同卡 3.5 503**。Session 8 摘要：✅ 修「Event loop is closed」（`d6b0490`）。Session 7 摘要：離線預算 `career_budget`（50 職涯預算進 Postgres，命中秒回 0 即時 AI）＋柴犬等候動畫（Lottie 三色、done-driven 數字）＋Q&A 失敗復原（過載重試泡泡/查無資料引導）＋Sentry 降噪（暫時性 Gemini 錯誤降 warning、本機不啟用）＋多輪追問修復（history-based 統一）。**✅ Session 8 已修先前高優先 bug「Event loop is closed」（commit `d6b0490`）**：POST /recommend 改全程 async `await build_recommendation_instrumented_async`（不再 to_thread + asyncio.run），清單外 derive 也改 `await derive_skills_for_career_async`（見設計決策 #22）。已過嚴格 code review + Playwright 全端 e2e（polluter POST → victim stream 無 loop 錯誤）+ 256 後端測試綠，**已 push origin/master 部署**。前端 `?v=34`。注意 `~/.claude` 的 memory 不會跨機器，必要資訊都在 HANDOFF/CLAUDE。
+> 最後更新：2026-06-09（**Session 10**）。**Session 10：整個檢索層+生成從 Gemini 硬切到 OpenAI**（Vector Stores + Responses API + `gpt-5.4-mini`，含推薦/問答/judge；career_budget 100/100 用 OpenAI 重算；分支 `feat/retrieval-openai`，未 merge/未上線，待 e2e gate + 三審）。詳見 HANDOFF Session 10。原 Session 9 重點：：(1) **問答預設回退 2.5**（`QA_MODE=stream`）——3.5 GA 上線窗口 high-demand 503 嚴重、問答時間敏感經不起重試延遲（web 研究證實是可預期的上線潮現象，~1-3 週緩解）；**戰略決策：不能用「切 3.5」迴避 2.5 JSON 脆弱性，必須正面治本**（見設計決策 #12，待辦見 HANDOFF Session 9）。(2) **Track C 推薦遷 3.5 + fan-out 合併**（成本砍~6-8x）已在分支 `feat/recommend-3.5` 完成（6 commits + docs、309 測試綠、含 503 自動降級 + 空池安全網），**未 merge，live 驗證同卡 3.5 503**。Session 8 摘要：✅ 修「Event loop is closed」（`d6b0490`）。Session 7 摘要：離線預算 `career_budget`（50 職涯預算進 Postgres，命中秒回 0 即時 AI）＋柴犬等候動畫（Lottie 三色、done-driven 數字）＋Q&A 失敗復原（過載重試泡泡/查無資料引導）＋Sentry 降噪（暫時性 Gemini 錯誤降 warning、本機不啟用）＋多輪追問修復（history-based 統一）。**✅ Session 8 已修先前高優先 bug「Event loop is closed」（commit `d6b0490`）**：POST /recommend 改全程 async `await build_recommendation_instrumented_async`（不再 to_thread + asyncio.run），清單外 derive 也改 `await derive_skills_for_career_async`（見設計決策 #22）。已過嚴格 code review + Playwright 全端 e2e（polluter POST → victim stream 無 loop 錯誤）+ 256 後端測試綠，**已 push origin/master 部署**。前端 `?v=34`。注意 `~/.claude` 的 memory 不會跨機器，必要資訊都在 HANDOFF/CLAUDE。
 >
 > ── 歷史 ── Session 5 摘要：探索過 3.5-flash（原生 response_schema 免解析，但**現階段 high-demand 503 延遲不穩**，故未採為預設）→ 決定 **Q&A 留 2.5-flash 串流**，用 (A) JSON 三層強化（`parse_qa_response` 補 `json_repair`+`_strip_fences` 絕不漏鷹架；`stream_answer` JSON-first 守門用 `_partial_answer` 增量抽乾淨值）(B) 平滑串流打字機（SSE token 餵 `createTypewriter` 定速 **20cps** 緩衝 + `drainCount` backlog 自適應；**表格逐列滑順長出**——`safeMarkdownPrefix` 改「保留已完成列、只藏正在打的半截列」，非整塊 snap-in；`renderFinal`/committed 用 `mdToHtml` 不套 heal，避免結尾表格列被誤砍）壓掉「漏 JSON / 不平滑 / 表格 raw」。`QA_MODE=stream`(預設 2.5 強化) / `replay`(3.5 非串流選項)。Playwright 動態實測通過（無 JSON 鷹架、表格逐列建構、0 console error）。spec/plan：`docs/superpowers/{specs,plans}/2026-06-05-qa-2.5-hardening-smooth-stream*`。**已 push master 部署（Railway）；前端 cache-bust `?v=19`**。注意 `~/.claude` 的 memory 不會跨機器，所有必要資訊都已寫進 HANDOFF/CLAUDE。
 
 ## 一句話
 
-政大全校課程推薦 PoC：使用者選職涯（或自由提問）→ Gemini File Search 從 114-2 全校課綱（實際 **2,718 門**，非早期估的 2877）做 RAG → 回傳分組課程推薦 / 多輪問答，附課綱連結。
+政大全校課程推薦 PoC：使用者選職涯（或自由提問）→ **OpenAI Vector Stores** 從 114-2 全校課綱（實際 **2,718 門**，非早期估的 2877）做 RAG → 回傳分組課程推薦 / 多輪問答，附課綱連結。
 
 ## 兩大功能模式
 
@@ -23,7 +23,7 @@
 
 | 層 | 技術 |
 |----|------|
-| RAG | Gemini File Search Store（生成模型：**Q&A=`gemini-2.5-flash` 串流**〔Session 9 自 3.5 回退，因 3.5 503；見 #12〕、**推薦=`gemini-2.5-flash`** — **不可換 flash-lite**），**google-genai 2.7.0** |
+| RAG | **OpenAI Vector Stores**（`text-embedding-3` 內建，不可挑）+ **Responses API + `file_search` tool**；生成模型：**`gpt-5.4-mini`**（Q&A 問答串流 + 推薦標註/judge 一律 OpenAI；session 10 自 Gemini 整套遷移，見設計決策 #12 更新與 HANDOFF Session 10），**openai SDK** |
 | Backend | Python 3.11 + FastAPI，asyncpg |
 | Frontend | 原生 HTML/CSS/JS（無框架），navy glassmorphism「指揮台」風格；前端引入 marked + DOMPurify（Q&A markdown 渲染）+ @sentry/browser CDN |
 | DB | PostgreSQL（query_log + qa_session + qa_turn）— Railway Postgres |
@@ -94,7 +94,7 @@ NCCU-poc/
 9. **Ingestion 上傳的兩個坑**：(a) `import_file` 不耐高併發 → ThreadPool x8 同步兩步會讓 store 索引佇列**雪崩 timeout**；用 **async `upload_to_file_search_store` + semaphore(16)** 反而 ~100課/分 0 失敗（見 `scripts/backfill_async.py`）。(b) 大量 embedding 會吃 **Gemini 月度 spend cap** 與 **embedding 速率上限(429)**；查詢時**只嵌入問句、不重索引**（索引一次性）。
 10. **推薦延遲**：**主因是 LLM 輸出 token 數**（web+context7 研究）。已做：降輸出量（POOL 40→24、理由精簡）、429/503 退避重試、前端**分步驟等待 UX**。**（Session 6 更新）compose（`stage2_annotate_pool_async` 整池標註）已設 `thinking_budget=0`**：A/B 實測（`scripts/probe_compose_thinking_ab.py`）此「分類+排序+短理由」任務關 thinking **快 ~3x（33s→11s）且 judge 品質不掉**（reason 維持滿分）。⚠️ 舊註「thinking 不可關（品質崩）」是**舊版自由文字 compose** 的結論，**不適用現在的 `response_schema` 版**（schema 約束輸出、思考邊際效益低）。**仍勿關 Q&A 串流的 thinking**（那是 grounding/品質相關，另案）。
 11. **前端快取**：靜態資源連結帶 `?v=N`（cache-bust）；更新前端時 bump 版本，避免瀏覽器拿到舊 CSS/JS（曾導致「很醜/寬度跳/null.classList 崩」）。
-12. **生成模型**：**（Session 9 回退）Q&A 預設改回 `gemini-2.5-flash` 串流（`QA_MODE=stream`）**。⚠️**戰略決策（不可再迴避）**：Session 8 曾把 Q&A 遷 `gemini-3.5-flash`（`response_schema` 免解析、治本幻覺/citation），但 **3.5 GA 上線窗口 high-demand 503 嚴重**（實測 2026-06-08：3.5 持續 503、2.5 正常；web 研究證實是「新模型上線潮＋dynamic shared quota」的可預期現象，約 1-3 週緩解、status 頁不顯示、付費/Vertex 救不了，只有 provisioned throughput 或等待/降級）。**問答時間敏感**——靠 SDK 重試雖能最終成功，但退避階梯（1→2→4→8→16s）會讓拿到答案的時間爆長，對問答是錯的取捨。故**被逼回 2.5**。**結論：「切去 3.5」不能當作迴避 2.5 JSON 脆弱性的手段；必須正面治本 2.5 的「file_search 不能配 `response_mime_type=json`→靠散文解析 JSON→偶爾漏鷹架/citation 漏/grounding 被複寫」問題**（見 #4/#15；Session 5 的三層強化是緩解非根治）。`QA_MODE` 仍可切：`stream`(預設 2.5) / `stream35`(3.5 結構化串流，待 3.5 穩) / `replay`(3.5 非串流)。**推薦**：master 仍 `gemini-2.5-flash`；3.5 遷移 + fan-out 合併成本優化在分支 `feat/recommend-3.5`（已完成未 merge，同卡 3.5 503，見 HANDOFF Session 9）。⚠️ **仍不可為提速換 `flash-lite`**（lite 快但品質低約 10%）；提速只能用不犧牲品質的手段（降 thinking_level/降輸出/合併呼叫/快取/等待UX）。
+12. **生成模型**：**（Session 10 已取代）整個生成層從 Gemini 遷 OpenAI `gpt-5.4-mini`**（Q&A 問答串流 + 推薦標註/judge/derive 一律此模型；分支 `feat/retrieval-openai`，未 merge/未上線）。⚠️ 原 Session 9 的「Q&A 預設 `gemini-2.5-flash`/`QA_MODE=stream`」、原 Session 8 的「不可換 flash-lite」等 Gemini 生成決策已被此取代。詳見設計決策 #23–#29（Session 10 新增）與 HANDOFF Session 10。
 13. **CORS 本機坑**：`.env` 的 `ALLOWED_ORIGIN` 是部署用佔位符（`https://your-frontend...`）；本機起 backend 要用 `ALLOWED_ORIGIN=* python -m uvicorn ...` 覆蓋，否則擋 localhost:3000。
 14. **SSE 串流（Session 3）**：新增 `GET /recommend/stream`（5 階段事件）、`GET /qa/stream`（逐 token + done）；舊 `POST` 保留當 fallback。前端 EventSource + 階段 stepper + 打字機。**詳見 HANDOFF「★ Session 3」**。
 15. **grounding 對 prompt 極敏感（不可踩）**：`config.system_instruction` 的人設會讓 2.5-flash 跳過 file_search → 罐頭答案。qa.py 的 `_SYSTEM_INSTRUCTION` 首段「【鐵則・最高優先】先檢索」**不可移除**。**拿掉 JSON 包裝改純 Markdown 會破壞 grounding（已回退）。** **（Session 8）「勿關 Q&A 串流 thinking」此結論僅適用 2.5**——3.5 GA 上 `file_search + response_schema + thinking_level=low` 實測 grounding 完整、citation 正確（見 spec `2026-06-08-qa-gemini-3.5`）；唯仍**勿用 `include_thoughts`**。另：設計決策 #4「File Search 不能配 `response_mime_type=json`」**僅適用 2.5**；**3.5 可 file_search + response_schema 並用**（這正是 Q&A 遷移 3.5 的主因）。
@@ -105,15 +105,24 @@ NCCU-poc/
 20. **（Session 4）Q&A 漸進 markdown 渲染**：`progressive-md.js` rAF 節流重渲染累積緩衝（復用 `renderSafeMarkdown` = marked+DOMPurify，安全不變）→ 表格/粗體邊串流邊成形；done 仍權威覆蓋。`stream_answer` token handler 改用之，fallback typewriter 保留。
 21. **（Session 7）離線預算 `career_budget` 秒回**：50 固定職涯離線跑完整 pipeline → 整池存 Postgres `career_budget` 表；線上 `get_budget` 命中即**秒出（0 即時 AI）**，未命中落回即時路徑。`backend/career_budget.py`（serialize/deserialize/get_budget/upsert_budget；deserialize 補 group/reason 預設、跳壞課防形狀漂移）；`recommend.py` `stream_recommendation_from_budget`（命中時 SSE 5 階段瞬間）；離線腳本 `scripts/build_career_budget.py`（`ONLY`/`ONLY_MISSING`/`CONCURRENCY` env）。**正式 DB 已灌 50/50**（PM 1.24s 等實測）。⚠️ **命中預算時務必 `not budget` gate 掉背景 judge**（否則秒回卻仍背景燒 AI；code-review 抓過）。
 22. **（Session 7 發現 → Session 8 已修 `d6b0490`）`asyncio.to_thread` + 共用 async client 跨 loop 污染**：POST /recommend 即時路徑曾用同步 `build_recommendation_instrumented`（內部 `asyncio.run(_run())`，`_run` 用模組層共用 `_client.aio`）。commit `21e6a93` 為修「asyncio.run in running loop」改 `await asyncio.to_thread(...)` → 但 worker thread 的 `asyncio.run` 開**用完即關的 loop**，把共用 `_client.aio` 的 httpx client **綁到死 loop** → 之後主 loop 上所有 `/recommend/stream`(清單外)、`/qa/stream` 噴 **「Event loop is closed」**（把單請求崩潰換成污染整個 worker 的更廣 regression；單元測試/code-review 沒抓到，e2e 才抓到）。**修法（`d6b0490`）：POST /recommend 改 async、直接 `await build_recommendation_instrumented_async`（全程主 loop，不開新 loop、不 to_thread）；清單外 derive 也改 `await derive_skills_for_career_async`**。同步薄包裝 `build_recommendation_instrumented`（仍 asyncio.run）只留給 sync 呼叫端（`build_recommendation` / sync 測試 / scripts）——**伺服器路徑勿用**。回歸測試 `tests/backend/test_recommend_loop_fix.py` 鎖定「pipeline 兩階段都在呼叫端 loop」；驗證門檻：真後端 e2e「先打一次 POST /recommend 清單外/即時 → 再打 /recommend/stream + /qa/stream」確認不再 closed（已過）。
+23. **（Session 10）citation 用 path B（`file_search_call.results`）**：OpenAI Responses API 的 inline annotations 只在模型內文主動引用才有、常空；要可靠取「答案根據哪幾門課」需用 `include=["file_search_call.results"]`（等同 Gemini 的 `grounding_chunks`）。`retrieval_openai.course_ids_from_search_results` 實作此路徑；勿靠 annotations 做主要 citation 來源。
+24. **（Session 10）OpenAI SSE 逐 token 平滑、前端打字機緩衝需重評估**：OpenAI Responses API 一答約 459 個 delta（逐 token），不像 Gemini 爆發式大塊；前端 `createTypewriter`(20cps 緩衝) + 漸進 markdown 雙重緩衝會讓動畫拖慢、體感延遲增加。待辦（Phase 2 收尾）：拔或調整緩衝，改為近直餵 token（70cps 或直通）。前端零改動原則的唯一例外。
+25. **（Session 10）表格穩定靠 system prompt few-shot 範例**：OpenAI `gpt-5.4-mini` 的 markdown 表格輸出比 Gemini 更確定性，但仍需 system prompt 內嵌 few-shot 範例（欄位名稱、格式）才能維持逐輪一致的表格結構。勿移除 system prompt 中的表格範例段落。
+26. **（Session 10）多輪 Q&A 用 condense-then-search（vendor-neutral）**：多輪問答不把全部 history 餵進 file_search（會稀釋相關性）；改用「先一個小呼叫把歷史+新問縮成單一查詢意圖，再用縮後意圖做 file_search」的 condense-then-search 模式。此設計與 vendor 無關，遷 Gemini/OpenAI 都通用。
+27. **（Session 10）清單外職涯 out-of-scope 判斷用 `is_legitimate_career`**：`derive_skills_for_career` 用 OpenAI structured output 同時判斷「這是不是合法職涯（`is_legitimate_career: bool`）」——亂打/惡意輸入直接回 `no_match`，不浪費後續 retrieval。比舊版「先 derive、再看 skills 空不空」早一步擋住。
+28. **（Session 10）citation 跨掛課按前 6 碼去重**：同一門課可能在多個系所開（course_id 後 3 碼不同、前 6 碼相同），file_search 可能回傳多筆相同課；citation 顯示前用前 6 碼去重，避免同課重複出現在 sources 列表。`retrieval_openai.course_ids_from_search_results` 內建此去重邏輯。
+29. **（Session 10）grounding 兩層保障（prompt 照抄課名 + chunk 帶課名注入）**：取代舊版脆弱字串截斷法。(1) system prompt 指示模型「答案中照抄課程名稱，不縮寫」；(2) 每個上傳 chunk 的 metadata/檔名帶 course_name，讓 file_search 回傳的 snippet 已含課名。兩層同時作用讓模型不需「猜」課名，grounding accuracy 更穩。
 
 ## 環境變數（`.env`，gitignored）
 
-- `GEMINI_API_KEY`：[aistudio.google.com/apikey](https://aistudio.google.com/apikey)。**換 key 就看不到既有 store。**
-- `FILE_SEARCH_STORE_NAME`：目前 full store = **`fileSearchStores/nccucourses1142-znuka50qq2y2`**（2713 課；另 11 課待補）。
+- `OPENAI_API_KEY`：[platform.openai.com/api-keys](https://platform.openai.com/api-keys)。**換 key 就看不到既有 Vector Store。**
+- `OPENAI_VECTOR_STORE_ID`：目前生產 store = **`vs_6a26b97862ec8191b9bfa34727a0c8fb`**（2718 課全灌，檔名=course_id，attributes 帶 course_id/syllabus_url；建庫腳本 `scripts/build_openai_vector_store.py`）。
+- `OPENAI_MODEL`：預設 `gpt-5.4-mini`（推薦標註/問答串流/judge/derive 一律此模型）。
 - `SENTRY_DSN`：Sentry 專案 nccu-poc 的 DSN（公開值）。未設則 Sentry 停用。
 - `ALLOWED_ORIGIN`：部署填 frontend URL；**本機測試用環境變數 `ALLOWED_ORIGIN=*` 覆蓋**。
 - `DATABASE_URL`：**本機**用 Railway Postgres 的 `DATABASE_PUBLIC_URL`（TCP proxy）以環境變數傳入（勿寫進 .env）；**部署**用 Railway 變數引用 `${{Postgres.DATABASE_URL}}`（私網）。
 - 前端 `app.js` 的 `CONFIG.API_URL`（localhost 自動偵測，部署前填 backend URL）、`CONFIG.SENTRY_DSN`（已填，公開值）。
+- **遷移後待移除（Phase 3）**：`GEMINI_API_KEY`（aistudio.google.com/apikey）、`FILE_SEARCH_STORE_NAME`（舊 Gemini File Search store）。
 
 ## 開發慣例
 
