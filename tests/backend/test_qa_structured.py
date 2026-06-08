@@ -87,7 +87,8 @@ def test_passes_schema_and_model_to_generate_content():
     # 結構化輸出 + thinking_level=low（3.5 GA 實測 grounding 不掉，加速用）
     assert cfg.response_mime_type == "application/json"
     assert cfg.response_schema is not None
-    assert getattr(cfg, "thinking_config", None) is not None
+    # thinking_level 必須是 low（非 high/medium/minimal），相容 enum 和字串兩種形狀
+    assert str(cfg.thinking_config.thinking_level).lower().endswith("low")
     assert cfg.max_output_tokens == 8192
 
 
