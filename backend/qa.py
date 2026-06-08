@@ -387,13 +387,18 @@ def build_qa_contents(question: str, history: Optional[list] = None, template: s
 
 
 def extract_citations(course_ids: list[str], meta: dict) -> list[dict]:
-    """Dedup course_ids preserving order, look up meta, skip missing, return enriched dicts."""
-    seen: set[str] = set()
+    """Dedup course_ids by 6-digit prefix preserving order, look up meta, skip missing, return enriched dicts.
+
+    前6碼相同 = 同一門課不同班次（系所+課號相同，後3碼為班次）。
+    同前6碼只保留第一個出現的 course_id（保序）。
+    """
+    seen_prefix: set[str] = set()
     result = []
     for cid in course_ids:
-        if cid in seen:
+        prefix = cid[:6]
+        if prefix in seen_prefix:
             continue
-        seen.add(cid)
+        seen_prefix.add(prefix)
         m = meta.get(cid)
         if not m:
             continue
