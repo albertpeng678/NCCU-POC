@@ -42,7 +42,9 @@ load_dotenv()
 _GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 _STORE_NAME = os.environ["FILE_SEARCH_STORE_NAME"]
 _ALLOWED_ORIGIN = os.environ.get("ALLOWED_ORIGIN", "*")
-_QA_MODE = os.environ.get("QA_MODE", "stream35")   # stream35(預設 3.5 結構化串流) | stream(2.5 串流 fallback) | replay(3.5 非串流)
+_QA_MODE = os.environ.get("QA_MODE", "stream")   # stream(預設 2.5 串流) | stream35(3.5 結構化串流) | replay(3.5 非串流)
+# ⚠️（Session 9）預設改回 2.5（stream）：3.5 GA 上線窗口 high-demand 503 嚴重，時間敏感的問答經不起重試延遲
+#    （見 CLAUDE #12 / HANDOFF Session 9）。3.5 容量回穩或 2.5 JSON 治本完成後再評估翻回 stream35。
 # 啟動即驗證：打錯字(如 "Replay")不可靜默退回預設（會悄悄改行為、忽略 GEMINI_QA_MODEL）
 if _QA_MODE not in {"replay", "stream", "stream35"}:
     raise RuntimeError(f"QA_MODE 必須是 'stream35' / 'stream' / 'replay'，收到 {_QA_MODE!r}")

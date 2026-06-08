@@ -1,7 +1,42 @@
 # NCCU 課程推薦系統 — 交接文件（HANDOFF.md）
 
 > 專案進展史 + WBS + 待辦。給接手的 agent 快速掌握「做到哪、還剩什麼」。
-> 最後更新：2026-06-08（**Session 8**：✅ 修掉先前高優先 bug「Event loop is closed」並部署，見下方 🟢；Session 7 摘要：離線預算 career_budget 秒回 + 柴犬等候動畫 + Q&A 失敗復原 + Sentry 降噪 + 多輪修復）
+> 最後更新：2026-06-08（**Session 9**：問答回退 2.5 + 戰略決策「必須正面修 2.5 JSON」+ Track C 推薦遷 3.5/成本優化在分支；見下方 ★Session 9）
+
+---
+
+## ★ Session 9 交接（最新，換機器接手第一個讀）★
+
+> **換機器先讀這段。** 兩條主線：(A) production 緊急回退；(B) Track C 已完成但未上線（卡 3.5）。
+
+### A. 🔴 production 緊急處置：問答自 3.5 回退 2.5（已 push master）
+
+- **動作**：`backend/main.py` `_QA_MODE` 預設 `stream35`→**`stream`**（2.5 串流）。**已 commit + push `origin/master` → Railway 重新部署。**
+- **為什麼**：實測 2026-06-08 **`gemini-3.5-flash` 持續 503 "high demand"、`gemini-2.5-flash` 正常**。問答 production 跑 3.5，雖有 SDK full-jitter 重試（429/503×5）能最終成功，但**退避階梯 1→2→4→8→16s 會讓問答回應時間爆長**——問答時間敏感，這是錯的取捨。
+- **web 研究結論**（為何 Google API 這麼不穩）：**不是壞掉、不是我們的錯**，是「新模型 GA 上線潮 + dynamic shared quota」的**可預期現象**：3.5 才 GA ~3 週（2026-05-19），全球搶用、容量還沒擴到位 → 用 503 背壓擋流量，**約 1-3 週緩解**。`status.cloud.google.com` 不會顯示（容量節流不算事故）；**付費/Vertex 救不了 503**（只解 429），唯一真解是 provisioned throughput（企業級、PoC 不值得）或等待/降級。2.5 沒事是因為容量已擴一年。
+- **驗證**：回退前實打 production `/qa/stream`「傳院有沒有 AI 課」→ 3.5 路徑當下仍能回完整答案（重試吸收了 503），但有延遲風險；回退到 2.5 即避開。**部署後請再實打一次確認 2.5 路徑正常。**
+
+### B. ⚠️ 戰略決策（使用者拍板，不可再迴避）：必須正面治本 2.5 的 JSON 問題
+
+> 「**不能用『切去 3.5』當作迴避 2.5 JSON 脆弱性的手段。**」3.5 對時間敏感的問答不可靠（503），我們被逼回 2.5，所以 **2.5 的根本問題必須正面修，不能再繞過**。
+
+- **問題本體**（CLAUDE #4/#15）：2.5 + file_search **不能配 `response_mime_type=json`/`response_schema`** → 只能「從散文裡解析 JSON」→ 偶爾**漏 JSON 鷹架 / citation 漏 / 答案被 grounding 複寫 / 偶爾整段非 JSON**。Session 5 的三層強化（`parse_qa_response`+`json_repair`+`_strip_fences`、`_partial_answer` 守門）是**緩解非根治**。
+- **待辦（高優先，新機器接手主線）**：用 systematic-debugging + 真實 e2e，把 2.5 問答的 JSON/grounding 可靠性**做到根治級**（而非靠 3.5 繞過）。可能方向：更強的串流 JSON 守門狀態機、或「2.5 用 file_search 拿 grounding + 另一次無 file_search 呼叫做結構化」的兩段法、或重新評估 prompt 結構（但 #15：動 system_instruction/拿掉 JSON 包裝會破 grounding，須重驗）。**先 brainstorming spec 再動工。**
+
+### C. Track C（推薦遷 3.5 + fan-out 合併省成本）— 已完成，未 merge，卡 3.5 503
+
+- **分支 `feat/recommend-3.5`**（6 code commits + docs，**309 後端測試綠**，未 merge/push）。內容：
+  1. `REC_MODEL` env（預設 3.5、可回退 2.5）+ model-aware `_thinking(kind)` helper（thinking_budget→thinking_level）。
+  2. **`consolidated_retrieve_async`**：fan-out 6-8 支 file_search **合併為單一支帶全部技能**（`CONSOLIDATED_TOP_K=32`、「只檢索一次」）→ **每請求併發/成本砍 ~6-8x（NT$5-7→~NT$1）**，也根治我們自製的 503 突發。`REC_RETRIEVE=consolidated`(預設)/`fanout`(回退) 切換。
+  3. **`generate_with_fallback`**：推薦 async 熱路徑持久 503 → **自動降級 3.5→2.5**（同步換 thinking_config）。
+  4. **空池安全網**：consolidated 回空池（2.5 無結構化保證、偶回散文）→ 自動補打 fanout（消爆炸半徑）。
+- **卡點**：完整 judge A/B（3.5 vs 2.5、consolidated vs fanout）+ consolidated 3.5 路徑上 `response_schema` 治本 + Playwright，**全卡 3.5 503**。實跑過 2.5+consolidated：撈得到課但單支 JSON 非確定性曾空池（已加安全網）。
+- **收尾待辦（等 3.5 退燒）**：跑 A/B → 過則翻預設、不過則 Railway 設 `REC_RETRIEVE=fanout`/`REC_MODEL=2.5` → merge master → `railway ssh` 容器內 `ONLY_MISSING=1 python scripts/build_career_budget.py` 灌新 50 budget → 刪分支。spec/plan：`docs/superpowers/{specs,plans}/2026-06-08-recommend-gemini-3.5-migration*`。
+
+### 503 韌性研究的可複用結論（context7 + web，3 份平行 agent）
+- 既有 SDK `HttpRetryOptions`（main.py：full-jitter 指數退避、429/503×5）**已是主流做法**，不需另做手動退避（會雙重重試、放大 RPM）。
+- 真正缺口是**降併發**（Track C consolidated 已解）與**降級**（Track C fallback 已解、問答暫用回退 2.5 替代）。
+- **不要**用 request hedging（對過載伺服器加倍打 = 更糟）。fanout semaphore / 尊重 429 retry_delay / 提高退避 cap = 暫緩，先合併後觀察。
 
 ---
 
