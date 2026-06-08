@@ -35,18 +35,64 @@ NO_RESULTS_MESSAGE = (
 )
 
 
-def _strip_citation_markers(text: str) -> str:
-    """剝除 OpenAI 內文私有區引用標記（U+E200…filecite…U+E202…turnXfileY…U+E201）。
+# OpenAI 官方 citation-formatting helper（偏移量 + 來源ID驗證）
+# private-use region delimiters
+_CSTART = ""   # U+E200
+_CDELIM = ""   # U+E202
+_CSTOP  = ""   # U+E201
 
-    完整標記形如：  filecite  turnXfileY  （U+E200 開、U+E202 分隔、U+E201 閉）。
-    re.DOTALL 使 .* 跨換行也能匹配，再移除任何殘留私有區字元 U+E200-E20F。
+_SOURCE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+_LINE_LOCATOR_RE = re.compile(r"^L\d+(?:-L\d+)?$")
+
+
+def _extract_citation_spans(text: str, families: tuple = ("filecite", "cite")) -> list:
+    """官方 citation helper：從 final accumulated text 找出合法 citation 的 (start, end) 偏移。
+
+    格式：CSTART + family + CDELIM + source_id ... CDELIM + [line_locator] + CSTOP
+    驗證：family 在 families 內；每個 body part 為 [A-Za-z0-9_-]+；末尾 line locator 可略過驗證。
+    不合法 body → 不計入（後段殘留清理仍移除私有區字元）。
+    """
+    fam_re = "|".join(re.escape(f) for f in families)
+    rx = re.compile(
+        re.escape(_CSTART)
+        + f"(?:{fam_re})"
+        + re.escape(_CDELIM)
+        + r"(?P<body>.*?)"
+        + re.escape(_CSTOP),
+        re.DOTALL,
+    )
+    spans = []
+    for m in rx.finditer(text):
+        parts = [p.strip() for p in m.group("body").split(_CDELIM) if p.strip()]
+        if not parts:
+            continue
+        # 末尾 line locator（如 L8-L13）→ 剝除再驗 source IDs
+        if _LINE_LOCATOR_RE.fullmatch(parts[-1]):
+            parts.pop()
+        if not parts:
+            continue
+        # 每個 source_id 都必須合法
+        if any(not _SOURCE_ID_RE.fullmatch(p) for p in parts):
+            continue
+        spans.append((m.start(), m.end()))
+    return spans
+
+
+def _strip_citation_markers(text: str) -> str:
+    """剝除 OpenAI 內文私有區引用標記（官方 citation-formatting helper）。
+
+    官方做法：_extract_citation_spans 解析合法 citation（偏移量+來源ID驗證）→ 逆序剝除。
+    殘留私有區字元清理（-\ue20f）作保底：格式不完整也不外洩控制字元。
+    串流狀態機（stream_answer 逐字元 suppress）維持不變——此函式只作最終文字後處理。
+    families 涵蓋 filecite 與 cite 兩種格式。
     """
     if not text:
         return text
-    # 剝除完整 開…閉 標記（含內容）
-    cleaned = re.sub(".*?", "", text, flags=re.DOTALL)
-    # 移除殘留私有區字元（標記被跨 delta 切斷時的零散字元）
-    cleaned = re.sub("[-]", "", cleaned)
+    spans = _extract_citation_spans(text)
+    for s, e in sorted(spans, key=lambda x: x[0], reverse=True):
+        text = text[:s] + text[e:]
+    # 殘留私有區字元清理（保底：跨 delta 切斷的零散字元）
+    cleaned = re.sub("[-\ue20f]", "", text)
     return cleaned
 
 
@@ -904,6 +950,65 @@ async def generate_followups(client, question: str, answer: str) -> list[str]:
         return parsed.followups[:3]
     except Exception:
         return []
+
+
+
+class _StandaloneQuery(BaseModel):
+    """Schema for condense_question structured output."""
+    query: str
+
+
+async def condense_question(client, question: str, history: Optional[list] = None) -> str:
+    """追問改寫：把簡短追問結合歷史，改寫成可獨立檢索的繁體中文問題（CondenseQuestion 模式）。
+
+    若 history 為空 → 直接回原 question（不呼叫 LLM）。
+    使用 responses.parse（structured output，_StandaloneQuery）且不帶 file_search，快速。
+    失敗（例外/None/空 query）→ fallback 回原 question，不可拖垮問答。
+
+    接線（main.py /qa/stream）：
+        q_for_search = await condense_question(client, question, history)
+        # q_for_search 傳給 stream_answer（驅動 file_search）
+        # 持久化 turn 時存原始 question（使用者實際輸入）
+    """
+    from backend.recommend import OPENAI_MODEL
+
+    if not history:
+        return question
+
+    try:
+        # 取最近 _MAX_HISTORY_TURNS 輪組成摘要
+        recent = history[-_MAX_HISTORY_TURNS:]
+        history_summary = "\n".join(
+            f"[上輪問] {t.get('question', '')}\n[上輪答（摘）] {t.get('answer', '')[:120]}"
+            for t in recent
+        )
+        resp = await client.responses.parse(
+            model=OPENAI_MODEL,
+            input=[
+                {
+                    "role": "system",
+                    "content": (
+                        "把使用者最新的簡短追問，結合先前對話，改寫成一個「可獨立檢索、語意完整」的繁體中文問題。"
+                        "只輸出改寫後的問題，不回答、不加說明。"
+                        "若問題已是完整獨立問題則原樣輸出；"
+                        "若明顯開啟全新主題（與先前對話無關）則直接用新問題。"
+                        "使用台灣慣用繁體中文。"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": f"{history_summary}\n\n最新追問：{question}",
+                },
+            ],
+            text_format=_StandaloneQuery,
+        )
+        parsed = resp.output_parsed
+        if parsed is None:
+            return question
+        q = (parsed.query or "").strip()
+        return q if q else question
+    except Exception:
+        return question
 
 
 async def stream_answer(

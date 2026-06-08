@@ -31,7 +31,7 @@ from backend.qa import (
     answer_question, answer_question_structured, finalize_qa_answer,
     extract_citations, stream_answer, stream_answer_structured,
     parse_qa_response, classify_qa_error, is_incomplete_answer,
-    generate_followups,
+    generate_followups, condense_question,
 )
 from backend.qa_judge import evaluate_qa
 from backend.qa_logger import (
@@ -411,7 +411,14 @@ async def qa_stream(request: Request, question: str, session_id: str | None = No
                 _gen = stream_answer if _QA_MODE == "stream" else stream_answer_structured
                 _gen_client = _openai_client if _QA_MODE == "stream" else _client
                 _gen_store = _VS_ID if _QA_MODE == "stream" else _STORE_NAME
-                async for ev in _gen(_gen_client, _gen_store, question, history):
+                # condense-then-search：簡短追問結合歷史改寫成可獨立檢索的問題（CondenseQuestion）。
+                # 只在 stream(OpenAI) 模式且有歷史時改寫；stream35/replay 不動。
+                # 持久化 turn 時仍存原始 question（使用者實際輸入，供歷史顯示）。
+                if _QA_MODE == "stream" and history:
+                    q_for_search = await condense_question(_openai_client, question, history)
+                else:
+                    q_for_search = question
+                async for ev in _gen(_gen_client, _gen_store, q_for_search, history):
                     if await request.is_disconnected():
                         return  # 前端已關閉 → 中止
                     if ev["event"] == "token":
