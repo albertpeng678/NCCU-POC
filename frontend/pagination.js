@@ -2,14 +2,14 @@
 export function createPaginationState(pool, batchSize){
   return { pool: Array.isArray(pool)?pool.slice():[], batchSize: batchSize>0?batchSize:10, batchIndex: -1 };
 }
-function slice(s){ const a=s.batchIndex*s.batchSize; return s.pool.slice(a, a+s.batchSize); }
+function sliceBatch(s){ const a=s.batchIndex*s.batchSize; return s.pool.slice(a, a+s.batchSize); }
 export function nextBatch(s){
   if((s.batchIndex+1)*s.batchSize >= s.pool.length) return null;   // 無下一批（需續池）
-  s.batchIndex += 1; return slice(s);
+  s.batchIndex += 1; return sliceBatch(s);
 }
 export function prevBatch(s){
   if(s.batchIndex <= 0) return null;                                // 已在第一批
-  s.batchIndex -= 1; return slice(s);
+  s.batchIndex -= 1; return sliceBatch(s);
 }
 export function batchPosition(s){
   const total = s.pool.length===0 ? 0 : Math.ceil(s.pool.length/s.batchSize);

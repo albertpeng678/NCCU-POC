@@ -24,3 +24,11 @@ test("E7: 續池 append 去重後 hasNext 恢復、不重看", ()=>{const st=cre
 test("E6: groupBatch 依批內位置分三區", ()=>{const batch=Array.from({length:10},(_,i)=>({course_id:`c${i}`,name:`第${i}`,group:"core",rank:i}));
   const g=groupBatch(batch);assert.deepEqual(g.core.map(c=>c.name),["第0","第1","第2","第3"]);
   assert.deepEqual(g.supporting.map(c=>c.name),["第4","第5","第6","第7"]);assert.deepEqual(g.extended.map(c=>c.name),["第8","第9"]);});
+test("P3: 全新狀態(未 nextBatch) prevBatch → null", ()=>{
+  const st=createPaginationState(pool(30),10);
+  assert.equal(prevBatch(st), null);
+});
+test("B1: 初始狀態 batchPosition = {current:0,total:3,hasPrev:false,hasNext:true}", ()=>{
+  const st=createPaginationState(pool(30),10);
+  assert.deepEqual(batchPosition(st), {current:0,total:3,hasPrev:false,hasNext:true});
+});
