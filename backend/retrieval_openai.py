@@ -23,19 +23,17 @@ async def search_skill(
     Returns a list of dicts with keys: course_id, score, content.
     Results missing course_id in attributes are skipped.
     """
-    resp = await client.vector_stores.search(
+    results = []
+    async for item in client.vector_stores.search(
         vector_store_id=vs_id,
         query=query,
         max_num_results=top_k,
         ranking_options={"score_threshold": score_threshold},
-    )
-
-    results = []
-    for item in resp.data:
+    ):
         course_id = (item.attributes or {}).get("course_id")
         if not course_id:
             continue
-        content = "".join(c.text for c in item.content)
+        content = "".join(c.text for c in (item.content or []))
         results.append({"course_id": course_id, "score": item.score, "content": content})
     return results
 
