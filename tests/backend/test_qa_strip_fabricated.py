@@ -300,3 +300,105 @@ def test_retrieved_ids_empty_set_strips_all():
     )
     assert n == 1, "retrieved_ids=set() 空集合應砍掉所有資料列"
     assert "資料探勘" not in cleaned
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# _norm_course_name + NFKC 正規化比對測試（TDD Layer 2 深化）
+# ═══════════════════════════════════════════════════════════════════════════
+
+# 這組測試驗證：retrieved_ids 模式下，_norm_course_name（NFKC + 行政詞/標點/空白去除）
+# 讓括號、全形、空白、破折號等變體都能命中 retrieved 中的真課，不被誤砍。
+
+def test_norm_course_name_helper_exists():
+    """_norm_course_name 輔助函式必須存在於 backend.qa。"""
+    import backend.qa as qa
+    assert hasattr(qa, "_norm_course_name"), (
+        "_norm_course_name helper 尚未定義——Layer 2 正規化比對需要此函式"
+    )
+
+
+def test_norm_course_name_strips_admin_prefix_and_punctuation():
+    """_norm_course_name 應去掉行政前綴（體育、[男女合班]）與標點空白，回傳核心名稱。"""
+    from backend.qa import _norm_course_name
+    raw = "體育[男女合班]—武術初級"
+    result = _norm_course_name(raw)
+    # 行政詞與標點去除後，應只剩核心漢字
+    assert "體育" not in result, f"期望去掉「體育」，但結果：{result!r}"
+    assert "男女合班" not in result, f"期望去掉「男女合班」，但結果：{result!r}"
+    assert "武術" in result, f"武術 應保留，但結果：{result!r}"
+    assert "初級" in result, f"初級 應保留，但結果：{result!r}"
+
+
+def test_norm_course_name_nfkc_fullwidth():
+    """_norm_course_name 應對全形字元做 NFKC 正規化（全形→半形）。"""
+    from backend.qa import _norm_course_name
+    # 全形括號「（）」→ NFKC → 半形 ()，再被標點去除
+    result_full = _norm_course_name("武術（初級）")
+    result_half = _norm_course_name("武術初級")
+    assert result_full == result_half, (
+        f"NFKC 全形→半形後應與半形結果相等：{result_full!r} != {result_half!r}"
+    )
+
+
+# ── Case 16（RED→GREEN）：括號變體「武術（初級）」→ 不砍 ──
+def test_retrieved_ids_parenthesis_variant_kept():
+    """retrieved_ids={002350001}，表格寫「武術（初級）」（全形括號）→ 正規化互含後不被砍。
+
+    NFKC 把全形（）轉半形 ()，再去標點 → 與 retrieved 正規化名互含 → 保留。
+    """
+    table = _make_table(
+        ["武術（初級）", "體育室", "武術基礎入門"],
+    )
+    answer = f"推薦課程：\n\n{table}\n\n加油！"
+    cleaned, n = strip_fabricated_courses(
+        answer, _META_WITH_SPORT, retrieved_ids={"002350001"}
+    )
+    assert n == 0, f"武術（初級）應被保留（正規化互含），但 n_stripped={n}"
+    assert "武術（初級）" in cleaned or "武術" in cleaned
+
+
+# ── Case 17（RED→GREEN）：空白分隔「武術 初級」→ 不砍 ──
+def test_retrieved_ids_space_variant_kept():
+    """retrieved_ids={002350001}，表格寫「武術 初級」（含空白）→ 正規化去空白後互含 → 不被砍。"""
+    table = _make_table(
+        ["武術 初級", "體育室", "武術基礎入門"],
+    )
+    answer = f"推薦課程：\n\n{table}\n\n加油！"
+    cleaned, n = strip_fabricated_courses(
+        answer, _META_WITH_SPORT, retrieved_ids={"002350001"}
+    )
+    assert n == 0, f"武術 初級 應被保留（正規化去空白後互含），但 n_stripped={n}"
+    assert "武術" in cleaned
+
+
+# ── Case 18（RED→GREEN）：帶破折號前綴「體育—武術初級」→ 不砍 ──
+def test_retrieved_ids_dash_prefix_variant_kept():
+    """retrieved_ids={002350001}，表格寫「體育—武術初級」（無方括號）→ 正規化後互含 → 不被砍。"""
+    table = _make_table(
+        ["體育—武術初級", "體育室", "武術基礎入門"],
+    )
+    answer = f"推薦課程：\n\n{table}\n\n加油！"
+    cleaned, n = strip_fabricated_courses(
+        answer, _META_WITH_SPORT, retrieved_ids={"002350001"}
+    )
+    assert n == 0, f"體育—武術初級 應被保留（正規化後互含），但 n_stripped={n}"
+    assert "武術" in cleaned
+
+
+# ── Case 19（RED→GREEN）：完全不在 retrieved 的假課「AI新媒體影像創作與應用」→ 砍掉 ──
+def test_retrieved_ids_ai_course_not_in_retrieved_stripped():
+    """retrieved_ids={002350001}，表格寫「AI新媒體影像創作與應用」（meta 裡完全沒有）→ 被砍。
+
+    這是已確診的幻覺案例：meta 裡完全無此課名，retrieved_ids 也無 → 正規化後也不命中 → 砍。
+    """
+    table = _make_table(
+        ["武術初級", "體育室", "武術基礎入門"],
+        ["AI新媒體影像創作與應用", "傳播學院", "AI影像製作"],
+    )
+    answer = f"推薦課程：\n\n{table}\n\n加油！"
+    cleaned, n = strip_fabricated_courses(
+        answer, _META_WITH_SPORT, retrieved_ids={"002350001"}
+    )
+    assert n == 1, f"AI新媒體影像創作與應用 應被砍（不在 retrieved 也不在 meta），但 n_stripped={n}"
+    assert "AI新媒體影像創作與應用" not in cleaned
+    assert "武術" in cleaned  # 真課仍保留

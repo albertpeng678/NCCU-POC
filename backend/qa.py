@@ -5,6 +5,7 @@ import asyncio
 import json
 import re
 import time
+import unicodedata
 from typing import Optional
 
 import httpx
@@ -26,6 +27,25 @@ _SEP_RE = re.compile(r"-{3,}")
 _BOLD_RE = re.compile(r"\*\*.+?\*\*")
 _NINE_DIGIT_RE = re.compile(r"\b\d{9}\b")
 _SOURCE_MARKER_RE = re.compile(r"\s*\[[^\]\n]*\.txt[^\]\n]*\]")
+
+_NORM_STRIP_RE = re.compile(
+    r"體育|\[男女合班\]|【.*?】|[—\-－()（）\[\]【】、，,。：:\s]"
+)
+
+
+def _norm_course_name(s: str) -> str:
+    """正規化課名，供模糊比對用。
+
+    步驟：
+    1. NFKC unicodedata 正規化（全形字元 → 半形，如 （） → ()）
+    2. 去除行政前綴與標點空白（體育、[男女合班]、【…】、所有標點與空白）
+
+    讓「武術（初級）」「武術 初級」「體育—武術初級」都能與
+    「體育[男女合班]—武術初級」的正規化結果互含（雙向包含命中）。
+    """
+    normalized = unicodedata.normalize("NFKC", s or "")
+    return _NORM_STRIP_RE.sub("", normalized)
+
 
 # citations 為空但答案看似列具體課程時，覆寫為此訊息（防止 RAG 空命中時幻覺編課名）
 NO_RESULTS_MESSAGE = (
@@ -199,6 +219,7 @@ _SYSTEM_INSTRUCTION = """\
 - **粗體用在「可掃讀的重點」**：每段把最關鍵的「課程名稱」與「1-2 個核心能力關鍵詞」用 **粗體** 標出，讓使用者一掃就抓到重點；但不要整句加粗、也不要每個名詞都加粗（過度粗體＝等於沒有重點）。
 - **只要提到 2 門以上具體課程，一律用 Markdown 表格呈現（課程名稱｜系所｜重點），不要用條列或純段落帶過多門課。** 欄位固定為：課程名稱 | 系所 | 重點；表格內「重點」欄要寫得具體（一句帶到學什麼/特色），只有課程名稱可視需要加粗，系所與重點用一般字；分隔線每欄只用三個連字號（---）；表格最多 6 列，不要為對齊補空白。
 - 表格與內文只能列出你『實際從 File Search 檢索到』的課程；絕對不要用自己的知識補充、推測或湊任何沒檢索到的課名。寧可少列幾門，也不要列出檢索結果以外的課。
+- **【課名引用鐵則（prose 與表格均適用）】** 你**只能提到 File Search 檢索結果中實際存在的課程**。提到任何課程名稱時，**必須一字不差照抄**檢索內容裡的課程名稱，嚴禁自行**發明、改寫、縮寫、翻譯或美化**課名。若檢索結果中沒有夠貼切的課，**就誠實說沒有直接對應的課**，可給可轉移方向或請對方換關鍵字——**但不要為了有答案而捏造或硬湊課名**。（沒有證據時，**不要自動變成斷然否定**，可說明檢索到的相關但非完美對應的課。）
 - 純概念題或只談一門課時，不必硬塞表格，用文字說明即可（仍只在最關鍵處用粗體）。
 - 最後用一句話總結或給具體建議。
 
@@ -481,23 +502,26 @@ def strip_fabricated_courses(
             return cand in real_names
 
     else:
-        # 建立這次檢索到的課名集合（模糊比對）
-        retrieved_names: set[str] = {
-            ((meta.get(cid) or {}).get("name") or "").strip()
+        # 建立這次檢索到的課名集合（正規化後模糊比對）
+        # _norm_course_name：NFKC 全形→半形 + 去行政前綴/標點/空白
+        # 雙向包含（cand_n ⊂ rname_n 或 rname_n ⊂ cand_n）容許：
+        #   縮寫（「武術初級」⊂「體育[男女合班]—武術初級」）
+        #   括號/空白/破折號變體（正規化後消除差異）
+        retrieved_norms: set[str] = {
+            _norm_course_name((meta.get(cid) or {}).get("name") or "")
             for cid in retrieved_ids
         }
-        retrieved_names.discard("")
+        retrieved_norms.discard("")
 
         def _is_real_course(cand: str) -> bool:  # type: ignore[misc]
-            """模糊命中：cand ⊂ rname 或 rname ⊂ cand（去空白後雙向包含）。"""
-            cand_s = cand.strip()
-            if not cand_s:
+            """正規化模糊命中：cand_n ⊂ rn 或 rn ⊂ cand_n（正規化雙向包含）。"""
+            cand_n = _norm_course_name(cand)
+            if not cand_n:
                 return False
-            for rname in retrieved_names:
-                rname_s = rname.strip()
-                if not rname_s:
+            for rn in retrieved_norms:
+                if not rn:
                     continue
-                if cand_s in rname_s or rname_s in cand_s:
+                if cand_n in rn or rn in cand_n:
                     return True
             return False
 
