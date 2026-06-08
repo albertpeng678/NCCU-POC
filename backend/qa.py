@@ -9,6 +9,7 @@ from typing import Optional
 
 import httpx
 import json_repair
+from pydantic import BaseModel
 
 from google import genai
 from google.genai import types
@@ -840,6 +841,47 @@ def _build_openai_input(question: str, history: Optional[list] = None) -> list:
             messages.append({"role": "assistant", "content": a})
     messages.append({"role": "user", "content": question})
     return messages
+
+
+class _Followups(BaseModel):
+    """Schema for generate_followups structured output."""
+    followups: list[str]
+
+
+async def generate_followups(client, question: str, answer: str) -> list[str]:
+    """答案串完後，快速結構化小呼叫生成 3 個繁體中文後續問題建議。
+
+    使用 OpenAI Responses API structured output（responses.parse + _Followups schema），
+    **不帶 file_search**（純生成、快速）。
+
+    回 followups[:3]；output_parsed 為 None 或任何例外 → 回 []（不可讓 followup 失敗拖垮問答）。
+    """
+    from backend.recommend import OPENAI_MODEL
+
+    try:
+        resp = await client.responses.parse(
+            model=OPENAI_MODEL,
+            input=[
+                {
+                    "role": "system",
+                    "content": (
+                        "你是一個政大選課助手。根據下方的課程問答，產生 3 個使用者可能接著問的後續問題建議。"
+                        "要求：繁體中文、簡短（15 字以內）、具體、與課程相關。只輸出問題，不要加編號或符號。"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": f"問題：{question}\n答案：{answer}\n\n產生 3 個後續問題建議",
+                },
+            ],
+            text_format=_Followups,
+        )
+        parsed = resp.output_parsed
+        if parsed is None:
+            return []
+        return parsed.followups[:3]
+    except Exception:
+        return []
 
 
 async def stream_answer(

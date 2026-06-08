@@ -31,6 +31,7 @@ from backend.qa import (
     answer_question, answer_question_structured, finalize_qa_answer,
     extract_citations, stream_answer, stream_answer_structured,
     parse_qa_response, classify_qa_error, is_incomplete_answer,
+    generate_followups,
 )
 from backend.qa_judge import evaluate_qa
 from backend.qa_logger import (
@@ -425,6 +426,13 @@ async def qa_stream(request: Request, question: str, session_id: str | None = No
                             parsed["answer"], parsed["followup_suggestions"],
                             ev["data"]["course_ids"], meta,
                         )
+                        # stream(OpenAI) 模式：OpenAI 吐純 markdown 無 JSON，followups 恆空；
+                        # 兩段式補回：答案串完後快速呼叫 generate_followups（不帶 file_search）。
+                        # stream35 模式答案已含 followup_suggestions（structured output），不重複呼叫。
+                        if _QA_MODE == "stream" and not followups:
+                            followups = await generate_followups(
+                                _openai_client, question, answer
+                            )
                         result_dict = {
                             "answer": answer,
                             "citations_course_ids": ev["data"]["course_ids"],
