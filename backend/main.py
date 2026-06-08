@@ -389,6 +389,10 @@ async def qa_stream(request: Request, question: str, session_id: str | None = No
                         yield _sse("token", ev["data"])
                     elif ev["event"] == "done":
                         parsed = parse_qa_response(ev["data"]["answer_text"])
+                        if not parsed["answer"].strip():
+                            # 3.5 偶發 TOO_MANY_TOOL_CALLS → 空答案；走既有 transient 重試泡泡，不落半截 turn
+                            yield _sse("error", {"error_type": "incomplete", "message": "empty answer"})
+                            return
                         answer, followups, citations, no_match = finalize_qa_answer(
                             parsed["answer"], parsed["followup_suggestions"],
                             ev["data"]["course_ids"], meta,
