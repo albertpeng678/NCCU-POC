@@ -205,3 +205,56 @@ PoC 流量下量級「月數美元內」，與現況相近但**穩定**。
 | out-of-scope 門檻校準（太鬆漏幻覺/太緊誤拒） | 用黃金集調 `score_threshold` cutoff |
 | 硬切無回退 | e2e 5x gate 為唯一把關；git revert 為最終退路 |
 | 直接 search 端點計費若日後改變 | 目前官方確認免費；上線後留意帳單 |
+
+---
+
+## 執行治理（process governance，使用者硬要求）
+
+> 此遷移為「極端複雜」工作，治理從嚴。以下為 release 的不可繞過條件。
+
+### A. 三審 release gate（frontend / backend / db auditor 全數通過才 release）
+
+| auditor | 審查範圍 |
+|---|---|
+| **backend** | OpenAI 串接正確性、`AsyncOpenAI` event-loop 安全（startup 建、同 loop 用）、retry/逾時/錯誤處理、推薦+問答 pipeline 邏輯、grounding 鐵則（#15）保留、out-of-scope 判定正確 |
+| **db** | Postgres 多輪歷史（`qa_session`/`qa_turn`）串接、`career_budget` 重建、**course_id 對應鍵完整性**、asyncpg pool 用法、資料無漏/無重 |
+| **frontend** | **前端零行為改動**驗證（推薦卡片/問答氣泡/串流打字機/柴犬等候/分頁換一批不變）、Playwright e2e 證據、跨裝置（mobile/tablet/desktop） |
+
+- 三審 **並行 dispatch**（superpowers:dispatching-parallel-agents），用 superpowers:requesting-code-review 模板；任一不通過 → superpowers:receiving-code-review 退修 → 重審該維度。
+- **全數通過才 release**。對應 RITUAL：Director（Opus）cold-read 三審結論 + e2e PNG 證據。
+
+### B. MCP 實證 mandate（盡可能重現實際情況）
+
+- **Playwright MCP**：每階段 e2e 真實重現「user action → DB persist → reload → visible」整段，**5x consecutive 0 flake 才算 GREEN**。**動用 Playwright 前必先徹底熟讀 `playwright-skill`**（locator 紀律、禁 mock 自家 backend success path、禁 `waitForTimeout`、Pitfall 11/14/18/19/3、多階段用 `test.step()`）。
+- **Sentry MCP**：上線後查無新錯誤類別；主動重現真實失敗條件（OpenAI 429/5xx/timeout）確認降噪、重試、友善錯誤泡泡生效。
+
+### C. superpowers skill → 工作環節對應（每個都實施，N/A 誠實標註）
+
+| skill | 環節 |
+|---|---|
+| using-superpowers | 全程：每步先檢查該用哪個 skill |
+| brainstorming | ✅ 本 spec |
+| writing-plans | 下一步：spec → 逐步計畫（每步含 fail test + 驗證指令） |
+| subagent-driven-development | 實作主軸：每 task 派新 subagent + 兩段審查（spec 合規→code quality） |
+| test-driven-development | 每寫 code task：red→green |
+| dispatching-parallel-agents | 省時主軸：建庫/檢索模組/測試並行、三審並行、e2e 多維度並行（上限 3–5） |
+| systematic-debugging | 出 bug：根因→重現 test→修，不亂修 |
+| requesting-code-review + receiving-code-review | 三審 gate 模板 + 退修回應 |
+| using-git-worktrees | 遷移在獨立 worktree，不污染 master |
+| verification-before-completion | 每階段：親證（Playwright/Sentry 證據）才算完成（IL-2） |
+| finishing-a-development-branch | release：三審過→收束分支 |
+| executing-plans | 備選：若不用 subagent-driven 改 inline 批次 |
+| writing-skills | **N/A**（本次不產新 skill，不硬湊） |
+
+### D. karpathy 開發紀律（貫穿所有寫 code 環節）
+
+1. **Think before coding**：surface 假設/tradeoff，不靜默選擇。
+2. **Simplicity first**：硬切、零供應商抽象、前端零改動——已體現；不加未要求的彈性。
+3. **Surgical changes**：每行改動可追溯到此遷移；不順手改鄰近碼；**Gemini 死碼 Phase 3 才清，且只清本遷移製造的 orphan + 明列**。
+4. **Goal-driven**：每 task 轉成可驗證 goal（先 fail test → green）。
+
+### E. 並行 vs 序列
+
+- **可並行**：建庫腳本 / `retrieval_openai` 模組 / 各自單元測試；三審；e2e 多維度。
+- **必須序列**：Phase 0 建庫 → Phase 1 推薦（驗證檢索品質）→ Phase 2 問答（依賴庫+檢索品質已驗）→ Phase 3 清理。
+- 角色：Opus = director / auditor / spec；Sonnet = implementer（TDD red→green / 5x e2e）。
