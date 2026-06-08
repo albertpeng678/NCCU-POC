@@ -318,10 +318,24 @@ body.qa-active .site-footer{display:none}
 }
 
 /* 推薦多樣性：換一批按鈕 + 導問答 CTA */
-.results-actions{display:flex;justify-content:center;margin-top:24px}
-.reroll-btn{font-family:"Chakra Petch";font-size:14px;letter-spacing:.04em;color:var(--cyan);background:var(--glass);border:1.5px solid var(--glass-brd);border-radius:24px;padding:11px 26px;cursor:pointer;transition:border-color .18s,box-shadow .18s,transform .15s}
-.reroll-btn:hover{border-color:var(--cyan);box-shadow:0 0 18px var(--cyan-dim);transform:translateY(-2px)}
-.reroll-btn:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
+.results-actions{display:flex;flex-direction:column;align-items:center;margin-top:24px}
+/* 分頁導覽列（上一批 / 第 N/M 批 / 換一批 + 小圓點）— navy glass */
+.pager{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:14px}
+.pg-btn{display:inline-flex;align-items:center;gap:7px;font-family:"Chakra Petch";font-size:14px;letter-spacing:.04em;background:rgba(52,227,255,.08);border:1.5px solid var(--glass-brd);color:var(--cyan);border-radius:24px;padding:11px 22px;cursor:pointer;transition:border-color .18s,box-shadow .18s,transform .15s,background .18s}
+.pg-btn:hover{border-color:var(--cyan);background:rgba(52,227,255,.18);box-shadow:0 0 18px var(--cyan-dim);transform:translateY(-2px)}
+.pg-btn:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
+.pg-btn.primary{background:linear-gradient(180deg,rgba(52,227,255,.22),rgba(52,227,255,.1));border-color:var(--cyan)}
+.pg-btn.disabled,.pg-btn:disabled{opacity:.34;cursor:not-allowed;border-color:var(--glass-brd);background:rgba(120,160,230,.06);color:var(--text-dim);box-shadow:none;transform:none}
+.pg-ind{color:var(--text-dim);font-size:13.5px;min-width:84px;text-align:center;letter-spacing:.03em}
+.pg-dots{display:flex;gap:6px;justify-content:center;margin-top:11px}
+.dot{width:7px;height:7px;border-radius:50%;background:rgba(120,160,230,.28)}
+.dot.on{background:var(--cyan);box-shadow:0 0 8px var(--cyan-dim)}
+.arrow{font-size:16px;line-height:1}
+@media (max-width:480px){
+  .pager{gap:10px}
+  .pg-btn{padding:10px 16px;font-size:13px}
+  .pg-ind{order:-1;flex-basis:100%;min-width:0}
+}
 .to-qa-cta{text-align:center;margin-top:14px;font-size:13.5px;color:var(--text-dim)}
 .to-qa-cta a{color:var(--cyan);text-decoration:none;border-bottom:1px solid transparent;transition:border-color .15s;margin-left:4px}
 .to-qa-cta a:hover{border-bottom-color:var(--cyan)}
