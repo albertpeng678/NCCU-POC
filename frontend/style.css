@@ -194,7 +194,7 @@ body::after{width:600px;height:600px;background:radial-gradient(circle,rgba(40,9
 .cat.open .items{display:block}
 .item{padding:9px 12px;border-radius:9px;cursor:pointer;font-size:13.5px;color:var(--text);transition:background .15s,color .15s}
 .item:hover{background:var(--cyan-dim);color:var(--cyan)}
-.oc-hl{background:rgba(95,210,230,.28);color:var(--cyan);border-radius:3px;padding:0 1px}
+.oc-hl{background:rgba(52,227,255,.28);color:var(--cyan);border-radius:3px;padding:0 1px}
 .oc-empty{padding:18px 6px;color:var(--text-dim);font-size:13.5px}
 
 /* ===== Responsive ===== */
