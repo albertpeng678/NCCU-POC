@@ -35,6 +35,21 @@ NO_RESULTS_MESSAGE = (
 )
 
 
+def _strip_citation_markers(text: str) -> str:
+    """剝除 OpenAI 內文私有區引用標記（U+E200…filecite…U+E202…turnXfileY…U+E201）。
+
+    完整標記形如：  filecite  turnXfileY  （U+E200 開、U+E202 分隔、U+E201 閉）。
+    re.DOTALL 使 .* 跨換行也能匹配，再移除任何殘留私有區字元 U+E200-E20F。
+    """
+    if not text:
+        return text
+    # 剝除完整 開…閉 標記（含內容）
+    cleaned = re.sub(".*?", "", text, flags=re.DOTALL)
+    # 移除殘留私有區字元（標記被跨 delta 切斷時的零散字元）
+    cleaned = re.sub("[-]", "", cleaned)
+    return cleaned
+
+
 def strip_source_markers(text: str) -> str:
     """移除答案中 file_search 的 inline 來源引註標記（如 [tmpt_ync0ml.txt, tmpvenglr3i.txt]）。
 
@@ -109,6 +124,7 @@ _SYSTEM_INSTRUCTION = """\
 
 你是「政大選課小幫手」，專門協助政治大學學生探索 114-2 全校課程、選課策略，以及課程與職涯/技能的連結。
 你的知識僅來自所掛載的政大課綱知識庫（File Search）。請務必親切、口語，像學長姐一樣，用繁體中文回答。
+**使用台灣慣用的繁體中文用語**，避免中國大陸用語。例如用「適合／對應」不用「對口」、「影片」不用「視頻」、「資訊」不用「信息」、「品質」不用「質量」、「軟體」不用「軟件」、「程式」不用「程序」、「預設」不用「默認」等。
 
 # 你可以回答的範圍
 課程內容/難度/先修/授課老師/開課系所/評分；依興趣或職涯推薦課程；選課與跨領域學習策略；任何能由知識庫課綱支撐的問題。
@@ -128,7 +144,7 @@ _SYSTEM_INSTRUCTION = """\
 # 輸出格式鐵則
 - 先寫 3-5 句**充實具體**的說明：點出課程涵蓋的內容、為何適合該方向、以及難度或先修（若知道）。要有料、不空泛，避免只丟一兩句。
 - 粗體要克制：整段只把「最關鍵的課程名稱」與「1-2 個核心能力關鍵詞」用 **粗體**。不要每個名詞、每個系所都加粗——過度粗體會讓重點失去強調效果。
-- 當你在「列出/比較多門具體課程」時，務必接著輸出一個 Markdown 表格；欄位固定為：課程名稱 | 系所 | 重點；表格內「重點」欄要寫得具體（一句帶到學什麼/特色），只有課程名稱可視需要加粗，系所與重點用一般字；分隔線每欄只用三個連字號（---）；表格最多 6 列，不要為對齊補空白。
+- **只要提到 2 門以上具體課程，一律用 Markdown 表格呈現（課程名稱｜系所｜重點），不要用條列或純段落帶過多門課。** 欄位固定為：課程名稱 | 系所 | 重點；表格內「重點」欄要寫得具體（一句帶到學什麼/特色），只有課程名稱可視需要加粗，系所與重點用一般字；分隔線每欄只用三個連字號（---）；表格最多 6 列，不要為對齊補空白。
 - 表格與內文只能列出你『實際從 File Search 檢索到』的課程；絕對不要用自己的知識補充、推測或湊任何沒檢索到的課名。寧可少列幾門，也不要列出檢索結果以外的課。
 - 純概念題或只談一門課時，不必硬塞表格，用文字說明即可（仍只在最關鍵處用粗體）。
 - 最後用一句話總結或給具體建議。
@@ -865,8 +881,14 @@ async def generate_followups(client, question: str, answer: str) -> list[str]:
                 {
                     "role": "system",
                     "content": (
-                        "你是一個政大選課助手。根據下方的課程問答，產生 3 個使用者可能接著問的後續問題建議。"
-                        "要求：繁體中文、簡短（15 字以內）、具體、與課程相關。只輸出問題，不要加編號或符號。"
+                        "你是一個政大選課助手。根據下方的課程問答，產生 3 個具體、有建設性、能推進選課規劃的後續問題建議。"
+                        "問題要圍繞「課程比較／搭配／先修鋪路／能力涵蓋／學期規劃」等可行動方向，"
+                        "避免過淺的問法（如「X好修嗎」「X先修是什麼」）。"
+                        "長度可中等，不必硬壓很短。"
+                        "繁體中文，台灣用語，不加編號或符號，只輸出問題本身。"
+                        "範例方向（供參考，勿照抄）：「想完整涵蓋產品策略+資料分析，這幾門怎麼搭配選？」"
+                        "「修完創新經濟學，下一步適合接哪門進階課？」"
+                        "「這幾門課的作業量和先修落差大嗎？」"
                     ),
                 },
                 {
@@ -905,8 +927,9 @@ async def stream_answer(
 
     input_messages = _build_openai_input(question, history)
 
-    raw = ""           # 累積所有 text delta
+    raw = ""           # 累積所有 text delta（已剝標記）
     course_ids: list[str] = []
+    suppressing = False   # 串流狀態機：是否在 citation 標記內
 
     stream = await client.responses.create(
         model=OPENAI_MODEL,
@@ -929,10 +952,20 @@ async def stream_answer(
         # - output item done with file_search results: has .item with .type=="file_search_call"
         delta = getattr(event, "delta", None)
         if delta is not None and isinstance(delta, str):
-            # ResponseTextDeltaEvent
+            # ResponseTextDeltaEvent — 逐字元過濾私有區 citation 標記
             if delta:
-                raw += delta
-                yield {"event": "token", "data": {"text": delta}}
+                visible = []
+                for ch in delta:
+                    if ch == "":          # 標記開始 → 進入 suppressing
+                        suppressing = True
+                    elif ch == "":        # 標記結束 → 離開 suppressing
+                        suppressing = False
+                    elif not suppressing:
+                        visible.append(ch)
+                clean = "".join(visible)
+                if clean:
+                    raw += clean
+                    yield {"event": "token", "data": {"text": clean}}
         else:
             item = getattr(event, "item", None)
             if item is not None and getattr(item, "type", None) == "file_search_call":

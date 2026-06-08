@@ -1,0 +1,113 @@
+# tests/backend/test_qa_strip_markers.py
+"""修 1：剝除 OpenAI 內文引用標記（U+E200 私有區 unicode）。
+
+測試：
+(a) 純函式 _strip_citation_markers：完整標記被剝乾淨。
+(b) 串流狀態機：標記跨兩個 delta 切割時，yield 出的文字不含標記。
+"""
+import pytest
+from types import SimpleNamespace
+
+from backend.qa import _strip_citation_markers, stream_answer
+
+
+# ─────────────────────────────── (a) 純函式 ────────────────────────────────
+
+
+def test_strip_citation_markers_removes_full_marker():
+    """完整 citation 標記（U+E200...U+E201）被完整剝除，周圍文字保留。"""
+    # 建構一個完整標記： filecite  turn0file0 
+    marker = "fileciteturn0file0"
+    text = f"助。{marker}\n- 下一行"
+    result = _strip_citation_markers(text)
+    assert result == "助。\n- 下一行"
+    # 確認沒有任何私有區字元殘留
+    for ch in result:
+        assert not (0xE200 <= ord(ch) <= 0xE20F), f"殘留私有區字元: U+{ord(ch):04X}"
+
+
+def test_strip_citation_markers_empty_string():
+    """空字串不崩。"""
+    assert _strip_citation_markers("") == ""
+
+
+def test_strip_citation_markers_no_markers():
+    """無標記文字原樣回傳。"""
+    text = "這是正常文字，沒有標記。"
+    assert _strip_citation_markers(text) == text
+
+
+def test_strip_citation_markers_multiple_markers():
+    """多個標記全部剝除。"""
+    m1 = "fileciteturn0file0"
+    m2 = "fileciteturn1file2"
+    text = f"前{m1}中{m2}後"
+    result = _strip_citation_markers(text)
+    assert result == "前中後"
+
+
+# ─────────────────────────────── (b) 串流狀態機 ────────────────────────────
+
+
+async def _aiter(items):
+    for it in items:
+        yield it
+
+
+def _text_delta(delta: str):
+    return SimpleNamespace(delta=delta)
+
+
+def _output_item_done(item_type="message"):
+    item = SimpleNamespace(type=item_type)
+    return SimpleNamespace(item=item)
+
+
+def _fake_client(events):
+    async def _create(**kwargs):
+        return _aiter(events)
+    return SimpleNamespace(responses=SimpleNamespace(create=_create))
+
+
+async def _collect(gen):
+    return [ev async for ev in gen]
+
+
+@pytest.mark.asyncio
+async def test_stream_strips_citation_marker_split_across_deltas():
+    """標記跨兩個 delta（前半在 delta1、後半在 delta2）時，兩段都不可洩漏標記字元。
+
+    delta1 = "助。filecite"       ← 標記開始在此 delta
+    delta2 = "turn0file0next"    ← 標記結束在此 delta，next 是正常文字
+
+    期望 yield 出的合併 token 文字 == "助。next"（標記整段不出現）。
+    """
+    open_char = ""
+    close_char = ""
+    sep_char = ""
+
+    delta1 = f"助。{open_char}filecite"
+    delta2 = f"{sep_char}turn0file0{close_char}next"
+
+    events = [
+        _text_delta(delta1),
+        _text_delta(delta2),
+        _output_item_done("message"),
+    ]
+    client = _fake_client(events)
+    result = await _collect(stream_answer(client, "vs_123", "問"))
+
+    tokens = [e for e in result if e["event"] == "token"]
+    joined = "".join(t["data"]["text"] for t in tokens)
+    assert joined == "助。next", f"got: {repr(joined)}"
+
+    # 確認 token 流中無任何私有區字元
+    for ch in joined:
+        assert not (0xE200 <= ord(ch) <= 0xE20F), f"token 流含私有區字元: U+{ord(ch):04X}"
+
+    # done 的 answer_text 也應被剝乾淨
+    done = [e for e in result if e["event"] == "done"][0]
+    answer = done["data"]["answer_text"]
+    for ch in answer:
+        assert not (0xE200 <= ord(ch) <= 0xE20F), f"answer_text 含私有區字元: U+{ord(ch):04X}"
+    assert "next" in answer
