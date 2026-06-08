@@ -1,9 +1,10 @@
 // app.js — NCCU Course Map frontend logic
-import { createPaginationState, nextBatch, prevBatch, appendPool, groupBatch, batchPosition } from "./pagination.js?v=35";
-import { drainCount } from "./progressive-md.js?v=34";
-import { stageNarration, easeApproach, fillToDone, SHIBA_TOTAL } from "./shiba-progress.js?v=34";
-import { qaErrorUiState, buildRetryState, noMatchChips, TRANSIENT_MSG, NO_MATCH_MSG } from "./qa-recovery.js?v=34";
-import { buildEndStateHtml } from "./end-state.js?v=34";
+import { createPaginationState, nextBatch, prevBatch, appendPool, groupBatch, batchPosition } from "./pagination.js?v=36";
+import { drainCount } from "./progressive-md.js?v=36";
+import { stageNarration, easeApproach, fillToDone, SHIBA_TOTAL } from "./shiba-progress.js?v=36";
+import { qaErrorUiState, buildRetryState, noMatchChips, TRANSIENT_MSG, NO_MATCH_MSG } from "./qa-recovery.js?v=36";
+import { buildEndStateHtml } from "./end-state.js?v=36";
+import { CAREER_CATEGORIES } from "./career-categories.js?v=36";
 
 const CONFIG = {
   // Local dev default; overwrite before Railway deploy.
@@ -33,7 +34,7 @@ const offcanvas = document.getElementById("offcanvas");
 const scrim     = document.getElementById("scrim");
 const ocClose   = document.getElementById("oc-close");
 const ocSearch  = document.getElementById("oc-search");
-const ocList    = document.getElementById("oc-list");
+const ocCats    = document.getElementById("oc-cats");
 
 const input     = document.getElementById("career-input");
 const dropdown  = document.getElementById("autocomplete-list");
@@ -73,7 +74,7 @@ function openOffcanvas(){
   scrim.hidden = false;
   requestAnimationFrame(()=>scrim.classList.add("show"));
   ocSearch.value = "";
-  renderOcList(CAREERS);
+  renderOcCats("");
   ocSearch.focus();
 }
 function closeOffcanvas(){
@@ -93,25 +94,61 @@ document.addEventListener("keydown", (e)=>{
   }
 });
 
-function renderOcList(items){
-  ocList.innerHTML = "";
-  items.forEach(c=>{
-    const div = document.createElement("div");
-    div.className = "oc-item";
-    div.setAttribute("role","option");
-    div.textContent = c;
-    div.addEventListener("click", ()=>{
-      selectCareer(c);
-      closeOffcanvas();
-      fetchRecommendation(c);   // 抽屜點職涯 → 直接推薦（與熱門 pill 一致、少一步）
-    });
-    ocList.appendChild(div);
+// 職類目錄 accordion：8 大分類，預設全收合；搜尋時跨類過濾、自動展開命中分類並高亮關鍵字。
+function makeItem(career, q){
+  const div = document.createElement("div");
+  div.className = "item";
+  div.setAttribute("role","option");
+  if(q){
+    const i = career.toLowerCase().indexOf(q);
+    if(i >= 0){
+      div.innerHTML = `${escHtml(career.slice(0,i))}<mark class="oc-hl">${escHtml(career.slice(i,i+q.length))}</mark>${escHtml(career.slice(i+q.length))}`;
+    } else {
+      div.textContent = career;
+    }
+  } else {
+    div.textContent = career;
+  }
+  div.addEventListener("click", ()=>{
+    selectCareer(career);
+    closeOffcanvas();
+    fetchRecommendation(career);   // 抽屜點職涯 → 直接推薦（與熱門 pill 一致、少一步）
   });
+  return div;
 }
-ocSearch.addEventListener("input", ()=>{
-  const q = ocSearch.value.trim().toLowerCase();
-  renderOcList(q ? CAREERS.filter(c=>c.toLowerCase().includes(q)) : CAREERS);
-});
+function renderOcCats(query){
+  const q = (query || "").trim().toLowerCase();
+  ocCats.innerHTML = "";
+  let anyHit = false;
+  for(const [name, careers] of Object.entries(CAREER_CATEGORIES)){
+    const matched = q ? careers.filter(c=>c.toLowerCase().includes(q)) : careers;
+    if(q && matched.length === 0) continue;   // 搜尋時隱藏無命中分類
+    anyHit = true;
+
+    const cat = document.createElement("div");
+    cat.className = "cat" + (q ? " open" : "");   // 搜尋時自動展開命中分類；無搜尋全收合
+
+    const head = document.createElement("div");
+    head.className = "cat-h";
+    head.innerHTML = `<span class="arr">▶</span><span class="cat-name">${escHtml(name)}</span><span class="cat-n">${matched.length}</span>`;
+    head.addEventListener("click", ()=>cat.classList.toggle("open"));
+    cat.appendChild(head);
+
+    const items = document.createElement("div");
+    items.className = "items";
+    matched.forEach(c=>items.appendChild(makeItem(c, q)));
+    cat.appendChild(items);
+
+    ocCats.appendChild(cat);
+  }
+  if(q && !anyHit){
+    const empty = document.createElement("div");
+    empty.className = "oc-empty";
+    empty.textContent = "查無相符職涯";
+    ocCats.appendChild(empty);
+  }
+}
+ocSearch.addEventListener("input", ()=>{ renderOcCats(ocSearch.value); });
 
 // ---------- Autocomplete ----------
 function filterCareers(q){

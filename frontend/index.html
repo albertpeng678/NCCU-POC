@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=35">
+  <link rel="stylesheet" href="style.css?v=36">
 </head>
 <body>
   <!-- ambient background orbs handled in CSS via body::before/::after -->
@@ -145,8 +145,7 @@
       <button id="oc-close" class="oc-close" type="button" aria-label="關閉">×</button>
     </div>
     <input id="oc-search" class="oc-search" type="text" placeholder="搜尋職涯…" autocomplete="off">
-    <p class="oc-section-label">全部 50 種職涯</p>
-    <div id="oc-list" class="oc-list" role="listbox"></div>
+    <div id="oc-cats" class="oc-cats"></div>
   </aside>
 
   <!-- Sentry（錯誤監控+tracing）：放最前以捕捉後續所有錯誤；DSN 由 app.js CONFIG 控制，空則停用 -->
@@ -157,7 +156,7 @@
   <script src="https://cdn.jsdelivr.net/npm/marked@15.0.7/marked.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.4/dist/purify.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/lottie-web/5.12.2/lottie.min.js"></script>
-  <script src="careers.js?v=35"></script>
-  <script type="module" src="app.js?v=35"></script>
+  <script src="careers.js?v=36"></script>
+  <script type="module" src="app.js?v=36"></script>
 </body>
 </html>
