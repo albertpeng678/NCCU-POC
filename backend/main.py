@@ -115,7 +115,9 @@ async def _background_log_and_judge(career, result, stage1_count, error):
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    # qa_mode 外露：線上實際跑哪個問答模式一目了然（curl /health 即知），
+    # 用可觀測性取代「在 Railway 釘隱形環境變數」的技術債（見 CLAUDE #12 / HANDOFF Session 9）。
+    return {"status": "ok", "qa_mode": _QA_MODE}
 
 
 @app.post("/recommend")
