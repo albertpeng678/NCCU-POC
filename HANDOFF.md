@@ -1,7 +1,57 @@
 # NCCU 課程推薦系統 — 交接文件（HANDOFF.md）
 
 > 專案進展史 + WBS + 待辦。給接手的 agent 快速掌握「做到哪、還剩什麼」。
-> 最後更新：2026-06-05（**Session 5**：Q&A 留 2.5 + JSON 三層強化 + 平滑串流打字機（表格逐列長出、20cps）；3.5 探索後 parked；已 push master 部署）
+> 最後更新：2026-06-08（**Session 7**：離線預算 career_budget 秒回 + 柴犬等候動畫 + Q&A 失敗復原 + Sentry 降噪 + 多輪修復；**⚠️ 留下一個高優先未修 bug：to_thread 污染共用 async client → 「Event loop is closed」**）
+
+---
+
+## ★ Session 7 交接（最新，換機器接手第一個讀）★
+
+> 分支 **`master`**，**本機 15 commits ahead of `origin/master`（尚未 push）**。要部署＝`git push`（Railway GitHub-connected 自動 build）。
+> 後端測試 **254 passing**；前端資源版本 **`?v=34`**。
+> ⚠️ 工作目錄有一個未追蹤的 `example.com` 雜檔（code-review 抓過）——**不要 commit，刪掉即可**。
+
+### 🔴🔴 最高優先：未修 bug「Event loop is closed」（換機器後第一件事）
+
+**症狀**：清單外職涯（如「數據分析」「記者」）走 `/recommend/stream` 時，**只要該後端程序在此之前跑過任何一次 `POST /recommend` 即時路徑**，之後所有 `/recommend/stream`（清單外）與 `/qa/stream` 都會秒噴 `查詢失敗：Event loop is closed`。Playwright 真後端 e2e 親證（1 秒就 error）。
+
+**根因（已從程式碼確認，非猜測）**：
+- `backend/recommend.py:471 build_recommendation_instrumented`（同步）內部 `asyncio.run(_run())`（:495），`_run` 用**模組層共用的 `_client.aio`**（async client，`fanout_retrieve_async`/`stage2_annotate_pool_async` 都 `await client.aio.models.generate_content`）。
+- `backend/main.py:152` 我把 POST /recommend 改成 `await asyncio.to_thread(build_recommendation_instrumented, ...)`（commit `21e6a93`，為修「asyncio.run cannot be called from a running event loop」）。
+- 但 to_thread 的 worker thread 裡 `asyncio.run` **建一個用完即關的 loop L2** → 共用 `_client.aio` 的 httpx async client **綁到 L2** → L2 關閉後，這個共用 client 綁在死 loop → **後續主 loop L1 上任何 `_client.aio` 呼叫**（stream recommend / qa stream）→ 「Event loop is closed」。
+- **= 我的 `to_thread` 修法把單一請求崩潰，換成「第一次 POST 即時路徑後污染整個 worker 程序的 async client」的更廣 regression。** 單元測試 + code-review 都沒抓到，因為都沒測「同程序的下一個 async 請求」。Session 7 的 e2e 才抓到。
+
+**正解（下個 session 做，TDD）**：POST /recommend **不要用 `asyncio.run` 同步包裝**。把 pipeline 抽成 async `build_recommendation_instrumented_async`（直接 `await fanout_retrieve_async / stage2_annotate_pool_async`），handler 直接 `await`（全程在主 loop L1，不開新 loop、不 to_thread、不碰共用 client 的跨 loop 綁定）。同步 `build_recommendation_instrumented` 可留給測試/離線腳本。`stream_recommendation`（/recommend/stream 用）本來就是 async 在主 loop，所以**新鮮程序、第一個就打清單外 stream 通常會動**——bug 只在「POST 即時路徑跑過之後」浮現。
+- 反例提醒：不要回退成「在 async handler 直接呼叫同步 asyncio.run 版」（那是原本的崩潰）；也不要每請求 new genai.Client（浪費連線、量測污染）。
+- 驗證門檻（這次學到的教訓）：修完要跑**真後端 e2e 的「先打一次 POST /recommend 清單外 → 再打 /recommend/stream 清單外 + /qa/stream」**，確認第二、三個請求不再「Event loop is closed」。光單元測試不夠。
+
+### ✅ 本 session 已完成並 commit（未 push）
+
+1. **離線預算 career_budget（核心提速，秒回）**（`ebb6671`/`68299b0`/`9f18962`）：
+   - 50 固定職涯離線跑完整 pipeline、整池存 Postgres `career_budget` 表（`backend/schema.sql` 已加表）；線上 `get_budget` 命中即**秒出（0 即時 AI）**，未命中落回即時路徑。
+   - `backend/career_budget.py`（serialize/deserialize/get_budget/upsert_budget；deserialize 補 group/reason 預設、跳壞課防漂移）；`backend/recommend.py` 加 `stream_recommendation_from_budget`（命中時 SSE 5 階段瞬間 + result）；`main.py` POST 與 stream 都先查 budget。
+   - **離線腳本 `scripts/build_career_budget.py`**（force-add，gitignored）：`CONCURRENCY`/`ONLY`/`ONLY_MISSING` env；**已對 Railway 正式 DB 灌好 50/50 職涯**。實測命中：PM 1.24s、金融科技 1.29s、律師 0.72s。
+   - ⚠️ code-review 抓到的 blocking：串流命中預算原本仍背景叫 judge（燒錢）→ `9f18962` 用 `not budget` gate 修掉。
+2. **柴犬等候動畫**（`1e8180c`/`0800c19`/`284c3c4`）：取代舊步驟條。recolored Lottie（`frontend/shiba.json`，亮度分桶重上**嚴格三色**）+ done-driven 數字（`easeApproach` Weibull τ=55s 逼近但不超過總數，後端 done 才 `fillToDone`）+ 柴犬旁白。純函式核心 `frontend/shiba-progress.js`（node:test）。**硬規矩**見 memory `waiting-mascot-design-constraints`：三色含吉祥物、禁 emoji、累積不倒數、不要積木感、領巾/外框 navy 不要 cyan（曾被嫌「藍光邊像阿飄」）。
+3. **Q&A 失敗復原**（`abbb84e`/`3512f93`/`bbcd620`）：後端 `qa.py` `classify_qa_error`（429/503→rate_limited、timeout→timeout）+ `finalize_qa_answer` 回 4-tuple 帶 `no_match`；SSE error event 帶 `error_type`、done 帶 no_match。前端 `qa-recovery.js`：過載→**忙線重試泡泡**（點一下重問）、查無資料→引導；差異化、三色無 emoji。POST fallback 失敗也走重試泡泡。
+4. **多輪追問修復**（`819e06c`/`aaffa74`）：POST /qa 兩模式統一 **history-based**（根除 `Invalid previous_interaction_id`）；`_SYSTEM_INSTRUCTION` 加「# 多輪對話脈絡」段 → 「那金融呢」這種簡短追問會結合上文意圖再檢索。live 3/3 + production e2e 親證。
+5. **Sentry 降噪**（`e9ab554`/`3509eb9`）：後端 `observability.py` `classify_and_downgrade`(before_send) 把暫時性 Gemini 429/503/spending-cap 降 warning + 歸群、真 bug 維持 error；`stream_traces_sampler`。前端 **localhost 不啟用 Sentry**（杜絕本機 e2e/開發污染正式專案——我之前不慎觸發過真實錯誤回報，根因就是前端 DSN hardcode 且在 localhost 也送）。
+6. **compose 關 thinking 提速**（`c2e48e9`）：`stage2_annotate_pool_async` 設 `thinking_budget=0`，A/B 實測（`scripts/probe_compose_thinking_ab.py`）此 schema 約束的「分類+排序+短理由」任務關 thinking **快 ~3x（33s→11s）judge 品質不掉**。見 CLAUDE.md 設計決策 #10 更新。**Q&A 串流的 thinking 仍不可關**。
+7. **推薦分頁 end-state**（`899de0e`/`de35052`）：翻到底顯示「看完了」end-state；換職涯走目錄直接推薦。**殘留 end-state bug** 修法：清理移到 `showLoadingShell`（覆蓋成功/錯誤/no_match 所有路徑）。**5x 連續切換職涯 e2e 親證 staleEndStates:0、0 flake**。
+8. **POST /recommend asyncio 崩潰**（`21e6a93`）：⚠️ **見上方 🔴——此修法引入了「Event loop is closed」regression，需重修。** 原崩潰（asyncio.run in running loop）確實修掉了，但手段錯。
+9. 其他：手機 rubber-band 防彈跳 + Q&A 隱藏 hamburger（`e29ac15`）；清單外 notice 框移除 cyan 螢光邊（`9f58b88`）。
+
+### 驗證狀態（誠實標註，勿過度宣稱）
+- ✅ 殘留 end-state：真後端 Playwright **5x 連續**切換職涯，全 `staleEndStates:0`、職涯名正確、換一批鈕回來。
+- ✅ 多輪追問：live 3/3 + production e2e。
+- ✅ career_budget：Railway 正式 DB 50/50 灌好，命中秒回（PM 1.24s 等）實測。
+- ❌ **清單外職涯（數據分析/記者）完整 e2e 到「真的出結果」＝未通過**：被「Event loop is closed」擋住（見 🔴）。修完 async 化後要補這段 e2e。
+- 254 後端測試全綠（但這些是單元/整合，**沒覆蓋跨請求的 async client 污染**——這就是漏網之魚）。
+
+### 換機器須知（沿用，無變動）
+- `.env` gitignored：`GEMINI_API_KEY`（同一把，換 key 看不到 store）、`FILE_SEARCH_STORE_NAME=fileSearchStores/nccucourses1142-znuka50qq2y2`、`SENTRY_DSN`（見 app.js 同一個公開值）、`ALLOWED_ORIGIN=*`。
+- 本機 backend：`SENTRY_DSN='' ALLOWED_ORIGIN=* DATABASE_URL="<Railway DATABASE_PUBLIC_URL>" python -m uvicorn backend.main:app --port 8000 --host 127.0.0.1`。**本機務必 `SENTRY_DSN=''`**（別污染正式 Sentry）。前端同源由 backend StaticFiles 服務，開 `http://127.0.0.1:8000/`。
+- career_budget 已在正式 DB；本機連同一個 Railway DB 即可命中。離線重算：`ONLY_MISSING=1 CONCURRENCY=2 GEMINI_API_KEY=.. FILE_SEARCH_STORE_NAME=.. DATABASE_URL=.. python scripts/build_career_budget.py`。
 
 ---
 
