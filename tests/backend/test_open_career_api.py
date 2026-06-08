@@ -5,7 +5,9 @@ import backend.main as M
 
 
 def test_unknown_career_no_match(monkeypatch):
-    monkeypatch.setattr(M, "derive_skills_for_career", lambda c, career: None)
+    async def _no_skills(client, career):
+        return None
+    monkeypatch.setattr(M, "derive_skills_for_career_async", _no_skills)
     client = TestClient(M.app)
     r = client.post("/recommend", json={"career": "asdfqwer"})
     assert r.status_code == 200
@@ -13,11 +15,12 @@ def test_unknown_career_no_match(monkeypatch):
 
 
 def test_unknown_career_with_skills_recommends(monkeypatch):
-    monkeypatch.setattr(M, "derive_skills_for_career", lambda c, career: ["公共衛生"])
-    monkeypatch.setattr(
-        M,
-        "build_recommendation_instrumented",
-        lambda client, store, career, seed, skills=None: (
+    async def _derive(client, career):
+        return ["公共衛生"]
+    monkeypatch.setattr(M, "derive_skills_for_career_async", _derive)
+
+    async def _fake_async(client, store, career, seed, skills=None):
+        return (
             {
                 "career": career,
                 "courses": [
@@ -41,8 +44,8 @@ def test_unknown_career_with_skills_recommends(monkeypatch):
                 "seed": seed,
             },
             1,
-        ),
-    )
+        )
+    monkeypatch.setattr(M, "build_recommendation_instrumented_async", _fake_async)
     client = TestClient(M.app)
     r = client.post("/recommend", json={"career": "清潔工"})
     assert r.status_code == 200
@@ -52,10 +55,8 @@ def test_unknown_career_with_skills_recommends(monkeypatch):
 
 def test_known_career_no_notice(monkeypatch):
     # 50 種內職涯不應觸發 derive，且不帶 notice
-    monkeypatch.setattr(
-        M,
-        "build_recommendation_instrumented",
-        lambda client, store, career, seed, skills=None: (
+    async def _fake_async(client, store, career, seed, skills=None):
+        return (
             {
                 "career": career,
                 "courses": [],
@@ -64,8 +65,8 @@ def test_known_career_no_notice(monkeypatch):
                 "seed": seed,
             },
             0,
-        ),
-    )
+        )
+    monkeypatch.setattr(M, "build_recommendation_instrumented_async", _fake_async)
     client = TestClient(M.app)
     # 用一個真實存在於 career_skills.json 的職涯
     r = client.post("/recommend", json={"career": "產品經理(PM)"})

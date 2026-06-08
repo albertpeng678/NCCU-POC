@@ -468,14 +468,15 @@ def build_recommendation(
     return result
 
 
-def build_recommendation_instrumented(
+async def build_recommendation_instrumented_async(
     client: genai.Client, store_name: str, career: str, seed: int = 0, skills: list[str] | None = None
 ) -> tuple[dict, int]:
-    """fan-out + 整池標註 pipeline；同時回傳候選池大小（pool_count）。
+    """fan-out + 整池標註 pipeline（回傳 result, pool_count）。**async 入口（POST /recommend 用）**。
 
-    同步入口（POST /recommend 用）：以 asyncio.run 驅動 async fan-out / annotate。
-    seed 保留於回應（前端續池用新 seed 呼叫；本層不再做 sample_candidates 抽樣，
-    多樣性改由前端分頁 + 續池新 seed 達成）。
+    直接 await、跑在呼叫端 event loop —— **不可改用 asyncio.run**：worker thread 的臨時 loop 跑完即關，
+    會把共用 client.aio 的 transport 綁到死掉的 loop → 之後 /recommend/stream、/qa/stream 噴
+    「Event loop is closed」（根因見 HANDOFF Session 7 🔴 / 設計決策 #22）。
+    seed 保留於回應（前端續池用新 seed 呼叫；多樣性由前端分頁 + 續池新 seed 達成）。
     """
     t0 = time.monotonic()
     careers = load_careers()
@@ -485,16 +486,12 @@ def build_recommendation_instrumented(
             raise ValueError(f"Unknown career: {career}")
         skills = careers[career]["skills"]
 
-    async def _run():
-        candidates = await fanout_retrieve_async(client, store_name, career, skills)
-        if not candidates:
-            return None, 0
-        ranked = await stage2_annotate_pool_async(client, career, skills, candidates)
-        return build_ranked_courses(ranked, candidates, meta), len(candidates)
-
-    courses, pool_count = asyncio.run(_run())
-    if courses is None:
+    candidates = await fanout_retrieve_async(client, store_name, career, skills)
+    if not candidates:
         raise ValueError("Stage 1 returned no candidate courses")
+    ranked = await stage2_annotate_pool_async(client, career, skills, candidates)
+    courses = build_ranked_courses(ranked, candidates, meta)
+    pool_count = len(candidates)
 
     latency_ms = int((time.monotonic() - t0) * 1000)
     result = {
@@ -505,6 +502,16 @@ def build_recommendation_instrumented(
         "seed": seed,
     }
     return result, pool_count
+
+
+def build_recommendation_instrumented(
+    client: genai.Client, store_name: str, career: str, seed: int = 0, skills: list[str] | None = None
+) -> tuple[dict, int]:
+    """同步入口（sync 呼叫端用：scripts / sync 測試）。**伺服器請改用 build_recommendation_instrumented_async**，
+    避免 asyncio.run 的臨時 loop 污染共用 client.aio（見上方 async 版說明）。"""
+    return asyncio.run(
+        build_recommendation_instrumented_async(client, store_name, career, seed, skills=skills)
+    )
 
 
 # ===== async 版（供 SSE 串流逐階段呼叫；不阻塞 event loop） =====

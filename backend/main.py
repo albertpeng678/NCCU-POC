@@ -18,7 +18,7 @@ from backend.models import (
     QaRequest, QaResponse,
 )
 from backend.recommend import (
-    build_recommendation_instrumented, derive_skills_for_career,
+    build_recommendation_instrumented_async, derive_skills_for_career_async,
     load_careers, load_courses_meta, stream_recommendation,
     stream_recommendation_from_budget, DEFAULT_BATCH_SIZE,
 )
@@ -134,7 +134,8 @@ async def recommend(req: RecommendRequest, background_tasks: BackgroundTasks):
                 "seed": seed,
             }
     else:
-        skills = derive_skills_for_career(_client, req.career)
+        # async derive：直接 await 在主 loop（與 build pipeline 一致），不阻塞 event loop。
+        skills = await derive_skills_for_career_async(_client, req.career)
         if not skills:
             return {
                 "career": req.career,
@@ -146,11 +147,11 @@ async def recommend(req: RecommendRequest, background_tasks: BackgroundTasks):
     stage1_count = 0
     error = None
     try:
-        # build_recommendation_instrumented 是同步函式、內部用 asyncio.run 跑 async pipeline；
-        # 必須 to_thread（不可在此 async handler 的運行中 loop 直接呼叫，否則 asyncio.run 崩）。
-        # 與本檔 POST /qa replay(:268/:356) 同一 pattern。
-        result, stage1_count = await asyncio.to_thread(
-            build_recommendation_instrumented, _client, _STORE_NAME, req.career, seed, skills=skills
+        # async pipeline 直接 await 在主 loop（共用 _client.aio 跑在同一 loop，與串流端點一致）。
+        # **不可改回 asyncio.to_thread + asyncio.run**：worker thread 臨時 loop 關閉會污染共用 client.aio
+        # → 之後 /recommend/stream、/qa/stream 噴「Event loop is closed」（根因見 HANDOFF Session 7 🔴 / #22）。
+        result, stage1_count = await build_recommendation_instrumented_async(
+            _client, _STORE_NAME, req.career, seed, skills=skills
         )
     except Exception as e:
         error = e

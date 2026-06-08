@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 @pytest.fixture
 def client():
-    with patch("backend.main.build_recommendation_instrumented") as mock_build, \
+    with patch("backend.main.build_recommendation_instrumented_async", new_callable=AsyncMock) as mock_build, \
          patch("backend.main.evaluate_recommendation", new=AsyncMock(return_value=None)):
         mock_build.return_value = (
             {
@@ -39,7 +39,7 @@ def test_recommend_valid_career(client):
 def test_recommend_invalid_career_returns_no_match(client):
     # 清單外職涯不再回 400，改由 LLM 推導技能；無法推導時回 200 + no_match=True
     tc, _ = client
-    with patch("backend.main.derive_skills_for_career", return_value=None):
+    with patch("backend.main.derive_skills_for_career_async", new=AsyncMock(return_value=None)):
         resp = tc.post("/recommend", json={"career": "不存在的職業XYZ"})
     assert resp.status_code == 200
     assert resp.json().get("no_match") is True
