@@ -69,8 +69,9 @@ async def test_fanout_query_skill_empty_results_returns_empty():
 
 
 @pytest.mark.asyncio
-async def test_fanout_query_skill_content_used_as_course_name():
-    """search_skill 的 content 欄位應出現在候選字典中（course_name 或 content 均可）。"""
+async def test_fanout_query_skill_course_name_is_empty():
+    """Fix C：fanout 不再把 chunk 全文塞進 course_name（灌爆 stage2 prompt + 讓 dedup_by_name 失效）；
+    course_name 應為空字串，由後續 join_metadata 用 courses_meta.json 補真實課名。"""
     from backend.recommend import fanout_query_skill_async
     fake_results = [
         {"course_id": "070415001", "score": 0.85, "content": "資料科學概論"},
@@ -83,8 +84,8 @@ async def test_fanout_query_skill_content_used_as_course_name():
     assert len(out) == 1
     c = out[0]
     assert c["course_id"] == "070415001"
-    # course_name 或 content 欄位應有內容
-    assert c.get("course_name") or c.get("content")
+    # course_name 應為空字串（不塞 chunk 全文）
+    assert c["course_name"] == ""
 
 
 # ── 4. _openai_structured helper 存在且可呼叫 ────────────────────────────────
@@ -174,6 +175,63 @@ async def test_derive_skills_async_empty_returns_none():
         skills = await derive_skills_for_career_async(mock_client, "asdfqwer")
 
     assert skills is None
+
+
+# ── Fix A：_openai_structured output_parsed=None → ValueError ────────────────
+
+@pytest.mark.asyncio
+async def test_openai_structured_none_output_raises_valueerror():
+    """responses.parse 回 output_parsed=None（refusal/token-limit）→ 應 raise ValueError，不回 None。"""
+    from backend.recommend import _openai_structured, OPENAI_MODEL
+    from pydantic import BaseModel as BM
+
+    class _TestSchema(BM):
+        value: str
+
+    mock_resp = SimpleNamespace(output_parsed=None, output_text="I cannot comply.")
+    mock_client = MagicMock()
+    mock_client.responses.parse = AsyncMock(return_value=mock_resp)
+
+    with pytest.raises(ValueError, match="structured output None"):
+        await _openai_structured(mock_client, "sys", "usr", _TestSchema)
+
+
+@pytest.mark.asyncio
+async def test_stage2_annotate_pool_raises_when_openai_structured_returns_none():
+    """stage2_annotate_pool_async 呼叫 _openai_structured 時若 output_parsed=None → 拋 ValueError（非回 None）。"""
+    from backend.recommend import stage2_annotate_pool_async
+    from types import SimpleNamespace
+
+    mock_resp = SimpleNamespace(output_parsed=None, output_text="refusal")
+    mock_client = MagicMock()
+    mock_client.responses.parse = AsyncMock(return_value=mock_resp)
+
+    candidates = [{"course_id": "000211012", "course_name": "政治學", "relevance": "x"}]
+    with pytest.raises(ValueError, match="structured output None"):
+        await stage2_annotate_pool_async(mock_client, "PM", ["分析"], candidates)
+
+
+# ── Fix D：fanout_query_skill_async 依 course_id 去重 ─────────────────────────
+
+@pytest.mark.asyncio
+async def test_fanout_query_skill_deduplicates_by_course_id():
+    """search_skill 回同 course_id 的多個 chunk → fanout 應去重，只保留第一筆，保序。"""
+    from backend.recommend import fanout_query_skill_async
+
+    # 同一 course_id 出現兩次（不同 chunk），加上另一門課
+    fake_results = [
+        {"course_id": "702744001", "score": 0.95, "content": "chunk1"},
+        {"course_id": "702744001", "score": 0.85, "content": "chunk2"},  # 重複
+        {"course_id": "652150001", "score": 0.80, "content": "chunk3"},
+    ]
+    mock_client = MagicMock()
+
+    with patch("backend.recommend.search_skill", new=AsyncMock(return_value=fake_results)):
+        out = await fanout_query_skill_async(mock_client, "vs_1", "PM", "分析")
+
+    assert len(out) == 2
+    assert out[0]["course_id"] == "702744001"
+    assert out[1]["course_id"] == "652150001"
 
 
 # ── 7. /health 回應包含 retrieval_backend 與 model ────────────────────────────

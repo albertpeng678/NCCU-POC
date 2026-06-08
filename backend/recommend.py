@@ -11,6 +11,7 @@ from pathlib import Path
 from google import genai
 from google.genai import types
 from google.genai import errors as genai_errors
+from openai import APIError as OpenAIAPIError
 from pydantic import BaseModel
 
 from backend.retrieval_openai import search_skill
@@ -245,6 +246,7 @@ async def _openai_structured(client, system: str, user: str, schema_model):
     """呼叫 OpenAI Responses API 做結構化輸出，回傳 output_parsed（schema_model 實例）。
 
     API: client.responses.parse(model=OPENAI_MODEL, input=[...], text_format=schema_model)
+    output_parsed 在模型 refusal / token 上限時會是 None → 拋 ValueError（防下游 AttributeError）。
     """
     resp = await client.responses.parse(
         model=OPENAI_MODEL,
@@ -254,7 +256,12 @@ async def _openai_structured(client, system: str, user: str, schema_model):
         ],
         text_format=schema_model,
     )
-    return resp.output_parsed
+    parsed = resp.output_parsed
+    if parsed is None:
+        raise ValueError(
+            f"structured output None (refusal/token-limit); output_text={resp.output_text!r}"
+        )
+    return parsed
 
 
 def build_groups(
@@ -563,7 +570,8 @@ async def derive_skills_for_career_async(
     )
     try:
         result = await _openai_structured(client, system, user, _DerivedSkills)
-    except Exception:
+    except Exception as e:
+        logger.warning("derive_skills failed for %r: %r", career, e)
         return None
     if not result or not result.skills:
         return None
@@ -617,16 +625,22 @@ async def fanout_query_skill_async(
         score_threshold=REC_SCORE_THRESHOLD,
     )
     # search_skill 回 list[{course_id, score, content}]
-    # 轉成 pipeline 期望的 {course_id, course_name, relevance} 形狀
+    # 轉成 pipeline 期望的 {course_id, course_name, relevance} 形狀。
+    # course_name 留空字串：塞 chunk 全文（數百字）會灌爆 stage2 prompt 且讓 dedup_by_name 失效；
+    # join_metadata 之後會用 courses_meta.json 補入真實課名。
+    seen_ids: set[str] = set()  # Fix D：依 course_id 去重保序（同課多 chunk 只保第一筆）
     candidates = []
     for item in raw:
         cid = item.get("course_id", "")
         if not cid:
             continue
+        if cid in seen_ids:
+            continue
+        seen_ids.add(cid)
         candidates.append({
             "course_id": cid,
-            "course_name": item.get("content", ""),   # content 含課綱文字，後續 join_metadata 補真實課名
-            "relevance": skill,                        # 檢索技能關鍵字作為 relevance
+            "course_name": "",   # 留空；join_metadata 用 courses_meta.json 填真實課名
+            "relevance": skill,  # 檢索技能關鍵字作為 relevance
         })
     return candidates
 
@@ -796,10 +810,10 @@ async def stream_recommendation(
     yield _stage_event(4, "compose", "start")
     try:
         ranked = await stage2_annotate_pool_async(client, career, skills, candidates)
-    except Exception as e:
-        # 暫時性錯誤（503/429，退避用盡後拋）→ 優雅降級成友善 error 事件、不 unhandled 炸出去；
-        # 程式 bug（KeyError/parse 等）不在此攔，照常往上拋給 main.py 的 Sentry（保留觀測性）。
-        logger.warning("compose (annotate-pool) API error: %r", e)
+    except OpenAIAPIError as e:
+        # 暫時性 OpenAI API 錯誤（503/429/rate-limit，退避用盡後拋）→ 優雅降級成友善 error 事件。
+        # 程式 bug（AttributeError/KeyError/ValueError 等）不在此攔，往上拋給 main.py 的 Sentry（保留觀測性）。
+        logger.warning("compose API error: %r", e)
         yield {"event": "error", "data": {
             "error_type": type(e).__name__,
             "message": "AI 服務目前較繁忙，請稍後再試一次。",
