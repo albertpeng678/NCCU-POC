@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=34">
+  <link rel="stylesheet" href="style.css?v=36">
 </head>
 <body>
   <!-- ambient background orbs handled in CSS via body::before/::after -->
@@ -99,7 +99,12 @@
         </div>
         <div id="groups" class="groups"></div>
         <div class="results-actions">
-          <button id="reroll-btn" class="reroll-btn" type="button">換一批推薦 <svg class="reroll-ic" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><polyline points="21 3 21 9 15 9"/></svg></button>
+          <div id="pager" class="pager" hidden>
+            <button id="prev-btn" class="pg-btn" type="button"><span class="arrow">‹</span> 上一批</button>
+            <span id="pager-ind" class="pg-ind"></span>
+            <button id="reroll-btn" class="pg-btn primary" type="button">換一批 <span class="arrow">›</span></button>
+          </div>
+          <div id="pager-dots" class="pg-dots" aria-hidden="true"></div>
         </div>
         <p class="to-qa-cta">想深入比較這些課？<a id="to-qa-link" href="#" role="button">切到問答模式問我 →</a></p>
       </section>
@@ -140,8 +145,7 @@
       <button id="oc-close" class="oc-close" type="button" aria-label="關閉">×</button>
     </div>
     <input id="oc-search" class="oc-search" type="text" placeholder="搜尋職涯…" autocomplete="off">
-    <p class="oc-section-label">全部 50 種職涯</p>
-    <div id="oc-list" class="oc-list" role="listbox"></div>
+    <div id="oc-cats" class="oc-cats"></div>
   </aside>
 
   <!-- Sentry（錯誤監控+tracing）：放最前以捕捉後續所有錯誤；DSN 由 app.js CONFIG 控制，空則停用 -->
@@ -152,7 +156,7 @@
   <script src="https://cdn.jsdelivr.net/npm/marked@15.0.7/marked.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.4/dist/purify.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/lottie-web/5.12.2/lottie.min.js"></script>
-  <script src="careers.js?v=34"></script>
-  <script type="module" src="app.js?v=34"></script>
+  <script src="careers.js?v=36"></script>
+  <script type="module" src="app.js?v=36"></script>
 </body>
 </html>

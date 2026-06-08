@@ -8,6 +8,9 @@ COPY backend/ ./backend/
 # end-state.js/shiba.json → 線上 404 → app.js import 失敗 → 全站死。整包複製根治「新增前端檔漏 deploy」。
 # 多帶的 e2e/mockup/nginx 範本是純靜態惰性檔，無人請求、無害。
 COPY frontend/ ./frontend/
+# 一次性維護腳本（career_budget 離線灌庫等）放進映像，供 `railway ssh` 在容器內用內網 DB 執行
+# （本機網路常擋 Railway TCP proxy port → 從容器內走內網是可靠路徑）。git 只追蹤必要腳本，惰性無害。
+COPY scripts/ ./scripts/
 EXPOSE 8000
 # shell form（非 JSON array）→ 透過 /bin/sh -c 執行 → ${PORT} 會被展開。
 # Railway 注入 PORT；本地無 PORT 時退回 8000。

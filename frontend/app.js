@@ -1,9 +1,10 @@
 // app.js — NCCU Course Map frontend logic
-import { createPaginationState, nextBatch, appendPool, groupBatch } from "./pagination.js?v=34";
-import { drainCount } from "./progressive-md.js?v=34";
-import { stageNarration, easeApproach, fillToDone, SHIBA_TOTAL } from "./shiba-progress.js?v=34";
-import { qaErrorUiState, buildRetryState, noMatchChips, TRANSIENT_MSG, NO_MATCH_MSG } from "./qa-recovery.js?v=34";
-import { buildEndStateHtml } from "./end-state.js?v=34";
+import { createPaginationState, nextBatch, prevBatch, appendPool, groupBatch, batchPosition } from "./pagination.js?v=36";
+import { drainCount } from "./progressive-md.js?v=36";
+import { stageNarration, easeApproach, fillToDone, SHIBA_TOTAL } from "./shiba-progress.js?v=36";
+import { qaErrorUiState, buildRetryState, noMatchChips, TRANSIENT_MSG, NO_MATCH_MSG } from "./qa-recovery.js?v=36";
+import { buildEndStateHtml } from "./end-state.js?v=36";
+import { CAREER_CATEGORIES } from "./career-categories.js?v=36";
 
 const CONFIG = {
   // Local dev default; overwrite before Railway deploy.
@@ -33,7 +34,7 @@ const offcanvas = document.getElementById("offcanvas");
 const scrim     = document.getElementById("scrim");
 const ocClose   = document.getElementById("oc-close");
 const ocSearch  = document.getElementById("oc-search");
-const ocList    = document.getElementById("oc-list");
+const ocCats    = document.getElementById("oc-cats");
 
 const input     = document.getElementById("career-input");
 const dropdown  = document.getElementById("autocomplete-list");
@@ -56,7 +57,7 @@ const HOT_PICKS = window.HOT_PICKS || [];
 let selectedCareer = null;
 let lastCareer = null;   // 上次實際送出的職涯（含清單外自由輸入），供「換一批」沿用
 let activeIdx = -1;
-let pageState = null;    // 分頁 state（整池 + shown）
+let pageState = null;    // 分頁 state（整池 + batchIndex 批次索引；見 pagination.js）
 let lastNotice = null;   // 清單外職涯誠實說明（換批沿用）
 let rerolling = false;   // 續池/切批進行中（去抖，避免 rapid double-click）
 
@@ -73,7 +74,7 @@ function openOffcanvas(){
   scrim.hidden = false;
   requestAnimationFrame(()=>scrim.classList.add("show"));
   ocSearch.value = "";
-  renderOcList(CAREERS);
+  renderOcCats("");
   ocSearch.focus();
 }
 function closeOffcanvas(){
@@ -93,25 +94,61 @@ document.addEventListener("keydown", (e)=>{
   }
 });
 
-function renderOcList(items){
-  ocList.innerHTML = "";
-  items.forEach(c=>{
-    const div = document.createElement("div");
-    div.className = "oc-item";
-    div.setAttribute("role","option");
-    div.textContent = c;
-    div.addEventListener("click", ()=>{
-      selectCareer(c);
-      closeOffcanvas();
-      fetchRecommendation(c);   // 抽屜點職涯 → 直接推薦（與熱門 pill 一致、少一步）
-    });
-    ocList.appendChild(div);
+// 職類目錄 accordion：8 大分類，預設全收合；搜尋時跨類過濾、自動展開命中分類並高亮關鍵字。
+function makeItem(career, q){
+  const div = document.createElement("div");
+  div.className = "item";
+  div.setAttribute("role","option");
+  if(q){
+    const i = career.toLowerCase().indexOf(q);
+    if(i >= 0){
+      div.innerHTML = `${escHtml(career.slice(0,i))}<mark class="oc-hl">${escHtml(career.slice(i,i+q.length))}</mark>${escHtml(career.slice(i+q.length))}`;
+    } else {
+      div.textContent = career;
+    }
+  } else {
+    div.textContent = career;
+  }
+  div.addEventListener("click", ()=>{
+    selectCareer(career);
+    closeOffcanvas();
+    fetchRecommendation(career);   // 抽屜點職涯 → 直接推薦（與熱門 pill 一致、少一步）
   });
+  return div;
 }
-ocSearch.addEventListener("input", ()=>{
-  const q = ocSearch.value.trim().toLowerCase();
-  renderOcList(q ? CAREERS.filter(c=>c.toLowerCase().includes(q)) : CAREERS);
-});
+function renderOcCats(query){
+  const q = (query || "").trim().toLowerCase();
+  ocCats.innerHTML = "";
+  let anyHit = false;
+  for(const [name, careers] of Object.entries(CAREER_CATEGORIES)){
+    const matched = q ? careers.filter(c=>c.toLowerCase().includes(q)) : careers;
+    if(q && matched.length === 0) continue;   // 搜尋時隱藏無命中分類
+    anyHit = true;
+
+    const cat = document.createElement("div");
+    cat.className = "cat" + (q ? " open" : "");   // 搜尋時自動展開命中分類；無搜尋全收合
+
+    const head = document.createElement("div");
+    head.className = "cat-h";
+    head.innerHTML = `<span class="arr">▶</span><span class="cat-name">${escHtml(name)}</span><span class="cat-n">${matched.length}</span>`;
+    head.addEventListener("click", ()=>cat.classList.toggle("open"));
+    cat.appendChild(head);
+
+    const items = document.createElement("div");
+    items.className = "items";
+    matched.forEach(c=>items.appendChild(makeItem(c, q)));
+    cat.appendChild(items);
+
+    ocCats.appendChild(cat);
+  }
+  if(q && !anyHit){
+    const empty = document.createElement("div");
+    empty.className = "oc-empty";
+    empty.textContent = "查無相符職涯";
+    ocCats.appendChild(empty);
+  }
+}
+ocSearch.addEventListener("input", ()=>{ renderOcCats(ocSearch.value); });
 
 // ---------- Autocomplete ----------
 function filterCareers(q){
@@ -210,9 +247,8 @@ const GROUP_META = [
 ];
 function renderResults(data){
   stopLoading();
-  // 換新職涯/重新推薦時，清掉前一次殘留的「看完了」end-state + 還原被收起的換一批鈕
+  // 換新職涯/重新推薦時，清掉前一次殘留的「看完了」end-state（導覽列由 updatePager 還原）
   const oldEnd = document.querySelector("#results .end-state"); if(oldEnd) oldEnd.remove();
-  const rb = document.getElementById("reroll-btn"); if(rb) rb.style.display = "";
   loadingEl.hidden = true; errorEl.hidden = true;
   const nm = document.getElementById("no-match"); if(nm) nm.hidden = true;
   resCareer.textContent = data.career;
@@ -221,6 +257,7 @@ function renderResults(data){
   pageState = createPaginationState(data.courses || [], data.batch_size || 10);
   lastNotice = data.notice || null;
   renderBatch(nextBatch(pageState));   // 首批
+  updatePager();
   resultsEl.hidden = false;
   resultsEl.scrollIntoView({behavior:"smooth", block:"start"});
 }
@@ -258,6 +295,18 @@ function renderBatch(batch){
     list.forEach(c=>cardsEl.appendChild(renderCard(c)));
     groupsEl.appendChild(block);
   });
+}
+
+// 依分頁 state 更新導覽列：第 N/M 批文字、上一批 disabled、小圓點
+function updatePager(){
+  const pager = document.getElementById("pager"), dots = document.getElementById("pager-dots");
+  if(!pager || !dots) return;
+  if(!pageState){ pager.hidden = true; dots.innerHTML = ""; return; }
+  const p = batchPosition(pageState); pager.hidden = false;
+  const ind = document.getElementById("pager-ind"); if(ind) ind.textContent = `第 ${p.current} / ${p.total} 批`;
+  const prev = document.getElementById("prev-btn");
+  if(prev){ prev.classList.toggle("disabled", !p.hasPrev); prev.disabled = !p.hasPrev; }
+  dots.innerHTML = Array.from({length:p.total},(_,i)=>`<span class="dot${i===p.current-1?" on":""}"></span>`).join("");
 }
 
 // ---------- States ----------
@@ -371,7 +420,8 @@ function showLoadingShell(){
   // 每次新推薦一開始就清掉上一次殘留的「看完了」end-state + 還原換一批鈕
   // （放這裡覆蓋所有後續結果：成功/錯誤/查無資料都不會留舊 end-state）
   const oldEnd = document.querySelector("#results .end-state"); if(oldEnd) oldEnd.remove();
-  const rb = document.getElementById("reroll-btn"); if(rb) rb.style.display = "";
+  const pager = document.getElementById("pager"); if(pager) pager.hidden = true;
+  const dots = document.getElementById("pager-dots"); if(dots) dots.innerHTML = "";
   const nm = document.getElementById("no-match"); if(nm) nm.hidden = true;
   loadingEl.hidden = false;
   loadingEl.scrollIntoView({behavior:"smooth",block:"center"});
@@ -532,11 +582,19 @@ rerollBtn.addEventListener("click", ()=>{
   const batch = nextBatch(pageState);
   if(batch){                            // 池中還有 → 純前端切片，0 網路請求
     renderBatch(batch);
+    updatePager();
     resultsEl.scrollIntoView({behavior:"smooth", block:"start"});
     return;
   }
   // 池乾 → 顯示「看完了」end-state（不再即時叫 AI；user 定案 1+2）
   renderEndState(lastCareer);
+});
+
+// 上一批：純前端切片回退
+document.getElementById("prev-btn").addEventListener("click", ()=>{
+  if(!pageState) return;
+  const b = prevBatch(pageState);
+  if(b){ renderBatch(b); updatePager(); resultsEl.scrollIntoView({behavior:"smooth", block:"start"}); }
 });
 
 // 翻到底「看完了」：柴犬都叼來了 + 三個下一步（不再叫 AI）
@@ -546,7 +604,9 @@ function renderEndState(career){
   wrap.innerHTML = buildEndStateHtml({career});
   const node = wrap.firstElementChild;
   groupsEl.insertAdjacentElement("afterend", node);
-  if(rerollBtn) rerollBtn.style.display = "none";          // 已到底 → 收起換一批
+  // 已到底 → 收起整個導覽列（含圓點）
+  const pager = document.getElementById("pager"); if(pager) pager.hidden = true;
+  const dots = document.getElementById("pager-dots"); if(dots) dots.innerHTML = "";
   node.querySelector('[data-action="new-career"]').addEventListener("click", ()=>{
     setMode("recommend");
     openOffcanvas();          // 打開左側「職涯目錄」抽屜讓使用者直接挑新職涯
@@ -554,10 +614,11 @@ function renderEndState(career){
   node.querySelector('[data-action="to-qa"]').addEventListener("click", ()=> setMode("qa"));
   node.querySelector('[data-action="rewatch"]').addEventListener("click", ()=>{
     if(!pageState) return;
-    pageState.shown = 0; pageState.exhausted = false;       // 從頭再看
+    pageState.batchIndex = -1;                              // 從頭再看（批次索引重置）
     node.remove();
-    if(rerollBtn) rerollBtn.style.display = "";
+    const pg = document.getElementById("pager"); if(pg) pg.hidden = false;
     renderBatch(nextBatch(pageState));
+    updatePager();
     resultsEl.scrollIntoView({behavior:"smooth", block:"start"});
   });
   node.scrollIntoView({behavior:"smooth", block:"center"});
@@ -622,6 +683,7 @@ function finishContinue(data){
   } else {
     renderBatch(null);
   }
+  updatePager();
   rerolling = false;
   rerollBtn.disabled = false;
   resultsEl.scrollIntoView({behavior:"smooth", block:"start"});
