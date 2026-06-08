@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import os
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,21 @@ from typing import Any
 def filename_for(course_id: str) -> str:
     """回傳上傳到 OpenAI Files 時使用的檔名：{course_id}.txt。"""
     return f"{course_id}.txt"
+
+
+def inject_name_markers(doc_text: str, name: str, course_id: str, every: int = 2500) -> str:
+    """每隔 ~every 字注入一行「課程名稱」marker。
+    根治：長課綱被 OpenAI 切成多 chunk 時，中段 chunk 原本無課名 header → 模型看不到課名
+    → 名字不全/捏造/誤砍。注入後不論切在哪，每個 chunk 區段內都有課名可照抄。
+    """
+    marker = f"\n課程名稱：{name}　課程代號：{course_id}\n"
+    if len(doc_text) <= every:
+        return marker.lstrip("\n") + doc_text if not doc_text.startswith("課程") else doc_text
+    parts = [marker]
+    for i in range(0, len(doc_text), every):
+        parts.append(doc_text[i:i + every])
+        parts.append(marker)
+    return "".join(parts)
 
 
 def file_attributes(rec: dict) -> dict:
@@ -111,7 +127,9 @@ async def main() -> None:
         cid = rec["course_id"]
         if cid in existing_ids:
             return
-        doc_bytes = rec["doc_text"].encode("utf-8")
+        _nm = re.search(r"課程名稱[:：]\s*([^\n]+)", rec["doc_text"])
+        _name = _nm.group(1).strip() if _nm else cid
+        doc_bytes = inject_name_markers(rec["doc_text"], _name, cid).encode("utf-8")
         try:
             async with sem:
                 file_obj = await client.files.create(
@@ -122,6 +140,12 @@ async def main() -> None:
                     vector_store_id=vs_id,
                     file_id=file_obj.id,
                     attributes=file_attributes(rec),
+                    # 一門課一塊：課綱 ~2KB（<4096 token）→ 單 chunk、每塊都帶「課程名稱」header。
+                    # 修「中間 chunk 無課名 → 模型看不到課名 → 名字不全/捏造」的源頭（見 HANDOFF Session 10）。
+                    chunking_strategy={
+                        "type": "static",
+                        "static": {"max_chunk_size_tokens": 4096, "chunk_overlap_tokens": 0},
+                    },
                 )
         except Exception as exc:
             failed_ids.append(cid)
