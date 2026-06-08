@@ -23,6 +23,7 @@ _TABLE_RE = re.compile(r"\|.*\|")
 _SEP_RE = re.compile(r"-{3,}")
 _BOLD_RE = re.compile(r"\*\*.+?\*\*")
 _NINE_DIGIT_RE = re.compile(r"\b\d{9}\b")
+_SOURCE_MARKER_RE = re.compile(r"\s*\[[^\]\n]*\.txt[^\]\n]*\]")
 
 # citations 為空但答案看似列具體課程時，覆寫為此訊息（防止 RAG 空命中時幻覺編課名）
 NO_RESULTS_MESSAGE = (
@@ -31,6 +32,18 @@ NO_RESULTS_MESSAGE = (
     "你可以試試：換個關鍵字（例如更通用的領域名稱），或直接告訴我你想培養的**能力**或**職涯方向**，"
     "我再幫你配對應的課程！"
 )
+
+
+def strip_source_markers(text: str) -> str:
+    """移除答案中 file_search 的 inline 來源引註標記（如 [tmpt_ync0ml.txt, tmpvenglr3i.txt]）。
+
+    這些是 store 內部文件暫存檔名，3.5 會插進 answer 字串當引用；真 citation 走結構化卡片，故剝除。
+    只移除『方括號內含 .txt 檔名』的標記，不動一般內文方括號（如 [註1]）。
+    前導 \\s* 把標記前的空白一起吃掉："學生 [tmp.txt]。" → "學生。"。
+    """
+    if not text:
+        return text
+    return _SOURCE_MARKER_RE.sub("", text)
 
 
 def looks_like_course_listing(answer: str) -> bool:
@@ -52,10 +65,20 @@ def should_override_no_results(answer: str, citations: list) -> bool:
     return looks_like_course_listing(answer)
 
 
+def is_incomplete_answer(answer: str) -> bool:
+    """3.5 偶發 TOO_MANY_TOOL_CALLS 空答案判定：空字串或純空白 → True，否則 False。
+
+    作為共用 helper，讓 /qa/stream 與 POST /qa 空答案守衛行為一致。
+    """
+    return not (answer or "").strip()
+
+
 def classify_qa_error(exc) -> str:
     """把 Q&A 例外映射成語意 error_type 給前端走差異化分支。
     rate_limited（429/503 暫時性過載→鼓勵重試）/ timeout / unknown。
     no_match（查無資料）不由此產生——它源自 grounding 空，由 finalize 的 no_match 旗標走 done 事件。
+    incomplete（空答案，非例外）不由此產生——由 /qa/stream 與 POST /qa 的空答案守衛直接送出/觸發。
+    值集：rate_limited | timeout | unknown | incomplete（後者僅由守衛直接使用）。
     """
     if exc is None:
         return "unknown"
@@ -105,8 +128,12 @@ _SYSTEM_INSTRUCTION = """\
 - 先寫 3-5 句**充實具體**的說明：點出課程涵蓋的內容、為何適合該方向、以及難度或先修（若知道）。要有料、不空泛，避免只丟一兩句。
 - 粗體要克制：整段只把「最關鍵的課程名稱」與「1-2 個核心能力關鍵詞」用 **粗體**。不要每個名詞、每個系所都加粗——過度粗體會讓重點失去強調效果。
 - 當你在「列出/比較多門具體課程」時，務必接著輸出一個 Markdown 表格；欄位固定為：課程名稱 | 系所 | 重點；表格內「重點」欄要寫得具體（一句帶到學什麼/特色），只有課程名稱可視需要加粗，系所與重點用一般字；分隔線每欄只用三個連字號（---）；表格最多 6 列，不要為對齊補空白。
+- 表格與內文只能列出你『實際從 File Search 檢索到』的課程；絕對不要用自己的知識補充、推測或湊任何沒檢索到的課名。寧可少列幾門，也不要列出檢索結果以外的課。
 - 純概念題或只談一門課時，不必硬塞表格，用文字說明即可（仍只在最關鍵處用粗體）。
 - 最後用一句話總結或給具體建議。
+
+# 檢索效率（重要）
+你最多有 2 次 File Search 檢索的行動預算，請有效運用：用一兩次檢索取得足夠相關課綱後就直接作答，不要把問題拆成多個子查詢反覆檢索，也不要為了多湊幾門課而連續多輪呼叫工具。
 """
 
 _PROMPT_TEMPLATE = """\
@@ -325,6 +352,155 @@ def extract_citations_by_name(answer: str, meta: dict, limit: int = 6) -> list[d
     return result
 
 
+_SEPARATOR_ROW_RE = re.compile(r"^\|[\s\-:|]+\|?$")
+
+
+def strip_fabricated_courses(answer: str, meta: dict) -> tuple[str, int]:
+    """移除 markdown 表格中『課名不在知識庫 meta』的資料列（防 3.5 在表格腦補假課）。
+
+    回 (cleaned_answer, n_stripped)。只動表格資料列：表頭(課程名稱)、分隔線(---)、
+    非表格文字一律不動。若資料列全被剝光，連同孤兒表頭+分隔線一併移除（避免留空表格）。
+    課名比對：去 ** 粗體與前後空白後，需『完全等於』meta 某課的 name 才算真課。
+
+    注意：本函式只感知 fenced code block（``` 開頭的行）以 in_fence 旗標跳過；
+    fence 內的表格行原樣保留、不做任何課名比對。本網域（課程問答）fence 內出現表格機率極低，
+    此為保守防守：萬一答案含程式碼範例的 | 表格，不誤剝。
+    """
+    # 建立真課名集合
+    real_names: set[str] = {
+        (m or {}).get("name", "")
+        for m in meta.values()
+    }
+    real_names.discard("")
+
+    lines = answer.split("\n")
+    out_lines: list[str] = []
+    n_stripped = 0
+
+    in_fence = False  # fenced code block（``` 開頭）感知旗標
+
+    # 追蹤每個「表格區段」：(表頭行index, 分隔線行index, 資料列indices)
+    # 先做一趟標記，再後處理孤兒表格
+    # 簡單狀態機：逐行掃描
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped_line = line.strip()
+
+        # ── fence toggle：遇到 ``` 開頭的行就切換 in_fence，原樣保留 ──
+        if stripped_line.startswith("```"):
+            in_fence = not in_fence
+            out_lines.append(line)
+            i += 1
+            continue
+
+        # fence 內：原樣保留，不做表格判定
+        if in_fence:
+            out_lines.append(line)
+            i += 1
+            continue
+
+        # 判定是否為表格行（strip 後以 | 開頭且至少 2 個 |）
+        if stripped_line.startswith("|") and stripped_line.count("|") >= 2:
+            # 是分隔線行？
+            if _SEPARATOR_ROW_RE.match(stripped_line):
+                out_lines.append(line)
+                i += 1
+                continue
+
+            # 取第一欄（課名欄）
+            cells = [c.strip() for c in stripped_line.strip("|").split("|")]
+            first_cell = cells[0] if cells else ""
+            # 去粗體
+            course_name = re.sub(r"\*\*(.+?)\*\*", r"\1", first_cell).strip()
+
+            # 表頭行？（課名欄是「課程名稱」文字）
+            if course_name == "課程名稱":
+                out_lines.append(line)
+                i += 1
+                continue
+
+            # 課名為空 → 保留（可能是奇怪的非課名表格）
+            if not course_name:
+                out_lines.append(line)
+                i += 1
+                continue
+
+            # 課名不在 meta → 假課，剝除
+            if course_name not in real_names:
+                n_stripped += 1
+                i += 1
+                continue
+
+            # 真課 → 保留
+            out_lines.append(line)
+            i += 1
+            continue
+
+        # 非表格行，直接保留
+        out_lines.append(line)
+        i += 1
+
+    # 後處理：移除孤兒分隔線（任何前一行不是表格行的懸空 | --- | 列），
+    # 同時移除「表頭列緊接分隔線列、但分隔線列之後不再有資料列」的孤兒表格段。
+    cleaned_lines = _remove_orphan_table_headers(out_lines)
+    return "\n".join(cleaned_lines), n_stripped
+
+
+def _remove_orphan_table_headers(lines: list[str]) -> list[str]:
+    """移除孤兒分隔線與孤兒表格段。
+
+    兩種情形都刪除：
+    1. 懸空分隔線：某分隔線列的前一行不是表格行（不以 | 開頭），或它是首行。
+       這涵蓋「非標準表頭（如 | 課名 |）被當資料列剝掉後殘留的 | --- |」。
+    2. 孤兒表格段：任何表格列（非分隔線）緊接分隔線列，但分隔線之後無資料列。
+       這涵蓋標準「課程名稱」表頭被孤兒化的情況。
+    兩次 pass 確保組合情形都被清理。
+    """
+    # Pass 1：移除懸空分隔線（前一行非表格行）
+    pass1: list[str] = []
+    for idx, line in enumerate(lines):
+        s = line.strip()
+        if _SEPARATOR_ROW_RE.match(s):
+            prev = lines[idx - 1].strip() if idx > 0 else ""
+            if not prev.startswith("|"):
+                # 懸空：前一行不是表格行，跳過此分隔線
+                continue
+        pass1.append(line)
+
+    # Pass 2：移除「任意表格行 + 分隔線，但分隔線後無資料列」的孤兒表格段
+    result: list[str] = []
+    n = len(pass1)
+    i = 0
+    while i < n:
+        stripped = pass1[i].strip()
+        # 找任意非分隔線的表格行（可能是任何表頭）
+        if (
+            stripped.startswith("|")
+            and stripped.count("|") >= 2
+            and not _SEPARATOR_ROW_RE.match(stripped)
+        ):
+            # 下一行是否為分隔線？
+            if i + 1 < n and _SEPARATOR_ROW_RE.match(pass1[i + 1].strip()):
+                # 分隔線後是否有資料列？
+                next_after_sep = i + 2
+                if next_after_sep >= n or not _is_table_data_row(pass1[next_after_sep]):
+                    # 孤兒：表格行 + 分隔線後無資料 → 跳過這兩行
+                    i += 2
+                    continue
+        result.append(pass1[i])
+        i += 1
+    return result
+
+
+def _is_table_data_row(line: str) -> bool:
+    """判定是否為表格資料列（非空、以 | 開頭、有 2+ 個 |、不是分隔線）。"""
+    s = line.strip()
+    if not s.startswith("|") or s.count("|") < 2:
+        return False
+    return not _SEPARATOR_ROW_RE.match(s)
+
+
 def finalize_qa_answer(answer: str, followups: list, course_ids: list, meta: dict):
     """問答收尾（POST /qa、/qa/stream replay、stream 三處共用，避免邏輯三份且不一致）。
 
@@ -332,14 +508,21 @@ def finalize_qa_answer(answer: str, followups: list, course_ids: list, meta: dic
     （模型常 grounded 卻沒帶 metadata）；真查無（空 citations + 答案像在列課程）→ 防幻覺覆寫。
     回 (answer, followups, citations, no_match)。no_match=True 時前端走「換個問法」引導而非重試。
     """
+    # 最先剝除 inline 來源標記（[tmp.txt] 雜訊），讓後續 looks_like_course_listing 等判斷對乾淨文字操作
+    answer = strip_source_markers(answer)
     citations = extract_citations(course_ids, meta)
     if not citations:
         citations = extract_citations_by_name(answer, meta)
     no_match = False
     if should_override_no_results(answer, citations):
+        # 空 grounding + 答案像列課程 → 防幻覺覆寫（整塊替換，剝除無意義）
         answer = NO_RESULTS_MESSAGE
         followups = []
         no_match = True
+    else:
+        # 有 grounding（部分真課）→ 確定性剝除表格中不在 meta 的假課列
+        # citations 來自 grounding 本就是真課、不受剝除影響
+        answer, _n_strip = strip_fabricated_courses(answer, meta)
     return answer, followups, citations, no_match
 
 
@@ -590,7 +773,7 @@ def answer_question_structured(
     """非串流：3.5 + file_search + response_schema 回乾淨結構化答案。
 
     回 {answer, followup_suggestions, citations_course_ids, latency_ms}。
-    勿設顯式 thinking_config（Probe B：file_search+schema+thinking 三開會截斷/掉 grounding）。
+    thinking_level=low 加速且 3.5 GA 實測 grounding 不掉；勿用 include_thoughts。
     max_output_tokens=8192：thinking 會吃輸出預算，2048 在長答案會截斷。
     """
     t0 = time.monotonic()
@@ -602,6 +785,7 @@ def answer_question_structured(
         max_output_tokens=8192,
         response_mime_type="application/json",
         response_schema=_QA_RESPONSE_SCHEMA,
+        thinking_config=types.ThinkingConfig(thinking_level="low"),
         tools=[
             types.Tool(
                 file_search=types.FileSearch(
@@ -718,3 +902,64 @@ async def stream_answer(
         "course_ids": course_ids,
         "answer_text": raw,
     }}
+
+
+async def stream_answer_structured(
+    client: genai.Client,
+    store_name: str,
+    question: str,
+    history: Optional[list] = None,
+    model: str = "gemini-3.5-flash",
+):
+    """3.5 結構化串流：file_search + response_schema + streaming（thinking_level=low）。
+
+    串流 chunk 是「合法部分 JSON」；用 _partial_answer 增量抽 answer 值 yield token（不串 JSON 鷹架）。
+    done 帶 grounding course_ids（來自 grounding_metadata，3.5 穩定）+ 原始 JSON 全文 answer_text。
+    citations / 防幻覺覆寫由呼叫端 finalize_qa_answer 處理（與 stream_answer 同合約）。
+    ⚠️ 不可加 include_thoughts；thinking_level=low 已實測不掉 grounding（3.5 GA，非 preview 的 nil bug）。
+    """
+    contents = build_qa_contents(question, history, template=_PROMPT_TEMPLATE_STRUCTURED)
+    config = types.GenerateContentConfig(
+        system_instruction=_SYSTEM_INSTRUCTION,
+        temperature=0.2,
+        top_p=0.95,
+        max_output_tokens=4096,
+        response_mime_type="application/json",
+        response_schema=_QA_RESPONSE_SCHEMA,
+        thinking_config=types.ThinkingConfig(thinking_level="low"),
+        tools=[
+            types.Tool(
+                file_search=types.FileSearch(
+                    file_search_store_names=[store_name],
+                    top_k=5,
+                )
+            )
+        ],
+    )
+    raw = ""
+    emitted = 0
+    course_ids: list[str] = []
+    stream = await client.aio.models.generate_content_stream(
+        model=model, contents=contents, config=config,
+    )
+    async for chunk in stream:
+        text = _visible_text_from_chunk(chunk)
+        if text:
+            raw += text
+            ans = strip_source_markers(_partial_answer(raw))
+            # 避免吐出半截未閉合的 '['（來源標記可能跨 chunk 切斷）
+            cut = ans.rfind("[")
+            if cut != -1 and "]" not in ans[cut:]:
+                safe = cut      # 暫時不吐未閉合 [ 之後的內容
+            else:
+                safe = len(ans)
+            if safe > emitted:
+                yield {"event": "token", "data": {"text": ans[emitted:safe]}}
+                emitted = safe
+        course_ids.extend(_grounding_course_ids_from_chunk(chunk))
+    # 串流結束：補吐剩餘（含最後一個已閉合標記被剝後的尾段）
+    final = strip_source_markers(_partial_answer(raw))
+    if len(final) > emitted:
+        yield {"event": "token", "data": {"text": final[emitted:]}}
+    course_ids = list(dict.fromkeys(course_ids))
+    yield {"event": "done", "data": {"course_ids": course_ids, "answer_text": raw}}

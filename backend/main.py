@@ -29,7 +29,8 @@ from backend.db import init_pool, close_pool, get_pool
 from backend.observability import before_send as sentry_before_send, stream_traces_sampler
 from backend.qa import (
     answer_question, answer_question_structured, finalize_qa_answer,
-    extract_citations, stream_answer, parse_qa_response, classify_qa_error,
+    extract_citations, stream_answer, stream_answer_structured,
+    parse_qa_response, classify_qa_error, is_incomplete_answer,
 )
 from backend.qa_judge import evaluate_qa
 from backend.qa_logger import (
@@ -41,10 +42,10 @@ load_dotenv()
 _GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 _STORE_NAME = os.environ["FILE_SEARCH_STORE_NAME"]
 _ALLOWED_ORIGIN = os.environ.get("ALLOWED_ORIGIN", "*")
-_QA_MODE = os.environ.get("QA_MODE", "stream")          # stream(預設 2.5 串流強化) | replay(3.5+schema 選項)
-# 啟動即驗證：打錯字(如 "Replay")不可靜默退回 stream（會悄悄改行為、忽略 GEMINI_QA_MODEL）
-if _QA_MODE not in {"replay", "stream"}:
-    raise RuntimeError(f"QA_MODE 必須是 'replay' 或 'stream'，收到 {_QA_MODE!r}")
+_QA_MODE = os.environ.get("QA_MODE", "stream35")   # stream35(預設 3.5 結構化串流) | stream(2.5 串流 fallback) | replay(3.5 非串流)
+# 啟動即驗證：打錯字(如 "Replay")不可靜默退回預設（會悄悄改行為、忽略 GEMINI_QA_MODEL）
+if _QA_MODE not in {"replay", "stream", "stream35"}:
+    raise RuntimeError(f"QA_MODE 必須是 'stream35' / 'stream' / 'replay'，收到 {_QA_MODE!r}")
 _QA_MODEL = os.environ.get("GEMINI_QA_MODEL", "gemini-3.5-flash")  # 僅 replay 生效，須 3-series
 
 # Sentry：錯誤監控 + tracing。SENTRY_DSN 未設則優雅停用（本機/無監控環境照常運作）。
@@ -273,10 +274,11 @@ async def qa(req: QaRequest, background_tasks: BackgroundTasks):
                 answer_question_structured, _client, _STORE_NAME, req.question, history, _QA_MODEL
             )
         else:
-            # stream 模式 POST（前端 SSE 斷線時的 fallback）：drain 與 /qa/stream 同一條 history-based
-            # 生成路徑（stream_answer）成完整答案 → 兩路徑一致、零 interactions 依賴。
+            # stream/stream35 模式 POST（前端 SSE 斷線時的 fallback）：drain 與 /qa/stream 同一條 history-based
+            # 生成路徑成完整答案 → 兩路徑一致、零 interactions 依賴。
+            _gen = stream_answer if _QA_MODE == "stream" else stream_answer_structured
             answer_text, course_ids = "", []
-            async for ev in stream_answer(_client, _STORE_NAME, req.question, history):
+            async for ev in _gen(_client, _STORE_NAME, req.question, history):
                 if ev["event"] == "done":
                     course_ids = ev["data"].get("course_ids", []) or []
                     answer_text = ev["data"].get("answer_text", "") or ""
@@ -295,6 +297,11 @@ async def qa(req: QaRequest, background_tasks: BackgroundTasks):
         # 失敗也記一筆 turn（result=None）以利後續排查，再回 503
         await insert_turn(pool, session_id, turn_number, req.question, None, error)
         raise HTTPException(status_code=503, detail=str(error))
+
+    # 空答案守衛：3.5 偶發 TOO_MANY_TOOL_CALLS → 空答案；不落空白成功 turn，前端 fallback 對 503 走重試
+    # 放在 try/except 外以避免被吞進 error 路徑（不寫 turn、不送 Sentry）
+    if result is not None and is_incomplete_answer(result["answer"]):
+        raise HTTPException(status_code=503, detail="incomplete answer")
 
     # 共用收尾：citations join + 課名補 + 防幻覺覆寫（與 /qa/stream 三處一致）。
     # ⚠️ 必須在 insert_turn 之前：否則幻覺答案（空 citations 卻像列課程）會以未覆寫原文存進 qa_turn，
@@ -379,13 +386,18 @@ async def qa_stream(request: Request, question: str, session_id: str | None = No
                     "turn_number": turn_number,
                 })
             else:
-                async for ev in stream_answer(_client, _STORE_NAME, question, history):
+                _gen = stream_answer if _QA_MODE == "stream" else stream_answer_structured
+                async for ev in _gen(_client, _STORE_NAME, question, history):
                     if await request.is_disconnected():
                         return  # 前端已關閉 → 中止
                     if ev["event"] == "token":
                         yield _sse("token", ev["data"])
                     elif ev["event"] == "done":
                         parsed = parse_qa_response(ev["data"]["answer_text"])
+                        if is_incomplete_answer(parsed["answer"]):
+                            # 3.5 偶發 TOO_MANY_TOOL_CALLS → 空答案；走既有 transient 重試泡泡，不落半截 turn
+                            yield _sse("error", {"error_type": "incomplete", "message": "empty answer"})
+                            return
                         answer, followups, citations, no_match = finalize_qa_answer(
                             parsed["answer"], parsed["followup_suggestions"],
                             ev["data"]["course_ids"], meta,

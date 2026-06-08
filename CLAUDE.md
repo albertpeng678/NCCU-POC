@@ -23,7 +23,7 @@
 
 | 層 | 技術 |
 |----|------|
-| RAG | Gemini File Search Store（生成模型 **`gemini-2.5-flash`** — 見設計決策 #12，**不可換 flash-lite**），**google-genai 2.7.0** |
+| RAG | Gemini File Search Store（生成模型：**Q&A=`gemini-3.5-flash` 結構化串流**、**推薦=`gemini-2.5-flash`** — 見設計決策 #12，**不可換 flash-lite**），**google-genai 2.7.0** |
 | Backend | Python 3.11 + FastAPI，asyncpg |
 | Frontend | 原生 HTML/CSS/JS（無框架），navy glassmorphism「指揮台」風格；前端引入 marked + DOMPurify（Q&A markdown 渲染）+ @sentry/browser CDN |
 | DB | PostgreSQL（query_log + qa_session + qa_turn）— Railway Postgres |
@@ -94,10 +94,10 @@ NCCU-poc/
 9. **Ingestion 上傳的兩個坑**：(a) `import_file` 不耐高併發 → ThreadPool x8 同步兩步會讓 store 索引佇列**雪崩 timeout**；用 **async `upload_to_file_search_store` + semaphore(16)** 反而 ~100課/分 0 失敗（見 `scripts/backfill_async.py`）。(b) 大量 embedding 會吃 **Gemini 月度 spend cap** 與 **embedding 速率上限(429)**；查詢時**只嵌入問句、不重索引**（索引一次性）。
 10. **推薦延遲**：**主因是 LLM 輸出 token 數**（web+context7 研究）。已做：降輸出量（POOL 40→24、理由精簡）、429/503 退避重試、前端**分步驟等待 UX**。**（Session 6 更新）compose（`stage2_annotate_pool_async` 整池標註）已設 `thinking_budget=0`**：A/B 實測（`scripts/probe_compose_thinking_ab.py`）此「分類+排序+短理由」任務關 thinking **快 ~3x（33s→11s）且 judge 品質不掉**（reason 維持滿分）。⚠️ 舊註「thinking 不可關（品質崩）」是**舊版自由文字 compose** 的結論，**不適用現在的 `response_schema` 版**（schema 約束輸出、思考邊際效益低）。**仍勿關 Q&A 串流的 thinking**（那是 grounding/品質相關，另案）。
 11. **前端快取**：靜態資源連結帶 `?v=N`（cache-bust）；更新前端時 bump 版本，避免瀏覽器拿到舊 CSS/JS（曾導致「很醜/寬度跳/null.classList 崩」）。
-12. **生成模型固定 `gemini-2.5-flash`**：使用者明確要求**不可為提速換 `gemini-2.5-flash-lite`**（lite 快 3.8x 但品質低約 10%）。提速只能用不犧牲品質的手段（降輸出/合併呼叫/快取/等待UX）。
+12. **生成模型**：**（Session 8 更新）Q&A 預設 `gemini-3.5-flash` 原生結構化串流**（`response_schema`+`file_search`+`thinking_level=low`；治本幻覺/citation bug，見 spec `2026-06-08-qa-gemini-3.5`），可 env `QA_MODE` 切換：`stream35`(預設 3.5 結構化串流) / `stream`(2.5 串流 fallback) / `replay`(3.5 非串流)。**推薦仍 `gemini-2.5-flash`**（下一輪遷移）。⚠️ **仍不可為提速換 `flash-lite`**（lite 快但品質低約 10%）；提速只能用不犧牲品質的手段（降 thinking_level/降輸出/合併呼叫/快取/等待UX）。
 13. **CORS 本機坑**：`.env` 的 `ALLOWED_ORIGIN` 是部署用佔位符（`https://your-frontend...`）；本機起 backend 要用 `ALLOWED_ORIGIN=* python -m uvicorn ...` 覆蓋，否則擋 localhost:3000。
 14. **SSE 串流（Session 3）**：新增 `GET /recommend/stream`（5 階段事件）、`GET /qa/stream`（逐 token + done）；舊 `POST` 保留當 fallback。前端 EventSource + 階段 stepper + 打字機。**詳見 HANDOFF「★ Session 3」**。
-15. **grounding 對 prompt 極敏感（不可踩）**：`config.system_instruction` 的人設會讓 2.5-flash 跳過 file_search → 罐頭答案。qa.py 的 `_SYSTEM_INSTRUCTION` 首段「【鐵則・最高優先】先檢索」**不可移除**。**拿掉 JSON 包裝改純 Markdown 會破壞 grounding（已回退）。**
+15. **grounding 對 prompt 極敏感（不可踩）**：`config.system_instruction` 的人設會讓 2.5-flash 跳過 file_search → 罐頭答案。qa.py 的 `_SYSTEM_INSTRUCTION` 首段「【鐵則・最高優先】先檢索」**不可移除**。**拿掉 JSON 包裝改純 Markdown 會破壞 grounding（已回退）。** **（Session 8）「勿關 Q&A 串流 thinking」此結論僅適用 2.5**——3.5 GA 上 `file_search + response_schema + thinking_level=low` 實測 grounding 完整、citation 正確（見 spec `2026-06-08-qa-gemini-3.5`）；唯仍**勿用 `include_thoughts`**。另：設計決策 #4「File Search 不能配 `response_mime_type=json`」**僅適用 2.5**；**3.5 可 file_search + response_schema 並用**（這正是 Q&A 遷移 3.5 的主因）。
 16. **429 真因＝SDK 預設 timeout 60s**（非單純速率）：recommend ~80-100s > 60s → 逾時→重試→請求分裂→燒 RPM。解：`HttpOptions(timeout=180_000)`（main.py）。embedding 429 同源（重試重複嵌入問句，free tier 100 RPM）。
 17. **（Session 4）embedding 429「常態化」真因＝`gemini-embedding-001` server-side 區域限流**（Google 自 2025 末承認、無 ETA；連 65 檔小庫都有人中）。**逐層排除有量測**：非 spend cap（cap NT$500、用 23%、無「spending cap」字樣）、非 store 壞（`get` → 2714 active/0 failed/19.75MB；**受控實驗**新建 test store 與舊 store「同進同退」→ 帳號層級非 store）、非 RPD（Tier1 embedding RPD unlimited）。**被「backfill 重嵌 2718 課」+「fan-out 6-8 並行 query embed」放大**。緩解＝退避(已有)+停 burst+限併發/快取；**勿重建 store**。
 18. **（Session 4）fan-out 取捨**：延遲 124s→79s，但每請求 embedding 1→6-8 次（放大花費 + 撞限流）。減量(更小 top_k/池)可省 ~10-20s + 降 embedding 壓力；真正「快」要離線預算 50 職涯快取(phase 2)。
