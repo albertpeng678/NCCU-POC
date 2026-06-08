@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>offcanvas mockup — 職涯目錄重構</title>
+<style>
+  :root{
+    --navy:#0a1430; --navy2:#0e1b3e; --glass:rgba(20,38,76,.55);
+    --line:rgba(120,160,230,.18); --cyan:#5fd2e6; --txt:#e8eefc; --mut:#8ea3cf;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:"Noto Sans TC","PingFang TC",system-ui,sans-serif;
+    background:radial-gradient(1200px 600px at 70% -10%,#16264f 0%,var(--navy) 55%);
+    color:var(--txt);min-height:100vh;display:flex;gap:28px;padding:34px;align-items:flex-start}
+  .label{color:var(--mut);font-size:13px;margin:6px 0 12px;letter-spacing:.06em}
+
+  /* offcanvas drawer */
+  .oc{width:340px;flex:0 0 340px;background:linear-gradient(180deg,var(--navy2),#0b1734);
+    border:1px solid var(--line);border-radius:18px;overflow:hidden;
+    box-shadow:0 24px 60px rgba(0,0,0,.45);backdrop-filter:blur(8px)}
+  .oc-head{display:flex;align-items:center;justify-content:space-between;
+    padding:18px 18px 12px}
+  .oc-title{font-size:17px;font-weight:700;letter-spacing:.04em}
+  .oc-x{color:var(--mut);font-size:20px;cursor:pointer;line-height:1}
+  .oc-pad{padding:0 16px 18px}
+  .search{width:100%;background:rgba(10,22,50,.7);border:1px solid var(--line);
+    color:var(--txt);border-radius:12px;padding:11px 14px;font-size:14px;outline:none}
+  .search::placeholder{color:#6f86b6}
+  .search:focus{border-color:var(--cyan);box-shadow:0 0 0 3px rgba(95,210,230,.12)}
+  .hot{margin:14px 0 6px;color:var(--mut);font-size:12.5px}
+  .chips{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:6px}
+  .chip{background:rgba(95,210,230,.10);border:1px solid rgba(95,210,230,.30);
+    color:#bfeef6;border-radius:999px;padding:6px 12px;font-size:12.5px;cursor:pointer}
+  .chip:hover{background:rgba(95,210,230,.2)}
+  .hr{height:1px;background:var(--line);margin:14px 2px}
+
+  .cat{border-bottom:1px solid var(--line)}
+  .cat-h{display:flex;align-items:center;gap:10px;padding:13px 6px;cursor:pointer;user-select:none}
+  .cat-h:hover{background:rgba(95,210,230,.05)}
+  .arr{color:var(--cyan);font-size:12px;width:14px;transition:transform .18s}
+  .cat.open .arr{transform:rotate(90deg)}
+  .cat-name{font-weight:600;font-size:14.5px;flex:1}
+  .cat-n{color:var(--mut);font-size:12px;background:rgba(120,160,230,.12);
+    border-radius:999px;padding:2px 9px}
+  .items{display:none;padding:2px 6px 12px}
+  .cat.open .items{display:block}
+  .item{padding:8px 12px;border-radius:9px;color:#cfdcf6;font-size:13.5px;cursor:pointer}
+  .item:hover{background:rgba(95,210,230,.10);color:#fff}
+  .item .dot{color:var(--cyan);margin-right:8px;opacity:.5}
+
+  .note{max-width:430px;color:var(--mut);font-size:13.5px;line-height:1.7}
+  .note h3{color:var(--txt);font-size:15px;margin:0 0 10px}
+  .note b{color:#bfeef6}
+  .old{width:300px;flex:0 0 300px;background:#0c1731;border:1px dashed var(--line);
+    border-radius:14px;padding:16px;opacity:.85}
+  .old .flat{display:flex;flex-direction:column;gap:2px;max-height:360px;overflow:auto;margin-top:10px}
+  .old .flat div{padding:7px 10px;color:#9fb0d6;font-size:13px;border-radius:7px}
+</style>
+</head>
+<body>
+
+  <!-- 新版 offcanvas -->
+  <div>
+    <div class="label">新版（提案）— 職能分類 accordion + 搜尋 + 熱門</div>
+    <aside class="oc">
+      <div class="oc-head"><div class="oc-title">職涯目錄</div><div class="oc-x">×</div></div>
+      <div class="oc-pad">
+        <input class="search" placeholder="搜尋職涯…（打字即時過濾、自動展開命中分類）">
+        <div class="hr" style="margin-top:16px"></div>
+
+        <div class="cat open">
+          <div class="cat-h"><span class="arr">▶</span><span class="cat-name">商業與管理</span><span class="cat-n">15</span></div>
+          <div class="items">
+            <div class="item"><span class="dot">›</span>產品經理(PM)</div>
+            <div class="item"><span class="dot">›</span>管理顧問</div>
+            <div class="item"><span class="dot">›</span>創業家</div>
+            <div class="item"><span class="dot">›</span>企業策略規劃</div>
+            <div class="item"><span class="dot">›</span>商業分析師(BA)</div>
+            <div class="item"><span class="dot">›</span>客戶成功經理(CSM)</div>
+            <div class="item"><span class="dot">›</span>營運企劃/商業開發(BD)</div>
+            <div class="item"><span class="dot">›</span>業務銷售</div>
+            <div class="item"><span class="dot">›</span>電商營運</div>
+            <div class="item"><span class="dot">›</span>供應鏈管理</div>
+            <div class="item"><span class="dot">›</span>採購/供應商管理</div>
+            <div class="item"><span class="dot">›</span>財務長(CFO)</div>
+            <div class="item"><span class="dot">›</span>經營分析</div>
+            <div class="item"><span class="dot">›</span>醫療管理</div>
+            <div class="item"><span class="dot">›</span>觀光旅遊管理</div>
+          </div>
+        </div>
+
+        <div class="cat"><div class="cat-h"><span class="arr">▶</span><span class="cat-name">金融與財會</span><span class="cat-n">12</span></div>
+          <div class="items"><div class="item">財務分析師</div><div class="item">投資銀行家</div><div class="item">會計師</div><div class="item">財富管理顧問</div><div class="item">證券分析師</div><div class="item">稅務顧問</div><div class="item">量化交易員(Quant)</div><div class="item">企業金融(企金)</div><div class="item">內部稽核</div><div class="item">風險管理師</div><div class="item">精算師</div><div class="item">金融科技</div></div>
+        </div>
+        <div class="cat"><div class="cat-h"><span class="arr">▶</span><span class="cat-name">法律、公共與政策</span><span class="cat-n">16</span></div>
+          <div class="items"><div class="item">律師</div><div class="item">法務專員</div><div class="item">法律遵循(Compliance)</div><div class="item">智慧財產權/專利</div><div class="item">公務員</div><div class="item">公共政策</div><div class="item">政治幕僚</div><div class="item">國會助理</div><div class="item">財稅行政(公職)</div><div class="item">外交官</div><div class="item">國際組織/涉外事務</div><div class="item">地政士/不動產估價師</div><div class="item">都市規劃師</div><div class="item">都市計畫技師</div><div class="item">不動產顧問</div><div class="item">不動產投資/土地開發</div></div>
+        </div>
+        <div class="cat"><div class="cat-h"><span class="arr">▶</span><span class="cat-name">行銷、傳播與創意</span><span class="cat-n">17</span></div>
+          <div class="items"><div class="item">行銷企劃</div><div class="item">數位行銷</div><div class="item">品牌管理</div><div class="item">廣告創意</div><div class="item">媒體購買</div><div class="item">公關專員</div><div class="item">公共關係顧問</div><div class="item">危機公關</div><div class="item">社群媒體經理</div><div class="item">新聞記者</div><div class="item">編輯/出版</div><div class="item">內容行銷</div><div class="item">內容創作者</div><div class="item">廣播電視主持</div><div class="item">影視製作</div><div class="item">影視/節目企劃</div><div class="item">文化創意/IP企劃</div></div>
+        </div>
+        <div class="cat"><div class="cat-h"><span class="arr">▶</span><span class="cat-name">科技、數據與體驗</span><span class="cat-n">13</span></div>
+          <div class="items"><div class="item">軟體工程師</div><div class="item">AI工程師</div><div class="item">資安工程師</div><div class="item">資料科學家</div><div class="item">統計分析師</div><div class="item">商業智慧(BI)分析師</div><div class="item">UX/UI設計師</div><div class="item">用戶體驗研究員(UXR)</div><div class="item">遊戲策劃</div><div class="item">數位轉型顧問</div><div class="item">教育科技(EdTech)產品</div><div class="item">市場研究員</div><div class="item">生技製藥</div></div>
+        </div>
+        <div class="cat"><div class="cat-h"><span class="arr">▶</span><span class="cat-name">國際與外語</span><span class="cat-n">7</span></div>
+          <div class="items"><div class="item">跨文化溝通</div><div class="item">翻譯口譯</div><div class="item">國際貿易</div><div class="item">海外業務</div><div class="item">跨境電商營運</div><div class="item">駐外/外派專員</div><div class="item">國際會展(MICE)企劃</div></div>
+        </div>
+        <div class="cat"><div class="cat-h"><span class="arr">▶</span><span class="cat-name">教育、研究與人文</span><span class="cat-n">9</span></div>
+          <div class="items"><div class="item">教師</div><div class="item">學術研究員</div><div class="item">心理師</div><div class="item">社工師</div><div class="item">圖書館資訊</div><div class="item">企業內訓/人才發展(L&D)</div><div class="item">數位學習設計師</div><div class="item">升學/生涯諮詢顧問</div><div class="item">博物館/策展</div></div>
+        </div>
+        <div class="cat"><div class="cat-h"><span class="arr">▶</span><span class="cat-name">永續與社會</span><span class="cat-n">6</span></div>
+          <div class="items"><div class="item">ESG/永續長</div><div class="item">ESG顧問/永續報告</div><div class="item">碳管理/碳盤查</div><div class="item">社會企業/影響力投資</div><div class="item">地緣政治/政經風險分析</div><div class="item">NGO工作者</div></div>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- 舊版對照 + 說明 -->
+  <div class="note">
+    <h3>對照：舊版（現況）</h3>
+    <div class="old">
+      <input class="search" placeholder="搜尋職涯…" style="opacity:.8">
+      <div class="label" style="margin:10px 0 0">全部 50 種職涯</div>
+      <div class="flat"><div>產品經理(PM)</div><div>資料科學家</div><div>軟體工程師</div><div>UX/UI設計師</div><div>行銷企劃</div><div>品牌管理</div><div>財務分析師</div><div>投資銀行家</div><div>會計師</div><div>…（一條 50 項的扁平清單，100 項時更難找）</div></div>
+    </div>
+    <h3 style="margin-top:22px">新版重點</h3>
+    <b>8 大職能分類</b> accordion（每類 6–17 項，NN/g 甜蜜區）<br>
+    <b>搜尋優先</b>：打字即時過濾、跨類高亮、自動展開命中分類<br>
+    熱門職涯不在此重複（首頁已有）<br>
+    分類軸＝<b>職能</b>（非產業/學院別）、每職涯只歸一主類<br>
+    點職涯＝直接帶入查詢推薦（同現有 pill 行為）<br>
+    預設第一類展開、其餘收合，避免 100 項一次傾倒
+  </div>
+
+<script>
+  document.querySelectorAll('.cat-h').forEach(h=>h.addEventListener('click',()=>h.parentElement.classList.toggle('open')));
+</script>
+</body>
+</html>

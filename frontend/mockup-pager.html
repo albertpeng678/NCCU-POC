@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pager mockup — 分頁「回上一批」</title>
+<style>
+  :root{--navy:#0a1430;--glass:rgba(20,38,76,.55);--line:rgba(120,160,230,.18);
+    --cyan:#5fd2e6;--txt:#e8eefc;--mut:#8ea3cf}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:"Noto Sans TC","PingFang TC",system-ui,sans-serif;
+    background:radial-gradient(1200px 600px at 70% -10%,#16264f 0%,var(--navy) 55%);
+    color:var(--txt);min-height:100vh;padding:34px;display:flex;flex-direction:column;align-items:center;gap:26px}
+  .wrap{width:680px;max-width:100%}
+  .label{color:var(--mut);font-size:13px;margin:4px 0 12px;letter-spacing:.05em}
+
+  .group-h{font-size:13px;color:var(--cyan);letter-spacing:.12em;margin:4px 0 12px;font-weight:600}
+  .cards{display:flex;flex-direction:column;gap:12px}
+  .card{background:linear-gradient(180deg,rgba(20,38,76,.6),rgba(11,23,52,.6));
+    border:1px solid var(--line);border-radius:14px;padding:15px 17px}
+  .c-top{display:flex;justify-content:space-between;align-items:baseline;gap:10px}
+  .c-name{font-size:15.5px;font-weight:700}
+  .c-dep{color:var(--mut);font-size:12.5px}
+  .c-reason{color:#cfdcf6;font-size:13px;margin-top:7px;line-height:1.6}
+  .c-reason b{color:#bfeef6}
+
+  /* pager bar */
+  .pager{display:flex;align-items:center;justify-content:center;gap:14px;margin-top:22px}
+  .pg-btn{display:inline-flex;align-items:center;gap:7px;background:rgba(95,210,230,.10);
+    border:1px solid rgba(95,210,230,.32);color:#cdeef5;border-radius:12px;
+    padding:11px 20px;font-size:14px;font-weight:600;cursor:pointer}
+  .pg-btn:hover{background:rgba(95,210,230,.2)}
+  .pg-btn.primary{background:linear-gradient(180deg,rgba(95,210,230,.22),rgba(95,210,230,.12));
+    border-color:rgba(95,210,230,.5)}
+  .pg-btn.disabled{opacity:.34;cursor:not-allowed;border-color:var(--line);
+    background:rgba(120,160,230,.06);color:var(--mut)}
+  .pg-ind{color:var(--mut);font-size:13.5px;min-width:78px;text-align:center;letter-spacing:.03em}
+  .pg-dots{display:flex;gap:6px;justify-content:center;margin-top:11px}
+  .dot{width:7px;height:7px;border-radius:50%;background:rgba(120,160,230,.28)}
+  .dot.on{background:var(--cyan);box-shadow:0 0 8px rgba(95,210,230,.6)}
+
+  .variant{background:rgba(10,20,46,.5);border:1px solid var(--line);border-radius:16px;padding:20px 22px}
+  .note{color:var(--mut);font-size:13px;margin-top:10px;line-height:1.6}
+  .arrow{font-size:16px;line-height:1}
+</style>
+</head>
+<body>
+
+  <!-- 上方：推薦卡片給情境 -->
+  <div class="wrap">
+    <div class="label">推薦結果（情境示意，目前在第 3 批）</div>
+    <div class="group-h">核心課程</div>
+    <div class="cards">
+      <div class="card"><div class="c-top"><div class="c-name">創新創業實作專題</div><div class="c-dep">商院學士 · 張欣綠</div></div>
+        <div class="c-reason">全面培養產品經理的<b>產品洞察</b>與落地能力，課程有真實專案演練。</div></div>
+      <div class="card"><div class="c-top"><div class="c-name">使用者經驗設計</div><div class="c-dep">資管系 · 李蔡彥</div></div>
+        <div class="c-reason">從<b>使用者研究</b>到原型測試，建立 PM 必備的 UX 思維。</div></div>
+    </div>
+  </div>
+
+  <!-- 變體 A：有「第 N/M 批」指示 -->
+  <div class="wrap">
+    <div class="label">變體 A — 含「第 N / M 批」位置指示（＋小圓點）</div>
+    <div class="variant">
+      <div class="pager">
+        <span class="pg-btn"><span class="arrow">‹</span> 上一批</span>
+        <span class="pg-ind">第 3 / 5 批</span>
+        <span class="pg-btn primary">換一批 <span class="arrow">›</span></span>
+      </div>
+      <div class="pg-dots"><span class="dot"></span><span class="dot"></span><span class="dot on"></span><span class="dot"></span><span class="dot"></span></div>
+      <div class="note">優點：清楚知道翻到哪、還有幾批；不會「不知道在哪」。<br>小圓點可省略，只留「第 N / M 批」文字也行。</div>
+    </div>
+  </div>
+
+  <!-- 變體 B：無指示（極簡） -->
+  <div class="wrap">
+    <div class="label">變體 B — 極簡（只有 上一批 / 換一批）</div>
+    <div class="variant">
+      <div class="pager">
+        <span class="pg-btn"><span class="arrow">‹</span> 上一批</span>
+        <span class="pg-btn primary">換一批 <span class="arrow">›</span></span>
+      </div>
+      <div class="note">優點：最乾淨。缺點：使用者不知道翻到第幾批、還有沒有更多。</div>
+    </div>
+  </div>
+
+  <!-- 第 1 批狀態：上一批 disabled -->
+  <div class="wrap">
+    <div class="label">第 1 批時 — 「上一批」自動 disabled（變體 A 示意）</div>
+    <div class="variant">
+      <div class="pager">
+        <span class="pg-btn disabled"><span class="arrow">‹</span> 上一批</span>
+        <span class="pg-ind">第 1 / 5 批</span>
+        <span class="pg-btn primary">換一批 <span class="arrow">›</span></span>
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>
