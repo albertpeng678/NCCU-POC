@@ -116,7 +116,7 @@ NCCU-poc/
 ## 環境變數（`.env`，gitignored）
 
 - `OPENAI_API_KEY`：[platform.openai.com/api-keys](https://platform.openai.com/api-keys)。**換 key 就看不到既有 Vector Store。**
-- `OPENAI_VECTOR_STORE_ID`：目前生產 store = **`vs_6a26b97862ec8191b9bfa34727a0c8fb`**（2718 課全灌，檔名=course_id，attributes 帶 course_id/syllabus_url；建庫腳本 `scripts/build_openai_vector_store.py`）。
+- `OPENAI_VECTOR_STORE_ID`：**目前生產 store = `vs_6a26fe2c36b8819182550837ed5fce7d`**（2718 課；2026-06-09 重建：**每課注入完整 header「課名+代號+系所+老師」每 2500 字 + `chunking_strategy` max 4096/overlap 0**，根治「長課綱中段 chunk 無 header → 模型看不到課名/系所 → 名字不全/捏造/系所未顯示」）。舊 store `vs_6a26b97862ec8191b9bfa34727a0c8fb`（無 header 注入）**已棄用待刪**。建庫腳本 `scripts/build_openai_vector_store.py`。**換機器要自己在 .env 設此 id（.env gitignored 不跨機）。**
 - `OPENAI_MODEL`：預設 `gpt-5.4-mini`（推薦標註/問答串流/judge/derive 一律此模型）。
 - `SENTRY_DSN`：Sentry 專案 nccu-poc 的 DSN（公開值）。未設則 Sentry 停用。
 - `ALLOWED_ORIGIN`：部署填 frontend URL；**本機測試用環境變數 `ALLOWED_ORIGIN=*` 覆蓋**。

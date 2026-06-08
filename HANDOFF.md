@@ -7,7 +7,49 @@
 
 ## ★ Session 10 交接（最新，換機器接手第一個讀）★
 
-> **大事：把檢索層整套從 Gemini 硬切到 OpenAI**（使用者決定，因 Gemini 持續不穩）。分支 **`feat/retrieval-openai`**（**11 commits，未 merge master、未 push**）。spec/plan：`docs/superpowers/{specs,plans}/2026-06-08-retrieval-migration-openai*`（含技術設計 + 執行治理：三審 gate / MCP 實證 / skill 對應 / karpathy）。**後端測試 354 passing。**
+> **大事：把檢索層整套從 Gemini 硬切到 OpenAI**（使用者決定，因 Gemini 持續不穩）。分支 **`feat/retrieval-openai`**（**未 merge master、未 push**）。spec/plan：`docs/superpowers/{specs,plans}/2026-06-08-retrieval-migration-openai*`。
+
+---
+
+## ★★ 最新狀態（2026-06-09，換機器接手「先讀這段」）★★
+
+> 下面的「✅已完成/⏳還沒做」是 Session 10 早期寫的，**已過時**；以本段為準。分支 `feat/retrieval-openai`，**28 commits ahead of master、未 merge、未 push**。
+
+### 🔴 第一優先：測試紅燈（必先修，否則不能 merge/deploy）
+**`pytest tests/ -q` = 37 failed / 378 passed。** 失敗全在 **main.py 層級 API 測試**（`test_api`、`test_stream_api`、`test_qa_post_history`、`test_qa_ephemeral_api`、`test_recommend_budget_hit`、`test_recommend_stream_*`、`test_open_career_api`、`test_qa_stream_*`、`test_qa_condense`、`test_qa_followups`…）。
+- **高度懷疑根因＝judge 遷移 commit `cc5db5b`**（把 main.py 的 judge 呼叫改傳 `_openai_client`）引入的 main.py 級破壞——judge subagent 自報「411 passed」，但合到分支後紅。**用 systematic-debugging 先 `git show cc5db5b` 對 main.py 的改動 + 跑單一失敗測試看 traceback**（多半是 import/fixture/`_openai_client` 相關）。先修綠再往下。
+
+### 🟢 這次 session 已完成（已 commit，未 push）
+- **新 store 重建（根治名字/系所問題）**：`OPENAI_VECTOR_STORE_ID=vs_6a26fe2c36b8819182550837ed5fce7d`（**取代舊 `vs_6a26b97862...`**）。建庫腳本 `scripts/build_openai_vector_store.py` 改成 **每課注入完整 header（課名+代號+系所+老師，每 2500 字）+ `chunking_strategy` max 4096 / overlap 0**（context7 確認參數）。**根因**：OpenAI 把長課綱（中位 3689 字、53% 課 >3500 字）切多 chunk，中段 chunk 無 header → 模型看不到課名/系所 → 名字不全/捏造/「系所:未顯示於目前片段」。注入後 **每 chunk 都帶完整 header（3 長課實測 11/11 帶名+系所）**；真打「PM 對應課程」系所欄全填、無「未顯示」「課綱未顯示完整課名」。`.env` 已指向新 store（**新機器要自己設 OPENAI_VECTOR_STORE_ID=vs_6a26fe2c...**）。
+- **問答品質一連串修法（使用者 live 抓 + 我真打驗）**：① filecite 引用標記串流剝除（狀態機 U+E200/E201，官方 citation-formatting helper）② 台灣繁中（禁「對口」等陸語）③ markdown 表格穩定（system prompt 加 few-shot 範例，`gpt-5.4-mini` 靠規則不夠）④ followup 改短句 10-18 字 ⑤ 答案要分行/粗體/結構 ⑥ 多輪 condense-then-search ⑦ citation 跨掛課**按前 6 碼去重**（`3243c0f`，046008001/011/021 同課多班次）⑧ **grounding 兩層**（`c1a42f2`：Layer1 prompt 照抄課名禁發明、Layer2 `strip_fabricated_courses` 用 retrieved_ids 錨定 + NFKC 正規化模糊比對，取代脆弱全 meta 完全比對）⑨ 清單外 out-of-scope 用 derive 的 `is_legitimate_career`（`6aa4991`，流浪漢/黑道老大→no_match、記者/網紅→照推，真打驗過）。
+- **前端 SSE 70cps**（`6f808ff`，使用者已驗）：打字機 20→70cps 配合 OpenAI 逐 token，cache `?v=37`。
+- **judge 遷 OpenAI**（`cc5db5b`，⚠️見上方紅燈）。
+- **CLAUDE.md/.env.example 文件更新**（`e526990`）。
+
+### ⏳ 還沒做（接手依序）
+1. **🔴 修 37 紅燈測試**（見上，先做）。
+2. **三審 backend FAIL 的 3 個 blocking**（frontend ✅ / db ✅ 已過）：
+   - 🔴 **judge 評到空推薦**：`judge.py build_judge_prompt(result)` 讀 `result["groups"]` 但 pipeline 回**扁平 `result["courses"]`**（含 group 欄）→ judge prompt 永遠空、分數無意義。修：從扁平重建 groups。
+   - 🟠 **OpenAI client None 守門**：`_openai_client` 在 OPENAI_API_KEY 缺時 None → handler AttributeError 而非乾淨 503。加守門 + lifespan 警告。
+   - 🟠 **Gemini env 硬必需**：見下方 #3。
+3. **★ 完全移除 Gemini（使用者明確要求「與 Gemini 毫無關係」）**＝原 Phase 3 清理，且**取代**上面三審 #3：移除問答的 `replay`/`stream35` Gemini 模式（只留 OpenAI `stream`）、Gemini `_client`、`GEMINI_API_KEY`/`FILE_SEARCH_STORE_NAME` 讀取、`qa.py` 的 `answer_question`/`answer_question_structured`/`stream_answer_structured`/`_visible_text_from_chunk`/Gemini 模板/雙 SDK 相容碼、`recommend.py` Gemini 死碼（`stage1_retrieve`/`stage2_group`/同步 derive 等）、`requirements.txt` 的 `google-genai`、`.env.example` Gemini 鍵。移除後 `import backend.main` 無 google-genai 也要起得來。**這會大量動 main.py/qa.py/recommend.py + 刪 Gemini 模式測試**——小步、常跑測試。
+4. **Playwright 5x e2e gate**（推薦+問答全流程）+ 截 PNG 給使用者「對」（Live demo gate；本 session 多為真打 curl + 使用者瀏覽器手測，未正式 5x）。⚠️ **本機 e2e 網路坑**：頁面開 `127.0.0.1:8000`，前端 `CONFIG.API_URL` 對 localhost 寫死會走 IPv6 `::1` 連不到（後端綁 127.0.0.1）→ 解法用 Playwright `addInitScript(()=>window.__API_URL__="http://127.0.0.1:8000")` 注入（前端為 e2e 設計的覆蓋點）。
+5. **career_budget**：目前 100/100 是用**舊 store** 跑的；course_id 不變故仍可用，但若要與新 store 一致，可 `ONLY_MISSING=1` 重算（非必須）。
+6. **部署**：Railway 設 `OPENAI_API_KEY`/`OPENAI_VECTOR_STORE_ID=vs_6a26fe2c36b8819182550837ed5fce7d`/`OPENAI_MODEL=gpt-5.4-mini`（**移除 Gemini env**）→ merge feat/retrieval-openai → git push → `curl https://nccu-course.up.railway.app/health` 確認 `retrieval_backend=openai` → Sentry MCP 監看。
+7. **清理**：刪除本 session 建的 probe 暫存 store（`vs_6a26b9.../6a26fb.../6a26fc.../6a26fe0d...` 等小庫）+ 舊正式 store `vs_6a26b97862...`（切新 store 後）。`example.com` 雜檔（docs agent 報已不存在）。
+
+### 本機跑法（新 store）
+```
+# .env 需有 OPENAI_API_KEY / OPENAI_MODEL=gpt-5.4-mini / OPENAI_VECTOR_STORE_ID=vs_6a26fe2c36b8819182550837ed5fce7d
+SENTRY_DSN='' OPENAI_API_KEY=<.env> OPENAI_VECTOR_STORE_ID=vs_6a26fe2c36b8819182550837ed5fce7d OPENAI_MODEL=gpt-5.4-mini ALLOWED_ORIGIN='*' \
+  nohup .venv/bin/python -m uvicorn backend.main:app --port 8000 --host 127.0.0.1 &
+# 前端同源開 http://127.0.0.1:8000/（瀏覽器硬重整載 ?v=37）
+```
+⚠️ **.env 編輯**：曾因 API_KEY 行無換行尾、`echo >> .env` 黏成同一行污染 key → 用 python 改 .env；DB 密鑰勿落地檔案（auto-mode 會擋）。
+
+---
+
+> ↓↓ 以下為 Session 10 早期版本（已過時，僅留參考）↓↓
 
 ### 定案決策（不可再迴避）
 - **供應商一律 OpenAI**：檢索=**Vector Stores**、生成=**`gpt-5.4-mini`**（已真打確認此 model id 有效）、含 career_budget + judge。Gemini 設計決策 #12「固定 2.5-flash」**已被取代**。硬切、不留 Gemini 回退抽象（安全網=上線前 e2e gate + 三審）。
