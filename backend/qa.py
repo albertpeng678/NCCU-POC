@@ -590,7 +590,7 @@ def answer_question_structured(
     """非串流：3.5 + file_search + response_schema 回乾淨結構化答案。
 
     回 {answer, followup_suggestions, citations_course_ids, latency_ms}。
-    勿設顯式 thinking_config（Probe B：file_search+schema+thinking 三開會截斷/掉 grounding）。
+    thinking_level=low 加速且 3.5 GA 實測 grounding 不掉；勿用 include_thoughts。
     max_output_tokens=8192：thinking 會吃輸出預算，2048 在長答案會截斷。
     """
     t0 = time.monotonic()
@@ -602,6 +602,7 @@ def answer_question_structured(
         max_output_tokens=8192,
         response_mime_type="application/json",
         response_schema=_QA_RESPONSE_SCHEMA,
+        thinking_config=types.ThinkingConfig(thinking_level="low"),
         tools=[
             types.Tool(
                 file_search=types.FileSearch(

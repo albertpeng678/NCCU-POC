@@ -61,3 +61,18 @@ async def test_structured_stream_config_uses_schema_and_low_thinking():
     assert cfg.response_schema is not None
     assert cfg.response_mime_type == "application/json"
     assert cfg.thinking_config is not None          # thinking_level=low 已設（加速且 grounding 不掉）
+
+
+def test_answer_question_structured_sets_low_thinking(monkeypatch):
+    from types import SimpleNamespace
+    import backend.qa as qa
+    captured = {}
+
+    def fake_generate_content(model, contents, config):
+        captured["config"] = config
+        return SimpleNamespace(parsed={"answer": "x", "followup_suggestions": []},
+                               text='{"answer":"x","followup_suggestions":[]}', candidates=[])
+
+    client = SimpleNamespace(models=SimpleNamespace(generate_content=fake_generate_content))
+    qa.answer_question_structured(client, "store", "q", history=None)
+    assert captured["config"].thinking_config is not None
