@@ -55,4 +55,8 @@ def test_health_check(client):
     tc, _ = client
     resp = tc.get("/health")
     assert resp.status_code == 200
-    assert resp.json() == {"status": "ok"}
+    data = resp.json()
+    assert data["status"] == "ok"
+    assert data["retrieval_backend"] == "openai"
+    assert "model" in data
+    assert "qa_mode" in data

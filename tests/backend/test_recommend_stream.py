@@ -31,7 +31,7 @@ async def test_stream_known_career_emits_5_stages_and_flat_result():
          patch("backend.recommend.stage2_annotate_pool_async",
                new=AsyncMock(return_value=_ranked_core("000211012"))):
         events = await _collect(
-            stream_recommendation(client=object(), store_name="s",
+            stream_recommendation(client=object(), vs_id="vs_test",
                                   career="產品經理(PM)", seed=1, skills=None))
 
     keys = [e["data"]["key"] for e in events if e["event"] == "stage"]
@@ -56,7 +56,7 @@ async def test_stream_open_career_no_skills_emits_no_match():
     with patch("backend.recommend.derive_skills_for_career_async",
                new=AsyncMock(return_value=None)):
         events = await _collect(
-            stream_recommendation(client=object(), store_name="s",
+            stream_recommendation(client=object(), vs_id="vs_test",
                                   career="asdfqwer", seed=1, skills=None))
     assert any(e["event"] == "no_match" for e in events)
     assert not any(e["event"] == "result" for e in events)
@@ -71,7 +71,7 @@ async def test_stream_open_career_empty_pool_emits_no_match():
          patch("backend.recommend.fanout_retrieve_async",
                new=AsyncMock(return_value=[])):
         events = await _collect(
-            stream_recommendation(client=object(), store_name="s",
+            stream_recommendation(client=object(), vs_id="vs_test",
                                   career="清潔工", seed=1, skills=None))
     assert any(e["event"] == "no_match" for e in events)
     assert not any(e["event"] == "result" for e in events)
@@ -84,7 +84,7 @@ async def test_stream_known_career_empty_pool_emits_error():
          patch("backend.recommend.fanout_retrieve_async",
                new=AsyncMock(return_value=[])):
         events = await _collect(
-            stream_recommendation(client=object(), store_name="s",
+            stream_recommendation(client=object(), vs_id="vs_test",
                                   career="產品經理(PM)", seed=1, skills=None))
     assert any(e["event"] == "error" for e in events)
     assert not any(e["event"] == "result" for e in events)

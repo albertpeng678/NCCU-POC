@@ -1,9 +1,9 @@
 # tests/backend/test_ranked.py
-"""扁平 ranked 標註：schema、annotate-pool async、build_ranked_courses 轉換。
-全程 mock，不打真 Gemini。"""
+"""扁平 ranked 標註：schema、annotate-pool async（改 OpenAI）、build_ranked_courses 轉換。
+全程 mock _openai_structured，不打真 API。"""
 import pytest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch, MagicMock
 from backend.recommend import (
     _RankedItem,
     _RankedOutput,
@@ -32,25 +32,18 @@ def test_ranked_output_is_list_of_items():
     assert len(out.courses) == 1
 
 
-def _fake_client(parsed):
-    resp = SimpleNamespace(parsed=parsed)
-    aio = SimpleNamespace(models=SimpleNamespace(
-        generate_content=AsyncMock(return_value=resp)))
-    return SimpleNamespace(aio=aio)
-
-
 @pytest.mark.asyncio
 async def test_annotate_pool_returns_parsed_ranked_output():
+    """stage2_annotate_pool_async 改用 _openai_structured → mock 它，驗證回傳 _RankedOutput。"""
     parsed = _RankedOutput(courses=[
         _RankedItem(course_id="000211012", group="core",
                     reason_lead="總述",
                     reason_points=[{"term": "分析", "detail": "拆解"}]),
     ])
-    client = _fake_client(parsed)
     candidates = [{"course_id": "000211012", "course_name": "政治學", "relevance": "x"}]
-    out = await stage2_annotate_pool_async(client, "PM", ["分析"], candidates)
+    with patch("backend.recommend._openai_structured", new=AsyncMock(return_value=parsed)):
+        out = await stage2_annotate_pool_async(MagicMock(), "PM", ["分析"], candidates)
     assert out is parsed
-    client.aio.models.generate_content.assert_awaited_once()
 
 
 from backend.recommend import build_ranked_courses

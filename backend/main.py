@@ -38,9 +38,13 @@ from backend.qa_logger import (
     update_qa_judge, get_session_turns, build_history_from_turns,
 )
 
+from backend.openai_client import get_client as _get_openai_client
+from backend.recommend import OPENAI_MODEL
+
 load_dotenv()
 _GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
-_STORE_NAME = os.environ["FILE_SEARCH_STORE_NAME"]
+_STORE_NAME = os.environ["FILE_SEARCH_STORE_NAME"]      # Gemini store（qa.py 仍用）
+_VS_ID = os.environ.get("OPENAI_VECTOR_STORE_ID", "")   # OpenAI vector store（推薦用）
 _ALLOWED_ORIGIN = os.environ.get("ALLOWED_ORIGIN", "*")
 _QA_MODE = os.environ.get("QA_MODE", "stream")   # stream(預設 2.5 串流) | stream35(3.5 結構化串流) | replay(3.5 非串流)
 # ⚠️（Session 9）預設改回 2.5（stream）：3.5 GA 上線窗口 high-demand 503 嚴重，時間敏感的問答經不起重試延遲
@@ -84,9 +88,15 @@ _client = genai.Client(
     ),
 )
 
+# OpenAI client（推薦 fan-out 檢索 + stage2 標註）。
+# 延遲建立（event loop 啟動後第一次 get_client() 呼叫）；OPENAI_API_KEY 未設時回 None（CI/test 環境）。
+_openai_client = None
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global _openai_client
+    _openai_client = _get_openai_client()   # lazy init inside event loop（同一 loop 重用）
     await init_pool()
     yield
     await close_pool()
@@ -117,7 +127,13 @@ async def _background_log_and_judge(career, result, stage1_count, error):
 def health():
     # qa_mode 外露：線上實際跑哪個問答模式一目了然（curl /health 即知），
     # 用可觀測性取代「在 Railway 釘隱形環境變數」的技術債（見 CLAUDE #12 / HANDOFF Session 9）。
-    return {"status": "ok", "qa_mode": _QA_MODE}
+    # retrieval_backend/model 外露：Phase 1 OpenAI 遷移後可一眼確認推薦用 OpenAI。
+    return {
+        "status": "ok",
+        "qa_mode": _QA_MODE,
+        "retrieval_backend": "openai",
+        "model": OPENAI_MODEL,
+    }
 
 
 @app.post("/recommend")
@@ -140,7 +156,8 @@ async def recommend(req: RecommendRequest, background_tasks: BackgroundTasks):
             }
     else:
         # async derive：直接 await 在主 loop（與 build pipeline 一致），不阻塞 event loop。
-        skills = await derive_skills_for_career_async(_client, req.career)
+        # 改用 OpenAI client（Phase 1 遷移）。
+        skills = await derive_skills_for_career_async(_openai_client, req.career)
         if not skills:
             return {
                 "career": req.career,
@@ -152,11 +169,9 @@ async def recommend(req: RecommendRequest, background_tasks: BackgroundTasks):
     stage1_count = 0
     error = None
     try:
-        # async pipeline 直接 await 在主 loop（共用 _client.aio 跑在同一 loop，與串流端點一致）。
-        # **不可改回 asyncio.to_thread + asyncio.run**：worker thread 臨時 loop 關閉會污染共用 client.aio
-        # → 之後 /recommend/stream、/qa/stream 噴「Event loop is closed」（根因見 HANDOFF Session 7 🔴 / #22）。
+        # async pipeline 直接 await 在主 loop（OpenAI AsyncOpenAI client，同一 loop 重用）。
         result, stage1_count = await build_recommendation_instrumented_async(
-            _client, _STORE_NAME, req.career, seed, skills=skills
+            _openai_client, _VS_ID, req.career, seed, skills=skills
         )
     except Exception as e:
         error = e
@@ -213,11 +228,11 @@ async def recommend_stream(request: Request, career: str, seed: int | None = Non
         # 命中離線預算 → 瞬間串流（0 即時 AI）；未命中/無 DB/清單外 → 即時串流
         budget = await get_budget(get_pool(), career) if career in load_careers() else None
         gen = (stream_recommendation_from_budget(career, budget, resolved_seed) if budget
-               else stream_recommendation(_client, _STORE_NAME, career, resolved_seed, skills=None))
+               else stream_recommendation(_openai_client, _VS_ID, career, resolved_seed, skills=None))
         try:
             async for ev in gen:
                 if await request.is_disconnected():
-                    break  # 前端已關閉（收到終態 es.close()）→ 中止，勿續燒 Gemini
+                    break  # 前端已關閉（收到終態 es.close()）→ 中止
                 if ev["event"] == "result":
                     result = ev["data"]   # 收尾後補 logging/judge（與 POST /recommend 對齊）
                 elif ev["event"] == "error":
