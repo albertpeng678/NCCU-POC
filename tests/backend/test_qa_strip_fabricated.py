@@ -134,3 +134,66 @@ def test_finalize_strips_fabricated_courses_from_answer():
     assert len(citations) >= 1
     assert any(c["course_id"] == "111000002" for c in citations)
     assert no_match is False
+
+
+# ── Case 8：非標準表頭（如「課名」）全假課 → 懸空分隔線不殘留 ──
+def test_nonstandard_header_no_dangling_separator():
+    """非標準表頭（課名）的全假課表格：表頭被當資料列剝掉後，分隔線不應懸空殘留。"""
+    answer = "p\n\n| 課名 |\n| --- | --- |\n| 假課A | x |"
+    cleaned, n = strip_fabricated_courses(answer, _META)
+    # 假課 A 不在 meta → 被剝
+    assert "假課A" not in cleaned
+    # 不應殘留懸空分隔線（前一行不是表格行的 | --- |）
+    lines = cleaned.split("\n")
+    for idx, line in enumerate(lines):
+        s = line.strip()
+        if s.startswith("|") and set(s.replace("|", "").replace("-", "").replace(":", "").replace(" ", "")) == set():
+            # 這是分隔線行，檢查前一行是否為表格行
+            prev = lines[idx - 1].strip() if idx > 0 else ""
+            assert prev.startswith("|"), f"Found dangling separator at line {idx}: prev={repr(prev)}"
+
+
+# ── Case 9：fence 內的表格行不應被剝除 ──
+def test_fence_inner_table_not_stripped():
+    """``` 圍起來的程式碼區塊內含 | 表格格式 → 不被剝除。"""
+    answer = (
+        "以下是範例程式碼：\n\n"
+        "```\n"
+        "| 課名 | x |\n"
+        "| --- | --- |\n"
+        "| 假課B | y |\n"
+        "```\n\n"
+        "以上供參考。"
+    )
+    cleaned, n = strip_fabricated_courses(answer, _META)
+    # fence 內的內容不應被剝除（n_stripped 應為 0）
+    assert n == 0
+    assert "假課B" in cleaned
+
+
+# ── Case 10：兩個表格——第一個全假課被移除、第二個含真課保留 ──
+def test_two_tables_first_fake_second_real():
+    """答案含兩個表格：第一個全假課（應整段消失）、第二個含真課（應完整保留）。"""
+    fake_table = _make_table(
+        ["假課X", "外文系", "假課內容"],
+        ["假課Y", "中文系", "假課內容"],
+    )
+    real_table = _make_table(
+        ["**資料探勘**", "資管系", "機器學習實作"],
+        ["統計學", "統計系", "推論統計"],
+    )
+    answer = f"前言。\n\n{fake_table}\n\n中間說明。\n\n{real_table}\n\n結語。"
+    cleaned, n = strip_fabricated_courses(answer, _META)
+
+    # 第一個表格的假課全消失
+    assert n == 2
+    assert "假課X" not in cleaned
+    assert "假課Y" not in cleaned
+    # 第一個孤兒表頭/分隔線也消失（不殘留）
+    # 第二個表格的真課保留
+    assert "資料探勘" in cleaned
+    assert "統計學" in cleaned
+    # prose 保留
+    assert "前言" in cleaned
+    assert "中間說明" in cleaned
+    assert "結語" in cleaned

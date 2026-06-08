@@ -339,10 +339,6 @@ def extract_citations_by_name(answer: str, meta: dict, limit: int = 6) -> list[d
     return result
 
 
-_ORPHAN_TABLE_RE = re.compile(
-    r"^\| 課程名稱[^\n]*\|\n\|[\s\-:|]+\|[\s\-:|]*\|?[\s\-:|]*\|?\s*$",
-    re.MULTILINE,
-)
 _SEPARATOR_ROW_RE = re.compile(r"^\|[\s\-:|]+\|?$")
 
 
@@ -352,6 +348,10 @@ def strip_fabricated_courses(answer: str, meta: dict) -> tuple[str, int]:
     回 (cleaned_answer, n_stripped)。只動表格資料列：表頭(課程名稱)、分隔線(---)、
     非表格文字一律不動。若資料列全被剝光，連同孤兒表頭+分隔線一併移除（避免留空表格）。
     課名比對：去 ** 粗體與前後空白後，需『完全等於』meta 某課的 name 才算真課。
+
+    注意：本函式只感知 fenced code block（``` 開頭的行）以 in_fence 旗標跳過；
+    fence 內的表格行原樣保留、不做任何課名比對。本網域（課程問答）fence 內出現表格機率極低，
+    此為保守防守：萬一答案含程式碼範例的 | 表格，不誤剝。
     """
     # 建立真課名集合
     real_names: set[str] = {
@@ -364,6 +364,8 @@ def strip_fabricated_courses(answer: str, meta: dict) -> tuple[str, int]:
     out_lines: list[str] = []
     n_stripped = 0
 
+    in_fence = False  # fenced code block（``` 開頭）感知旗標
+
     # 追蹤每個「表格區段」：(表頭行index, 分隔線行index, 資料列indices)
     # 先做一趟標記，再後處理孤兒表格
     # 簡單狀態機：逐行掃描
@@ -371,6 +373,19 @@ def strip_fabricated_courses(answer: str, meta: dict) -> tuple[str, int]:
     while i < len(lines):
         line = lines[i]
         stripped_line = line.strip()
+
+        # ── fence toggle：遇到 ``` 開頭的行就切換 in_fence，原樣保留 ──
+        if stripped_line.startswith("```"):
+            in_fence = not in_fence
+            out_lines.append(line)
+            i += 1
+            continue
+
+        # fence 內：原樣保留，不做表格判定
+        if in_fence:
+            out_lines.append(line)
+            i += 1
+            continue
 
         # 判定是否為表格行（strip 後以 | 開頭且至少 2 個 |）
         if stripped_line.startswith("|") and stripped_line.count("|") >= 2:
@@ -413,37 +428,54 @@ def strip_fabricated_courses(answer: str, meta: dict) -> tuple[str, int]:
         out_lines.append(line)
         i += 1
 
-    # 後處理：移除孤兒表格（表頭列緊接分隔線列，但分隔線列之後不再有資料列）
+    # 後處理：移除孤兒分隔線（任何前一行不是表格行的懸空 | --- | 列），
+    # 同時移除「表頭列緊接分隔線列、但分隔線列之後不再有資料列」的孤兒表格段。
     cleaned_lines = _remove_orphan_table_headers(out_lines)
     return "\n".join(cleaned_lines), n_stripped
 
 
 def _remove_orphan_table_headers(lines: list[str]) -> list[str]:
-    """移除「表頭列 + 分隔線列，但其後無資料列」的孤兒表格段。"""
+    """移除孤兒分隔線與孤兒表格段。
+
+    兩種情形都刪除：
+    1. 懸空分隔線：某分隔線列的前一行不是表格行（不以 | 開頭），或它是首行。
+       這涵蓋「非標準表頭（如 | 課名 |）被當資料列剝掉後殘留的 | --- |」。
+    2. 孤兒表格段：任何表格列（非分隔線）緊接分隔線列，但分隔線之後無資料列。
+       這涵蓋標準「課程名稱」表頭被孤兒化的情況。
+    兩次 pass 確保組合情形都被清理。
+    """
+    # Pass 1：移除懸空分隔線（前一行非表格行）
+    pass1: list[str] = []
+    for idx, line in enumerate(lines):
+        s = line.strip()
+        if _SEPARATOR_ROW_RE.match(s):
+            prev = lines[idx - 1].strip() if idx > 0 else ""
+            if not prev.startswith("|"):
+                # 懸空：前一行不是表格行，跳過此分隔線
+                continue
+        pass1.append(line)
+
+    # Pass 2：移除「任意表格行 + 分隔線，但分隔線後無資料列」的孤兒表格段
     result: list[str] = []
-    n = len(lines)
+    n = len(pass1)
     i = 0
     while i < n:
-        stripped = lines[i].strip()
-        # 找表頭列
+        stripped = pass1[i].strip()
+        # 找任意非分隔線的表格行（可能是任何表頭）
         if (
             stripped.startswith("|")
             and stripped.count("|") >= 2
             and not _SEPARATOR_ROW_RE.match(stripped)
         ):
-            cells = [c.strip() for c in stripped.strip("|").split("|")]
-            first = cells[0] if cells else ""
-            # 去粗體後是「課程名稱」表頭
-            if re.sub(r"\*\*(.+?)\*\*", r"\1", first).strip() == "課程名稱":
-                # 下一行是否為分隔線？
-                if i + 1 < n and _SEPARATOR_ROW_RE.match(lines[i + 1].strip()):
-                    # 下下行是否為資料列（表格行且非分隔線）？
-                    next_after_sep = i + 2
-                    if next_after_sep >= n or not _is_table_data_row(lines[next_after_sep]):
-                        # 孤兒：表頭 + 分隔線後無資料 → 跳過這兩行
-                        i += 2
-                        continue
-        result.append(lines[i])
+            # 下一行是否為分隔線？
+            if i + 1 < n and _SEPARATOR_ROW_RE.match(pass1[i + 1].strip()):
+                # 分隔線後是否有資料列？
+                next_after_sep = i + 2
+                if next_after_sep >= n or not _is_table_data_row(pass1[next_after_sep]):
+                    # 孤兒：表格行 + 分隔線後無資料 → 跳過這兩行
+                    i += 2
+                    continue
+        result.append(pass1[i])
         i += 1
     return result
 
