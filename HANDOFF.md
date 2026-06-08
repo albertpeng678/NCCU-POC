@@ -38,12 +38,30 @@
 6. **部署**：Railway 設 `OPENAI_API_KEY`/`OPENAI_VECTOR_STORE_ID=vs_6a26fe2c36b8819182550837ed5fce7d`/`OPENAI_MODEL=gpt-5.4-mini`（**移除 Gemini env**）→ merge feat/retrieval-openai → git push → `curl https://nccu-course.up.railway.app/health` 確認 `retrieval_backend=openai` → Sentry MCP 監看。
 7. **清理**：刪除本 session 建的 probe 暫存 store（`vs_6a26b9.../6a26fb.../6a26fc.../6a26fe0d...` 等小庫）+ 舊正式 store `vs_6a26b97862...`（切新 store 後）。`example.com` 雜檔（docs agent 報已不存在）。
 
-### 本機跑法（新 store）
+### 換機器 `.env` 完整設定（一五一十；`.env` gitignored、不跨機，要自己建）
+```ini
+# === 必填 ===
+OPENAI_API_KEY=sk-...                 # ⚠️ 你自己的 OpenAI key（platform.openai.com/api-keys）。密鑰，勿提交/勿貼進任何會 push 的檔。
+OPENAI_VECTOR_STORE_ID=vs_6a26fe2c36b8819182550837ed5fce7d   # 新 store（含 header 注入根治名字/系所）；非密，可記。
+OPENAI_MODEL=gpt-5.4-mini             # 推薦標註/問答/judge/derive 一律此模型
+ALLOWED_ORIGIN=*                      # 本機測試用 *（部署填 frontend URL）
+# === 選填 ===
+SENTRY_DSN=                           # 本機「留空」（別污染正式 Sentry）；正式值是公開的，見 frontend/app.js 的 CONFIG.SENTRY_DSN
+# === 不要寫進 .env（用環境變數臨時傳）===
+# DATABASE_URL：本機跑要連 Railway Postgres 時，用 `railway variables -s Postgres --json` 撈 DATABASE_PUBLIC_URL，
+#   以環境變數傳給指令（DATABASE_URL=... python ...），勿寫進 .env（會覆蓋部署設定；且 auto-mode 會擋把 DB 密鑰落地檔案）。
+#   問答多輪/career_budget 才需要 DB；純測檢索/推薦 live 不需要。
 ```
-# .env 需有 OPENAI_API_KEY / OPENAI_MODEL=gpt-5.4-mini / OPENAI_VECTOR_STORE_ID=vs_6a26fe2c36b8819182550837ed5fce7d
-SENTRY_DSN='' OPENAI_API_KEY=<.env> OPENAI_VECTOR_STORE_ID=vs_6a26fe2c36b8819182550837ed5fce7d OPENAI_MODEL=gpt-5.4-mini ALLOWED_ORIGIN='*' \
+> 換 OpenAI key＝看不到舊 Vector Store（store 綁帳號）。新機器用**同一把 key** 才能存取 `vs_6a26fe2c...`。
+
+### 本機跑法（新 store）
+```bash
+# .env 設好上面後：
+KEY=$(grep '^OPENAI_API_KEY=' .env | cut -d= -f2-)
+SENTRY_DSN='' OPENAI_API_KEY="$KEY" OPENAI_VECTOR_STORE_ID=vs_6a26fe2c36b8819182550837ed5fce7d OPENAI_MODEL=gpt-5.4-mini ALLOWED_ORIGIN='*' \
   nohup .venv/bin/python -m uvicorn backend.main:app --port 8000 --host 127.0.0.1 &
 # 前端同源開 http://127.0.0.1:8000/（瀏覽器硬重整載 ?v=37）
+# 問答多輪要 DB：再前綴 DATABASE_URL="$(railway variables -s Postgres --json | python -c 'import sys,json;print(json.load(sys.stdin)["DATABASE_PUBLIC_URL"])')"
 ```
 ⚠️ **.env 編輯**：曾因 API_KEY 行無換行尾、`echo >> .env` 黏成同一行污染 key → 用 python 改 .env；DB 密鑰勿落地檔案（auto-mode 會擋）。
 
