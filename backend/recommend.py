@@ -238,7 +238,14 @@ class _RankedOutput(BaseModel):
 # --- OpenAI structured-output helper ---
 
 class _DerivedSkills(BaseModel):
-    """Schema for derive_skills_for_career_async via _openai_structured."""
+    """Schema for derive_skills_for_career_async via _openai_structured.
+
+    is_legitimate_career: LLM 判斷此輸入是否為真實、合法、大學課程能有意義培養的職業。
+    - True → 正當清單外職涯（如記者、網紅、電競選手、數據分析師）
+    - False → 非職業/非法/無厘頭/亂打（流浪漢、黑道老大、殺手、asdfgh）
+    False 時即使 skills 非空也應走 no_match（is_legitimate_career 優先）。
+    """
+    is_legitimate_career: bool
     skills: list[str]
 
 
@@ -556,24 +563,35 @@ def build_recommendation_instrumented(
 async def derive_skills_for_career_async(
     client, career: str
 ) -> list[str] | None:
-    """async 版 derive_skills_for_career（清單外職涯技能推導）。改用 OpenAI _openai_structured。"""
+    """async 版 derive_skills_for_career（清單外職涯技能推導）。改用 OpenAI _openai_structured。
+
+    判斷準則（is_legitimate_career）：
+    - True：正當清單外職涯（如記者、網紅、電競選手、數據分析師、護理師）→ 推 5-8 個可轉移能力技能。
+    - False：非職業/非法/無厘頭/亂打（流浪漢、黑道老大、殺手、asdfgh）→ is_legitimate_career=False。
+    ⚠️ 務必誠實判斷：不要因「想幫忙」就把不正當輸入硬判 True——對應用的是 no_match 溫和引導路徑。
+    is_legitimate_career=False 時即使 skills 非空也回 None（→ no_match）。
+    """
     system = (
-        "你是課程推薦助理。請判斷使用者輸入是否為真實職涯，"
-        "若是，推導 5-8 個大學課程可教授的可轉移能力關鍵字；"
-        "若不是真實職涯（如亂打的字），回傳 skills=[]。"
+        "你是課程推薦助理。請判斷使用者輸入是否為真實、合法、大學課程能有意義培養的職業，"
+        "並在 is_legitimate_career 欄位誠實回答。"
+        "正當清單外職涯（如記者、網紅、電競選手、數據分析師）→ is_legitimate_career=true，並推導技能；"
+        "非職業/非法/無厘頭/亂打（流浪漢、黑道老大、殺手、asdfgh 等）→ is_legitimate_career=false。"
+        "⚠️ 務必誠實：不要因「想幫忙」就把不正當輸入硬判為 true——那正是要修的 bug。"
     )
     user = (
         f"使用者輸入的職涯目標：「{career}」\n\n"
-        "請推導此職涯所需、且大學課程可能教授的『可轉移能力』關鍵字"
+        "先判斷 is_legitimate_career（true/false），若為 true，"
+        "再推導此職涯所需、且大學課程可能教授的 5-8 個『可轉移能力』關鍵字"
         "（聚焦學術可教的能力，如管理、溝通、公共衛生、資料分析；避免純體力或無法在課堂教的技能）。\n"
-        '範例：{"skills": ["公共衛生","基礎管理","人際溝通"]}'
+        '範例（正當）：{"is_legitimate_career": true, "skills": ["公共衛生","基礎管理","人際溝通"]}\n'
+        '範例（非正當）：{"is_legitimate_career": false, "skills": []}'
     )
     try:
         result = await _openai_structured(client, system, user, _DerivedSkills)
     except Exception as e:
         logger.warning("derive_skills failed for %r: %r", career, e)
         return None
-    if not result or not result.skills:
+    if not result or not result.is_legitimate_career or not result.skills:
         return None
     return [str(s) for s in result.skills][:8]
 

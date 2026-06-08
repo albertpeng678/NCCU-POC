@@ -155,12 +155,9 @@ async def test_stage2_annotate_pool_uses_openai_structured():
 @pytest.mark.asyncio
 async def test_derive_skills_async_uses_openai_structured():
     """derive_skills_for_career_async 應呼叫 _openai_structured，解析 skills 列表。"""
-    from backend.recommend import derive_skills_for_career_async
+    from backend.recommend import derive_skills_for_career_async, _DerivedSkills
 
-    class _FakeOutput(BaseModel):
-        skills: list
-
-    fake_output = _FakeOutput(skills=["公共衛生", "基礎管理", "人際溝通"])
+    fake_output = _DerivedSkills(is_legitimate_career=True, skills=["公共衛生", "基礎管理", "人際溝通"])
     mock_client = MagicMock()
 
     with patch("backend.recommend._openai_structured", new=AsyncMock(return_value=fake_output)) as mock_fn:
@@ -173,12 +170,9 @@ async def test_derive_skills_async_uses_openai_structured():
 @pytest.mark.asyncio
 async def test_derive_skills_async_empty_returns_none():
     """_openai_structured 回 skills=[] → derive 回 None（no_match）。"""
-    from backend.recommend import derive_skills_for_career_async
+    from backend.recommend import derive_skills_for_career_async, _DerivedSkills
 
-    class _FakeOutput(BaseModel):
-        skills: list
-
-    fake_output = _FakeOutput(skills=[])
+    fake_output = _DerivedSkills(is_legitimate_career=False, skills=[])
     mock_client = MagicMock()
 
     with patch("backend.recommend._openai_structured", new=AsyncMock(return_value=fake_output)):
@@ -289,7 +283,67 @@ async def test_fanout_retrieve_pool_not_collapsed_by_empty_course_name():
     assert "000217012" in pool_ids
 
 
-# ── 7. /health 回應包含 retrieval_backend 與 model ────────────────────────────
+# ── 7. derive_skills_for_career_async：is_legitimate_career 守門 ───────────────
+# RED 階段：先跑 FAIL，實作 _DerivedSkills 加 is_legitimate_career 欄位 + 判斷邏輯後轉 GREEN。
+
+@pytest.mark.asyncio
+async def test_derive_skills_legitimate_career_returns_skills():
+    """is_legitimate_career=True, skills 非空 → 正常回 skills 清單（不誤殺正當清單外職涯）。"""
+    from backend.recommend import derive_skills_for_career_async, _DerivedSkills
+
+    fake_output = _DerivedSkills(is_legitimate_career=True, skills=["採訪", "查證"])
+    mock_client = MagicMock()
+
+    with patch("backend.recommend._openai_structured", new=AsyncMock(return_value=fake_output)):
+        skills = await derive_skills_for_career_async(mock_client, "記者")
+
+    assert skills == ["採訪", "查證"]
+
+
+@pytest.mark.asyncio
+async def test_derive_skills_illegitimate_empty_skills_returns_none():
+    """is_legitimate_career=False, skills=[]（非職業，如「流浪漢」）→ 回 None（走 no_match）。"""
+    from backend.recommend import derive_skills_for_career_async, _DerivedSkills
+
+    fake_output = _DerivedSkills(is_legitimate_career=False, skills=[])
+    mock_client = MagicMock()
+
+    with patch("backend.recommend._openai_structured", new=AsyncMock(return_value=fake_output)):
+        result = await derive_skills_for_career_async(mock_client, "流浪漢")
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_derive_skills_illegitimate_with_skills_returns_none():
+    """is_legitimate_career=False, 但 skills 非空（如「黑道老大」模型仍給技能）→ 回 None。
+    is_legitimate_career 優先於 skills：不應讓非正當輸入繞過守門。
+    """
+    from backend.recommend import derive_skills_for_career_async, _DerivedSkills
+
+    fake_output = _DerivedSkills(is_legitimate_career=False, skills=["談判", "領導"])
+    mock_client = MagicMock()
+
+    with patch("backend.recommend._openai_structured", new=AsyncMock(return_value=fake_output)):
+        result = await derive_skills_for_career_async(mock_client, "黑道老大")
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_derive_skills_exception_returns_none():
+    """_openai_structured 拋例外 → 回 None（不拖垮）。"""
+    from backend.recommend import derive_skills_for_career_async
+
+    mock_client = MagicMock()
+
+    with patch("backend.recommend._openai_structured", new=AsyncMock(side_effect=ValueError("boom"))):
+        result = await derive_skills_for_career_async(mock_client, "任意輸入")
+
+    assert result is None
+
+
+# ── 8. /health 回應包含 retrieval_backend 與 model ────────────────────────────
 
 def test_health_has_retrieval_backend_and_model():
     """GET /health 應包含 retrieval_backend='openai' 和 model=OPENAI_MODEL，保留 qa_mode。"""

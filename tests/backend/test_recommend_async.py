@@ -26,7 +26,7 @@ def _fake_gemini_client(text=None, parsed=None):
 @pytest.mark.asyncio
 async def test_derive_skills_async_parses_json_array():
     """derive_skills_for_career_async 透過 _openai_structured 回 _DerivedSkills → 回 list[str]。"""
-    fake_output = _DerivedSkills(skills=["公共衛生", "基礎管理", "人際溝通"])
+    fake_output = _DerivedSkills(is_legitimate_career=True, skills=["公共衛生", "基礎管理", "人際溝通"])
     with patch("backend.recommend._openai_structured", new=AsyncMock(return_value=fake_output)):
         skills = await derive_skills_for_career_async(MagicMock(), "流行病學家")
     assert skills == ["公共衛生", "基礎管理", "人際溝通"]
@@ -35,7 +35,7 @@ async def test_derive_skills_async_parses_json_array():
 @pytest.mark.asyncio
 async def test_derive_skills_async_returns_none_on_garbage():
     """_openai_structured 回 skills=[] → derive 回 None（no_match）。"""
-    fake_output = _DerivedSkills(skills=[])
+    fake_output = _DerivedSkills(is_legitimate_career=False, skills=[])
     with patch("backend.recommend._openai_structured", new=AsyncMock(return_value=fake_output)):
         skills = await derive_skills_for_career_async(MagicMock(), "asdfqwer")
     assert skills is None
