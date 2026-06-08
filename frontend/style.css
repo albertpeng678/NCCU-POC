@@ -375,7 +375,6 @@ body.qa-active .site-footer{display:none}
   .shiba-glow{animation:none}
   .shiba-now,.shiba-tip{transition:none}
 }
-.reroll-ic{vertical-align:-2px;margin-left:3px}
 
 /* 問答失敗復原（暫時性過載 / 查無資料）·三色 navy/cyan/白·無 emoji·無左線 */
 .qa-err{display:flex;align-items:flex-start;gap:8px;color:var(--text);font-size:14px;line-height:1.6}
