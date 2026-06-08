@@ -434,23 +434,60 @@ def extract_citations_by_name(answer: str, meta: dict, limit: int = 6) -> list[d
 _SEPARATOR_ROW_RE = re.compile(r"^\|[\s\-:|]+\|?$")
 
 
-def strip_fabricated_courses(answer: str, meta: dict) -> tuple[str, int]:
+def strip_fabricated_courses(
+    answer: str,
+    meta: dict,
+    retrieved_ids: "set[str] | None" = None,
+) -> tuple[str, int]:
     """移除 markdown 表格中『課名不在知識庫 meta』的資料列（防 3.5 在表格腦補假課）。
 
     回 (cleaned_answer, n_stripped)。只動表格資料列：表頭(課程名稱)、分隔線(---)、
     非表格文字一律不動。若資料列全被剝光，連同孤兒表頭+分隔線一併移除（避免留空表格）。
-    課名比對：去 ** 粗體與前後空白後，需『完全等於』meta 某課的 name 才算真課。
+
+    比對邏輯（依 retrieved_ids 是否提供）：
+    - retrieved_ids is None（舊呼叫 / 無檢索資訊）→ 退回原「對全 meta 完全比對」邏輯（向後相容）。
+    - retrieved_ids 為集合（含空集合）→ 「對這次實際檢索到的課名做模糊比對」：
+        對照 retrieved_ids 中每課的精確 meta 名稱（retrieved_names，通常 ~5 個），
+        判斷表格課名 cand 是否模糊命中任一 rname：cand in rname 或 rname in cand
+        （比對前均先去空白；此雙向包含覆蓋模型縮寫與行政前綴等改寫情形）。
+        命中任一 retrieved_name → 真課，保留；完全未命中 → 腦補假課，砍。
 
     注意：本函式只感知 fenced code block（``` 開頭的行）以 in_fence 旗標跳過；
     fence 內的表格行原樣保留、不做任何課名比對。本網域（課程問答）fence 內出現表格機率極低，
     此為保守防守：萬一答案含程式碼範例的 | 表格，不誤剝。
     """
-    # 建立真課名集合
-    real_names: set[str] = {
-        (m or {}).get("name", "")
-        for m in meta.values()
-    }
-    real_names.discard("")
+    # 決定比對邏輯：retrieved_ids 為 None → 舊邏輯（全 meta 完全比對）
+    if retrieved_ids is None:
+        # 建立全 meta 真課名集合（完全比對，向後相容）
+        real_names: set[str] = {
+            (m or {}).get("name", "")
+            for m in meta.values()
+        }
+        real_names.discard("")
+
+        def _is_real_course(cand: str) -> bool:
+            return cand in real_names
+
+    else:
+        # 建立這次檢索到的課名集合（模糊比對）
+        retrieved_names: set[str] = {
+            ((meta.get(cid) or {}).get("name") or "").strip()
+            for cid in retrieved_ids
+        }
+        retrieved_names.discard("")
+
+        def _is_real_course(cand: str) -> bool:  # type: ignore[misc]
+            """模糊命中：cand ⊂ rname 或 rname ⊂ cand（去空白後雙向包含）。"""
+            cand_s = cand.strip()
+            if not cand_s:
+                return False
+            for rname in retrieved_names:
+                rname_s = rname.strip()
+                if not rname_s:
+                    continue
+                if cand_s in rname_s or rname_s in cand_s:
+                    return True
+            return False
 
     lines = answer.split("\n")
     out_lines: list[str] = []
@@ -505,8 +542,8 @@ def strip_fabricated_courses(answer: str, meta: dict) -> tuple[str, int]:
                 i += 1
                 continue
 
-            # 課名不在 meta → 假課，剝除
-            if course_name not in real_names:
+            # 課名不是真課 → 假課，剝除（_is_real_course 由比對模式決定）
+            if not _is_real_course(course_name):
                 n_stripped += 1
                 i += 1
                 continue
@@ -580,12 +617,23 @@ def _is_table_data_row(line: str) -> bool:
     return not _SEPARATOR_ROW_RE.match(s)
 
 
-def finalize_qa_answer(answer: str, followups: list, course_ids: list, meta: dict):
+def finalize_qa_answer(
+    answer: str,
+    followups: list,
+    course_ids: list,
+    meta: dict,
+    retrieved_ids: "set[str] | None" = None,
+):
     """問答收尾（POST /qa、/qa/stream replay、stream 三處共用，避免邏輯三份且不一致）。
 
     grounding course_ids → citations；citations 空則用「答案提到的真實課名」補
     （模型常 grounded 卻沒帶 metadata）；真查無（空 citations + 答案像在列課程）→ 防幻覺覆寫。
     回 (answer, followups, citations, no_match)。no_match=True 時前端走「換個問法」引導而非重試。
+
+    retrieved_ids：這次 file_search 實際回傳的 course_id 集合（OpenAI stream 路徑可傳入）。
+    傳入後 strip_fabricated_courses 改用模糊比對（cand ⊂ rname 或 rname ⊂ cand），
+    能容許模型對長行政課名的自然縮寫（如「武術初級」⊂「體育[男女合班]—武術初級」）。
+    None → 退回原全 meta 完全比對邏輯（向後相容：Gemini replay/stream35 路徑不傳）。
     """
     # 最先剝除 inline 來源標記（[tmp.txt] 雜訊），讓後續 looks_like_course_listing 等判斷對乾淨文字操作
     answer = strip_source_markers(answer)
@@ -599,9 +647,9 @@ def finalize_qa_answer(answer: str, followups: list, course_ids: list, meta: dic
         followups = []
         no_match = True
     else:
-        # 有 grounding（部分真課）→ 確定性剝除表格中不在 meta 的假課列
+        # 有 grounding（部分真課）→ 確定性剝除表格中不在已知課名的假課列
         # citations 來自 grounding 本就是真課、不受剝除影響
-        answer, _n_strip = strip_fabricated_courses(answer, meta)
+        answer, _n_strip = strip_fabricated_courses(answer, meta, retrieved_ids=retrieved_ids)
     return answer, followups, citations, no_match
 
 

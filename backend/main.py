@@ -329,9 +329,17 @@ async def qa(req: QaRequest, background_tasks: BackgroundTasks):
     # ⚠️ 必須在 insert_turn 之前：否則幻覺答案（空 citations 卻像列課程）會以未覆寫原文存進 qa_turn，
     #    再經 build_history_from_turns 餵回下一輪污染上下文（/qa/stream 同樣持久化 finalize 後答案）。
     meta = load_courses_meta()
+    # stream(OpenAI) 模式：course_ids 來自 file_search results → 模糊比對，容許模型改寫課名
+    # replay/stream35(Gemini) 模式：retrieved_ids=None → 退回全 meta 完全比對（向後相容）
+    _post_retrieved_ids = (
+        set(result.get("citations_course_ids") or [])
+        if _QA_MODE == "stream"
+        else None
+    )
     result["answer"], result["followup_suggestions"], citations, _no_match = finalize_qa_answer(
         result["answer"], result.get("followup_suggestions", []),
         result.get("citations_course_ids", []), meta,
+        retrieved_ids=_post_retrieved_ids,
     )  # POST 是 fallback 路徑，不走分支③，no_match 略過
 
     # Persist turn (Phase 1) — 存 finalize 後答案
@@ -429,9 +437,17 @@ async def qa_stream(request: Request, question: str, session_id: str | None = No
                             # 3.5 偶發 TOO_MANY_TOOL_CALLS → 空答案；走既有 transient 重試泡泡，不落半截 turn
                             yield _sse("error", {"error_type": "incomplete", "message": "empty answer"})
                             return
+                        # stream(OpenAI) 模式：course_ids 來自 file_search results → 模糊比對，容許模型改寫課名
+                        # stream35(Gemini) 模式：retrieved_ids=None → 退回全 meta 完全比對（向後相容）
+                        _stream_retrieved_ids = (
+                            set(ev["data"]["course_ids"])
+                            if _QA_MODE == "stream"
+                            else None
+                        )
                         answer, followups, citations, no_match = finalize_qa_answer(
                             parsed["answer"], parsed["followup_suggestions"],
                             ev["data"]["course_ids"], meta,
+                            retrieved_ids=_stream_retrieved_ids,
                         )
                         # stream(OpenAI) 模式：OpenAI 吐純 markdown 無 JSON，followups 恆空；
                         # 兩段式補回：答案串完後快速呼叫 generate_followups（不帶 file_search）。

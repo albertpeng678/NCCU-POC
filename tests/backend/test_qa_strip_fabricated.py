@@ -197,3 +197,106 @@ def test_two_tables_first_fake_second_real():
     assert "前言" in cleaned
     assert "中間說明" in cleaned
     assert "結語" in cleaned
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# retrieved_ids 模糊比對測試（TDD — 先寫 RED，修完應 GREEN）
+# ═══════════════════════════════════════════════════════════════════════════
+
+# 額外 meta：包含帶行政前綴的課名（政大體育常見格式）
+_META_WITH_SPORT = {
+    **_META,
+    "002350001": {
+        "name": "體育[男女合班]—武術初級",
+        "department": "體育室",
+        "teacher": "武術老師",
+        "credits": 1,
+        "syllabus_url": "http://x/3",
+    },
+    "002350002": {
+        "name": "資料結構與演算法",
+        "department": "資訊科學系",
+        "teacher": "演算法老師",
+        "credits": 3,
+        "syllabus_url": "http://x/4",
+    },
+}
+
+
+# ── Case 11（RED→GREEN）：retrieved_ids 模式，模型改寫課名仍保留 ──
+def test_retrieved_ids_fuzzy_match_natural_name_kept():
+    """retrieved_ids={002350001}，表格寫「武術初級」（模型自然縮寫）→ 不被砍（n==0）。
+
+    「武術初級」 ⊂ 「體育[男女合班]—武術初級」→ 模糊命中 retrieved 課，應保留。
+    """
+    table = _make_table(
+        ["武術初級", "體育室", "武術基礎入門"],
+    )
+    answer = f"推薦課程：\n\n{table}\n\n加油！"
+    cleaned, n = strip_fabricated_courses(
+        answer, _META_WITH_SPORT, retrieved_ids={"002350001"}
+    )
+    assert n == 0, f"武術初級 應被保留（retrieved_ids 模糊命中），但 n_stripped={n}"
+    assert "武術初級" in cleaned
+
+
+# ── Case 12（RED→GREEN）：retrieved_ids 模式，完全沒檢索到的假課應被砍 ──
+def test_retrieved_ids_fully_fabricated_course_stripped():
+    """retrieved_ids={002350001}，表格含「量子魔法導論」（完全沒檢索到也不在 meta）→ 砍掉。"""
+    table = _make_table(
+        ["武術初級", "體育室", "武術基礎入門"],
+        ["量子魔法導論", "物理系", "神奇魔法"],
+    )
+    answer = f"推薦課程：\n\n{table}\n\n加油！"
+    cleaned, n = strip_fabricated_courses(
+        answer, _META_WITH_SPORT, retrieved_ids={"002350001"}
+    )
+    assert n == 1, f"量子魔法導論 應被砍，但 n_stripped={n}"
+    assert "量子魔法導論" not in cleaned
+    assert "武術初級" in cleaned
+
+
+# ── Case 13（向後相容）：retrieved_ids=None → 退回全 meta 完全比對邏輯 ──
+def test_retrieved_ids_none_falls_back_to_exact_match():
+    """retrieved_ids=None（不傳）→ 退回原「對全 meta 完全比對」邏輯；既有測試行為不變。
+
+    表格寫「武術初級」，retrieved_ids 未傳 → 完全比對全 meta 失敗（精確名含前綴）→ 被砍。
+    （這正是 None 退回舊邏輯的預期行為。）
+    """
+    table = _make_table(
+        ["武術初級", "體育室", "武術基礎入門"],
+    )
+    answer = f"推薦課程：\n\n{table}\n\n加油！"
+    # 不傳 retrieved_ids（預設 None）→ 退回舊邏輯
+    cleaned, n = strip_fabricated_courses(answer, _META_WITH_SPORT)
+    # 舊邏輯：「武術初級」不在 meta 精確名集合（精確名是「體育[男女合班]—武術初級」）→ 被砍
+    assert n == 1, "retrieved_ids=None 應退回舊邏輯：武術初級 不完全符合 meta 精確名 → 被砍"
+    assert "武術初級" not in cleaned
+
+
+# ── Case 14（retrieved_ids 模式，精確名也應命中）：retrieved_ids 帶精確課名 → 保留 ──
+def test_retrieved_ids_exact_name_still_kept():
+    """retrieved_ids={002350002}，表格寫精確課名「資料結構與演算法」→ 應保留（n==0）。"""
+    table = _make_table(
+        ["資料結構與演算法", "資訊科學系", "演算法基礎"],
+    )
+    answer = f"推薦課程：\n\n{table}"
+    cleaned, n = strip_fabricated_courses(
+        answer, _META_WITH_SPORT, retrieved_ids={"002350002"}
+    )
+    assert n == 0, "精確課名也應在 retrieved_ids 模式下命中（exact match 是 fuzzy 的子集）"
+    assert "資料結構與演算法" in cleaned
+
+
+# ── Case 15（retrieved_ids 為空集合）：空 set → 所有資料列都砍 ──
+def test_retrieved_ids_empty_set_strips_all():
+    """retrieved_ids=set()（空集合，無任何檢索結果）→ 所有資料列都被砍（n>0）。"""
+    table = _make_table(
+        ["資料探勘", "資管系", "機器學習"],
+    )
+    answer = f"推薦課程：\n\n{table}"
+    cleaned, n = strip_fabricated_courses(
+        answer, _META_WITH_SPORT, retrieved_ids=set()
+    )
+    assert n == 1, "retrieved_ids=set() 空集合應砍掉所有資料列"
+    assert "資料探勘" not in cleaned
