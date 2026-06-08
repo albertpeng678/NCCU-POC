@@ -32,18 +32,30 @@ def filename_for(course_id: str) -> str:
     return f"{course_id}.txt"
 
 
-def inject_name_markers(doc_text: str, name: str, course_id: str, every: int = 2500) -> str:
-    """每隔 ~every 字注入一行「課程名稱」marker。
-    根治：長課綱被 OpenAI 切成多 chunk 時，中段 chunk 原本無課名 header → 模型看不到課名
-    → 名字不全/捏造/誤砍。注入後不論切在哪，每個 chunk 區段內都有課名可照抄。
+def build_marker(rec: dict, meta: dict) -> str:
+    """建完整 course header marker：課名+代號+系所+老師（從 courses_meta 權威取，缺則退 doc_text）。"""
+    cid = rec["course_id"]
+    m = meta.get(cid, {})
+    name = m.get("name")
+    if not name:
+        nm = re.search(r"課程名稱[:：]\s*([^\n]+)", rec.get("doc_text", ""))
+        name = nm.group(1).strip() if nm else cid
+    return (f"課程名稱：{name}　課程代號：{cid}"
+            f"　開課系所：{m.get('department', '')}　授課教師：{m.get('teacher', '')}")
+
+
+def inject_markers(doc_text: str, marker: str, every: int = 2500) -> str:
+    """每隔 ~every 字注入完整 header marker。
+    根治：長課綱被 OpenAI 切成多 chunk 時，中段 chunk 原本無 header → 模型看不到課名/系所/老師
+    → 名字不全/系所「未顯示於目前片段」/捏造/誤砍。注入後不論切在哪，每個 chunk 區段內都有完整 header。
     """
-    marker = f"\n課程名稱：{name}　課程代號：{course_id}\n"
+    m = "\n" + marker + "\n"
     if len(doc_text) <= every:
-        return marker.lstrip("\n") + doc_text if not doc_text.startswith("課程") else doc_text
-    parts = [marker]
+        return m.lstrip("\n") + doc_text
+    parts = [m]
     for i in range(0, len(doc_text), every):
         parts.append(doc_text[i:i + every])
-        parts.append(marker)
+        parts.append(m)
     return "".join(parts)
 
 
@@ -104,7 +116,9 @@ async def main() -> None:
         print(f"[build] Vector store created: {vs_id}")
 
     docs = load_docs(docs_path)
-    print(f"[build] Loaded {len(docs)} docs from {docs_path}")
+    _meta_path = Path(__file__).parent.parent / "backend" / "courses_meta.json"
+    _meta = json.load(open(_meta_path, encoding="utf-8"))
+    print(f"[build] Loaded {len(docs)} docs + {len(_meta)} meta from {docs_path}")
 
     # 冪等：列出既有檔名
     existing_ids: set[str] = set()
@@ -127,9 +141,7 @@ async def main() -> None:
         cid = rec["course_id"]
         if cid in existing_ids:
             return
-        _nm = re.search(r"課程名稱[:：]\s*([^\n]+)", rec["doc_text"])
-        _name = _nm.group(1).strip() if _nm else cid
-        doc_bytes = inject_name_markers(rec["doc_text"], _name, cid).encode("utf-8")
+        doc_bytes = inject_markers(rec["doc_text"], build_marker(rec, _meta)).encode("utf-8")
         try:
             async with sem:
                 file_obj = await client.files.create(
