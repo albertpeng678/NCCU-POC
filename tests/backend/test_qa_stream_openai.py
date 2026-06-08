@@ -52,10 +52,26 @@ async def _aiter(items):
         yield it
 
 
+class _AsyncStreamCM:
+    """Wraps an async iterable as an async context manager (mirrors OpenAI AsyncStream)."""
+
+    def __init__(self, items):
+        self._items = items
+
+    def __aiter__(self):
+        return _aiter(self._items).__aiter__()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        pass
+
+
 def _fake_openai_client(events):
-    """回傳一個 AsyncOpenAI-like 物件，responses.create 回 async iterable。"""
+    """回傳一個 AsyncOpenAI-like 物件，responses.create 回 async context manager + iterable。"""
     async def _create(**kwargs):
-        return _aiter(events)
+        return _AsyncStreamCM(events)
 
     responses = SimpleNamespace(create=_create)
     return SimpleNamespace(responses=responses)
@@ -171,7 +187,7 @@ async def test_stream_multiturn_history_included_in_input():
 
     async def _create(**kwargs):
         captured.update(kwargs)
-        return _aiter([_text_delta("ok"), _output_item_done("message")])
+        return _AsyncStreamCM([_text_delta("ok"), _output_item_done("message")])
 
     client = SimpleNamespace(responses=SimpleNamespace(create=_create))
 

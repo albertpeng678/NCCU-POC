@@ -28,7 +28,7 @@ from backend.judge import evaluate_recommendation
 from backend.db import init_pool, close_pool, get_pool
 from backend.observability import before_send as sentry_before_send, stream_traces_sampler
 from backend.qa import (
-    answer_question, answer_question_structured, finalize_qa_answer,
+    answer_question_structured, finalize_qa_answer,
     extract_citations, stream_answer, stream_answer_structured,
     parse_qa_response, classify_qa_error, is_incomplete_answer,
     generate_followups, condense_question,
@@ -299,8 +299,14 @@ async def qa(req: QaRequest, background_tasks: BackgroundTasks):
             _gen = stream_answer if _QA_MODE == "stream" else stream_answer_structured
             _gen_client = _openai_client if _QA_MODE == "stream" else _client
             _gen_store = _VS_ID if _QA_MODE == "stream" else _STORE_NAME
+            # condense-then-search（與 GET /qa/stream 對齊）：stream(OpenAI) 模式且有歷史時，
+            # 把簡短追問改寫成可獨立檢索的問題；持久化仍存原始 question（req.question）。
+            if _QA_MODE == "stream" and history:
+                q_for_search = await condense_question(_openai_client, req.question, history)
+            else:
+                q_for_search = req.question
             answer_text, course_ids = "", []
-            async for ev in _gen(_gen_client, _gen_store, req.question, history):
+            async for ev in _gen(_gen_client, _gen_store, q_for_search, history):
                 if ev["event"] == "done":
                     course_ids = ev["data"].get("course_ids", []) or []
                     answer_text = ev["data"].get("answer_text", "") or ""

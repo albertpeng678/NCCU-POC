@@ -39,9 +39,25 @@ async def _aiter(items):
         yield it
 
 
+class _AsyncStreamCM:
+    """Mirrors OpenAI AsyncStream: supports async with and async for."""
+
+    def __init__(self, items):
+        self._items = items
+
+    def __aiter__(self):
+        return _aiter(self._items).__aiter__()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        pass
+
+
 def _fake_openai_client(events):
     async def _create(**kwargs):
-        return _aiter(events)
+        return _AsyncStreamCM(events)
     return SimpleNamespace(responses=SimpleNamespace(create=_create))
 
 

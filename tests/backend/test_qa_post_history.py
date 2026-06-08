@@ -37,12 +37,13 @@ def _boom_interactions(*a, **k):
 
 
 def test_post_qa_stream_mode_uses_history_not_interactions(client):
-    """stream 模式 POST /qa：走 stream_answer（history），絕不呼叫 answer_question（interactions）。"""
+    """stream 模式 POST /qa：走 stream_answer（history），絕不呼叫 answer_question（interactions）。
+    answer_question 已從 main.py 的 import 移除（Fix 2），此測試確認 stream_answer 正常使用。
+    """
     meta = {"000211012": {"name": "政治學", "department": "政治系", "teacher": "x",
                           "credits": 3.0, "syllabus_url": "#"}}
     with patch("backend.main._QA_MODE", "stream"), \
          patch("backend.main.get_pool", return_value=None), \
-         patch("backend.main.answer_question", side_effect=_boom_interactions), \
          patch("backend.main.stream_answer", _fake_stream), \
          patch("backend.main.load_courses_meta", return_value=meta):
         resp = client.post("/qa", json={"question": "問政治學"})
@@ -84,12 +85,13 @@ def test_post_qa_persists_finalized_answer_not_prefinalize(client):
 
 
 def test_post_qa_stream_mode_multi_turn_no_invalid_prev_id(client):
-    """第二輪（session 的 last_interaction_id 為 ""）也不該把空 prev id 傳給 interactions。"""
+    """第二輪（session 的 last_interaction_id 為 ""）也不該把空 prev id 傳給 interactions。
+    answer_question 已從 main.py import 移除（Fix 2），此測試確認多輪仍正常遞增 turn_number。
+    """
     meta = {"000211012": {"name": "政治學", "department": "政治系", "teacher": "x",
                           "credits": 3.0, "syllabus_url": "#"}}
     with patch("backend.main._QA_MODE", "stream"), \
          patch("backend.main.get_pool", return_value=None), \
-         patch("backend.main.answer_question", side_effect=_boom_interactions), \
          patch("backend.main.stream_answer", _fake_stream), \
          patch("backend.main.load_courses_meta", return_value=meta):
         r1 = client.post("/qa", json={"question": "第一輪"})
@@ -97,3 +99,86 @@ def test_post_qa_stream_mode_multi_turn_no_invalid_prev_id(client):
         r2 = client.post("/qa", json={"question": "第二輪", "session_id": sid})
     assert r2.status_code == 200, r2.text
     assert r2.json()["turn_number"] == 2
+
+
+# ─── Fix 3：POST /qa stream 模式 condense ────────────────────────────────────
+
+def test_post_qa_stream_with_history_calls_condense_and_stores_original(client):
+    """POST /qa stream 模式 + history 非空 → condense 被呼叫；
+    stream_answer 收到改寫 query；insert_turn 存原始 question。
+    """
+    from unittest.mock import AsyncMock
+
+    condensed = "想往金融領域發展的PM要修什麼課"
+    original = "那金融呢"
+
+    captured_stream_q = []
+    captured_insert_q = []
+
+    async def _fake_stream_cap(_client, _store, question, history=None):
+        captured_stream_q.append(question)
+        yield {"event": "token", "data": {"text": "ok"}}
+        yield {"event": "done", "data": {
+            "course_ids": [],
+            "answer_text": "**政治學**很重要。",
+        }}
+
+    async def _fake_insert(pool, sid, tn, question, result, error):
+        captured_insert_q.append(question)
+        return "turn-1"
+
+    async def _fake_condense(_client, question, history):
+        return condensed
+
+    meta = {}
+
+    with patch("backend.main._QA_MODE", "stream"), \
+         patch("backend.main.get_pool", return_value=None), \
+         patch("backend.main.stream_answer", _fake_stream_cap), \
+         patch("backend.main.condense_question", side_effect=_fake_condense), \
+         patch("backend.main.insert_turn", side_effect=_fake_insert), \
+         patch("backend.main.load_courses_meta", return_value=meta), \
+         patch("backend.main.get_session_turns", new=AsyncMock(return_value=[
+             {"question": "想成為PM", "answer": "PM要修…", "success": True}
+         ])), \
+         patch("backend.main.get_session", new=AsyncMock(return_value={"turn_count": 1})):
+        resp = client.post("/qa", json={"question": original, "session_id": "fake-session"})
+
+    assert resp.status_code == 200, resp.text
+    # stream_answer 應收到改寫 query
+    assert captured_stream_q, "stream_answer 應被呼叫"
+    assert captured_stream_q[0] == condensed, \
+        f"stream_answer 應收到改寫 query {condensed!r}，實際收到 {captured_stream_q[0]!r}"
+    # insert_turn 應存原始 question
+    assert captured_insert_q, "insert_turn 應被呼叫"
+    assert captured_insert_q[0] == original, \
+        f"insert_turn 應存原始 question {original!r}，實際存 {captured_insert_q[0]!r}"
+
+
+def test_post_qa_stream_no_history_skips_condense(client):
+    """POST /qa stream 模式 + 無歷史（第一輪）→ condense 不被呼叫，原 question 直接傳給 stream_answer。"""
+    original = "有什麼資料科學課"
+    captured_stream_q = []
+    condense_called = []
+
+    async def _fake_stream_cap(_client, _store, question, history=None):
+        captured_stream_q.append(question)
+        yield {"event": "done", "data": {
+            "course_ids": [],
+            "answer_text": "**資料科學**課程很多。",
+        }}
+
+    async def _fake_condense(_client, question, history):
+        condense_called.append(True)
+        return "condensed"
+
+    with patch("backend.main._QA_MODE", "stream"), \
+         patch("backend.main.get_pool", return_value=None), \
+         patch("backend.main.stream_answer", _fake_stream_cap), \
+         patch("backend.main.condense_question", side_effect=_fake_condense), \
+         patch("backend.main.load_courses_meta", return_value={}):
+        resp = client.post("/qa", json={"question": original})
+
+    assert resp.status_code == 200, resp.text
+    assert captured_stream_q[0] == original, "無歷史時應直接傳原 question"
+    assert not condense_called, "無歷史時不應呼叫 condense"

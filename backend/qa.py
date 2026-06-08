@@ -15,6 +15,7 @@ from google import genai
 from google.genai import types
 from google.genai import errors as genai_errors
 from google.genai._interactions.types.tool_param import FileSearch
+from openai import RateLimitError as _OAIRateLimit, APITimeoutError as _OAITimeout, APIStatusError as _OAIStatus
 
 
 # ===== Q&A 格式 / 防幻覺 輔助（純函式，可單元測試）=====
@@ -146,6 +147,12 @@ def classify_qa_error(exc) -> str:
         return "unknown"
     if isinstance(exc, genai_errors.APIError):
         return "rate_limited" if getattr(exc, "code", None) in (429, 503) else "unknown"
+    if isinstance(exc, _OAIRateLimit):
+        return "rate_limited"
+    if isinstance(exc, _OAITimeout):
+        return "timeout"
+    if isinstance(exc, _OAIStatus):
+        return "rate_limited" if getattr(exc, "status_code", None) in (429, 500, 502, 503, 504) else "unknown"
     if isinstance(exc, (httpx.TimeoutException, asyncio.TimeoutError)):
         return "timeout"
     msg = str(exc).lower()
@@ -1097,7 +1104,7 @@ async def stream_answer(
     course_ids: list[str] = []
     suppressing = False   # 串流狀態機：是否在 citation 標記內
 
-    stream = await client.responses.create(
+    async with await client.responses.create(
         model=OPENAI_MODEL,
         input=input_messages,
         tools=[
@@ -1110,34 +1117,33 @@ async def stream_answer(
         ],
         include=["file_search_call.results"],
         stream=True,
-    )
-
-    async for event in stream:
-        # Duck-type matching:
-        # - text delta: has a non-None .delta string attribute and no .item
-        # - output item done with file_search results: has .item with .type=="file_search_call"
-        delta = getattr(event, "delta", None)
-        if delta is not None and isinstance(delta, str):
-            # ResponseTextDeltaEvent — 逐字元過濾私有區 citation 標記
-            if delta:
-                visible = []
-                for ch in delta:
-                    if ch == "":          # 標記開始 → 進入 suppressing
-                        suppressing = True
-                    elif ch == "":        # 標記結束 → 離開 suppressing
-                        suppressing = False
-                    elif not suppressing:
-                        visible.append(ch)
-                clean = "".join(visible)
-                if clean:
-                    raw += clean
-                    yield {"event": "token", "data": {"text": clean}}
-        else:
-            item = getattr(event, "item", None)
-            if item is not None and getattr(item, "type", None) == "file_search_call":
-                # ResponseOutputItemDoneEvent (file_search_call)
-                results = getattr(item, "results", None) or []
-                course_ids.extend(course_ids_from_search_results(results))
+    ) as stream:
+        async for event in stream:
+            # Duck-type matching:
+            # - text delta: has a non-None .delta string attribute and no .item
+            # - output item done with file_search results: has .item with .type=="file_search_call"
+            delta = getattr(event, "delta", None)
+            if delta is not None and isinstance(delta, str):
+                # ResponseTextDeltaEvent — 逐字元過濾私有區 citation 標記
+                if delta:
+                    visible = []
+                    for ch in delta:
+                        if ch == "":          # 標記開始 → 進入 suppressing
+                            suppressing = True
+                        elif ch == "":        # 標記結束 → 離開 suppressing
+                            suppressing = False
+                        elif not suppressing:
+                            visible.append(ch)
+                    clean = "".join(visible)
+                    if clean:
+                        raw += clean
+                        yield {"event": "token", "data": {"text": clean}}
+            else:
+                item = getattr(event, "item", None)
+                if item is not None and getattr(item, "type", None) == "file_search_call":
+                    # ResponseOutputItemDoneEvent (file_search_call)
+                    results = getattr(item, "results", None) or []
+                    course_ids.extend(course_ids_from_search_results(results))
 
     # Deduplicate course_ids preserving order
     course_ids = list(dict.fromkeys(course_ids))
