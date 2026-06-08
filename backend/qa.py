@@ -115,6 +115,7 @@ _SYSTEM_INSTRUCTION = """\
 - 先寫 3-5 句**充實具體**的說明：點出課程涵蓋的內容、為何適合該方向、以及難度或先修（若知道）。要有料、不空泛，避免只丟一兩句。
 - 粗體要克制：整段只把「最關鍵的課程名稱」與「1-2 個核心能力關鍵詞」用 **粗體**。不要每個名詞、每個系所都加粗——過度粗體會讓重點失去強調效果。
 - 當你在「列出/比較多門具體課程」時，務必接著輸出一個 Markdown 表格；欄位固定為：課程名稱 | 系所 | 重點；表格內「重點」欄要寫得具體（一句帶到學什麼/特色），只有課程名稱可視需要加粗，系所與重點用一般字；分隔線每欄只用三個連字號（---）；表格最多 6 列，不要為對齊補空白。
+- 表格與內文只能列出你『實際從 File Search 檢索到』的課程；絕對不要用自己的知識補充、推測或湊任何沒檢索到的課名。寧可少列幾門，也不要列出檢索結果以外的課。
 - 純概念題或只談一門課時，不必硬塞表格，用文字說明即可（仍只在最關鍵處用粗體）。
 - 最後用一句話總結或給具體建議。
 
@@ -338,6 +339,123 @@ def extract_citations_by_name(answer: str, meta: dict, limit: int = 6) -> list[d
     return result
 
 
+_ORPHAN_TABLE_RE = re.compile(
+    r"^\| 課程名稱[^\n]*\|\n\|[\s\-:|]+\|[\s\-:|]*\|?[\s\-:|]*\|?\s*$",
+    re.MULTILINE,
+)
+_SEPARATOR_ROW_RE = re.compile(r"^\|[\s\-:|]+\|?$")
+
+
+def strip_fabricated_courses(answer: str, meta: dict) -> tuple[str, int]:
+    """移除 markdown 表格中『課名不在知識庫 meta』的資料列（防 3.5 在表格腦補假課）。
+
+    回 (cleaned_answer, n_stripped)。只動表格資料列：表頭(課程名稱)、分隔線(---)、
+    非表格文字一律不動。若資料列全被剝光，連同孤兒表頭+分隔線一併移除（避免留空表格）。
+    課名比對：去 ** 粗體與前後空白後，需『完全等於』meta 某課的 name 才算真課。
+    """
+    # 建立真課名集合
+    real_names: set[str] = {
+        (m or {}).get("name", "")
+        for m in meta.values()
+    }
+    real_names.discard("")
+
+    lines = answer.split("\n")
+    out_lines: list[str] = []
+    n_stripped = 0
+
+    # 追蹤每個「表格區段」：(表頭行index, 分隔線行index, 資料列indices)
+    # 先做一趟標記，再後處理孤兒表格
+    # 簡單狀態機：逐行掃描
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped_line = line.strip()
+
+        # 判定是否為表格行（strip 後以 | 開頭且至少 2 個 |）
+        if stripped_line.startswith("|") and stripped_line.count("|") >= 2:
+            # 是分隔線行？
+            if _SEPARATOR_ROW_RE.match(stripped_line):
+                out_lines.append(line)
+                i += 1
+                continue
+
+            # 取第一欄（課名欄）
+            cells = [c.strip() for c in stripped_line.strip("|").split("|")]
+            first_cell = cells[0] if cells else ""
+            # 去粗體
+            course_name = re.sub(r"\*\*(.+?)\*\*", r"\1", first_cell).strip()
+
+            # 表頭行？（課名欄是「課程名稱」文字）
+            if course_name == "課程名稱":
+                out_lines.append(line)
+                i += 1
+                continue
+
+            # 課名為空 → 保留（可能是奇怪的非課名表格）
+            if not course_name:
+                out_lines.append(line)
+                i += 1
+                continue
+
+            # 課名不在 meta → 假課，剝除
+            if course_name not in real_names:
+                n_stripped += 1
+                i += 1
+                continue
+
+            # 真課 → 保留
+            out_lines.append(line)
+            i += 1
+            continue
+
+        # 非表格行，直接保留
+        out_lines.append(line)
+        i += 1
+
+    # 後處理：移除孤兒表格（表頭列緊接分隔線列，但分隔線列之後不再有資料列）
+    cleaned_lines = _remove_orphan_table_headers(out_lines)
+    return "\n".join(cleaned_lines), n_stripped
+
+
+def _remove_orphan_table_headers(lines: list[str]) -> list[str]:
+    """移除「表頭列 + 分隔線列，但其後無資料列」的孤兒表格段。"""
+    result: list[str] = []
+    n = len(lines)
+    i = 0
+    while i < n:
+        stripped = lines[i].strip()
+        # 找表頭列
+        if (
+            stripped.startswith("|")
+            and stripped.count("|") >= 2
+            and not _SEPARATOR_ROW_RE.match(stripped)
+        ):
+            cells = [c.strip() for c in stripped.strip("|").split("|")]
+            first = cells[0] if cells else ""
+            # 去粗體後是「課程名稱」表頭
+            if re.sub(r"\*\*(.+?)\*\*", r"\1", first).strip() == "課程名稱":
+                # 下一行是否為分隔線？
+                if i + 1 < n and _SEPARATOR_ROW_RE.match(lines[i + 1].strip()):
+                    # 下下行是否為資料列（表格行且非分隔線）？
+                    next_after_sep = i + 2
+                    if next_after_sep >= n or not _is_table_data_row(lines[next_after_sep]):
+                        # 孤兒：表頭 + 分隔線後無資料 → 跳過這兩行
+                        i += 2
+                        continue
+        result.append(lines[i])
+        i += 1
+    return result
+
+
+def _is_table_data_row(line: str) -> bool:
+    """判定是否為表格資料列（非空、以 | 開頭、有 2+ 個 |、不是分隔線）。"""
+    s = line.strip()
+    if not s.startswith("|") or s.count("|") < 2:
+        return False
+    return not _SEPARATOR_ROW_RE.match(s)
+
+
 def finalize_qa_answer(answer: str, followups: list, course_ids: list, meta: dict):
     """問答收尾（POST /qa、/qa/stream replay、stream 三處共用，避免邏輯三份且不一致）。
 
@@ -350,9 +468,14 @@ def finalize_qa_answer(answer: str, followups: list, course_ids: list, meta: dic
         citations = extract_citations_by_name(answer, meta)
     no_match = False
     if should_override_no_results(answer, citations):
+        # 空 grounding + 答案像列課程 → 防幻覺覆寫（整塊替換，剝除無意義）
         answer = NO_RESULTS_MESSAGE
         followups = []
         no_match = True
+    else:
+        # 有 grounding（部分真課）→ 確定性剝除表格中不在 meta 的假課列
+        # citations 來自 grounding 本就是真課、不受剝除影響
+        answer, _n_strip = strip_fabricated_courses(answer, meta)
     return answer, followups, citations, no_match
 
 
