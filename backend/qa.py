@@ -718,3 +718,54 @@ async def stream_answer(
         "course_ids": course_ids,
         "answer_text": raw,
     }}
+
+
+async def stream_answer_structured(
+    client: genai.Client,
+    store_name: str,
+    question: str,
+    history: Optional[list] = None,
+    model: str = "gemini-3.5-flash",
+):
+    """3.5 結構化串流：file_search + response_schema + streaming（thinking_level=low）。
+
+    串流 chunk 是「合法部分 JSON」；用 _partial_answer 增量抽 answer 值 yield token（不串 JSON 鷹架）。
+    done 帶 grounding course_ids（來自 grounding_metadata，3.5 穩定）+ 原始 JSON 全文 answer_text。
+    citations / 防幻覺覆寫由呼叫端 finalize_qa_answer 處理（與 stream_answer 同合約）。
+    ⚠️ 不可加 include_thoughts；thinking_level=low 已實測不掉 grounding（3.5 GA，非 preview 的 nil bug）。
+    """
+    contents = build_qa_contents(question, history, template=_PROMPT_TEMPLATE_STRUCTURED)
+    config = types.GenerateContentConfig(
+        system_instruction=_SYSTEM_INSTRUCTION,
+        temperature=0.2,
+        top_p=0.95,
+        max_output_tokens=4096,
+        response_mime_type="application/json",
+        response_schema=_QA_RESPONSE_SCHEMA,
+        thinking_config=types.ThinkingConfig(thinking_level="low"),
+        tools=[
+            types.Tool(
+                file_search=types.FileSearch(
+                    file_search_store_names=[store_name],
+                    top_k=5,
+                )
+            )
+        ],
+    )
+    raw = ""
+    emitted = 0
+    course_ids: list[str] = []
+    stream = await client.aio.models.generate_content_stream(
+        model=model, contents=contents, config=config,
+    )
+    async for chunk in stream:
+        text = _visible_text_from_chunk(chunk)
+        if text:
+            raw += text
+            ans = _partial_answer(raw)
+            if len(ans) > emitted:
+                yield {"event": "token", "data": {"text": ans[emitted:]}}
+                emitted = len(ans)
+        course_ids.extend(_grounding_course_ids_from_chunk(chunk))
+    course_ids = list(dict.fromkeys(course_ids))
+    yield {"event": "done", "data": {"course_ids": course_ids, "answer_text": raw}}
