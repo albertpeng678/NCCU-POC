@@ -58,3 +58,33 @@ def course_ids_from_annotations(annotations: list[Any]) -> list[str]:
             seen.add(course_id)
             result.append(course_id)
     return result
+
+
+def course_ids_from_search_results(results: list[Any]) -> list[str]:
+    """Extract course_ids from file_search_call.results (Responses API with include=[...]).
+
+    Each result may have:
+    - .attributes (dict) with key "course_id"  ← canonical, used when available
+    - .filename like "000211012.txt"             ← fallback, strip ".txt"
+
+    Deduplicates while preserving order (by score, highest first as returned by API).
+    """
+    seen: set[str] = set()
+    result_ids: list[str] = []
+    for r in results or []:
+        # Try canonical attributes.course_id first
+        attrs = getattr(r, "attributes", None)
+        if isinstance(attrs, dict):
+            cid = attrs.get("course_id")
+            if cid and cid not in seen:
+                seen.add(cid)
+                result_ids.append(cid)
+                continue
+        # Fallback: strip ".txt" from filename
+        filename = getattr(r, "filename", None)
+        if filename:
+            cid = filename.removesuffix(".txt")
+            if cid and cid not in seen:
+                seen.add(cid)
+                result_ids.append(cid)
+    return result_ids

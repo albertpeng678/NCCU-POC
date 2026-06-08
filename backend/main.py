@@ -296,8 +296,10 @@ async def qa(req: QaRequest, background_tasks: BackgroundTasks):
             # stream/stream35 模式 POST（前端 SSE 斷線時的 fallback）：drain 與 /qa/stream 同一條 history-based
             # 生成路徑成完整答案 → 兩路徑一致、零 interactions 依賴。
             _gen = stream_answer if _QA_MODE == "stream" else stream_answer_structured
+            _gen_client = _openai_client if _QA_MODE == "stream" else _client
+            _gen_store = _VS_ID if _QA_MODE == "stream" else _STORE_NAME
             answer_text, course_ids = "", []
-            async for ev in _gen(_client, _STORE_NAME, req.question, history):
+            async for ev in _gen(_gen_client, _gen_store, req.question, history):
                 if ev["event"] == "done":
                     course_ids = ev["data"].get("course_ids", []) or []
                     answer_text = ev["data"].get("answer_text", "") or ""
@@ -406,7 +408,9 @@ async def qa_stream(request: Request, question: str, session_id: str | None = No
                 })
             else:
                 _gen = stream_answer if _QA_MODE == "stream" else stream_answer_structured
-                async for ev in _gen(_client, _STORE_NAME, question, history):
+                _gen_client = _openai_client if _QA_MODE == "stream" else _client
+                _gen_store = _VS_ID if _QA_MODE == "stream" else _STORE_NAME
+                async for ev in _gen(_gen_client, _gen_store, question, history):
                     if await request.is_disconnected():
                         return  # 前端已關閉 → 中止
                     if ev["event"] == "token":

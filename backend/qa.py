@@ -821,83 +821,86 @@ def _partial_answer(raw: str) -> str:
     return ""
 
 
+QA_SCORE_THRESHOLD = 0.0  # file_search ranking_options score_threshold（0.0 = 不過濾）
+
+
+def _build_openai_input(question: str, history: Optional[list] = None) -> list:
+    """組 OpenAI Responses API 的 input 清單：system + 多輪歷史 + 本輪問題。
+
+    格式：[{"role":"system","content":...}, {"role":"user","content":...}, ...]
+    多輪歷史取最近 _MAX_HISTORY_TURNS 輪；歷史 assistant 角色用 "assistant"。
+    """
+    messages: list = [{"role": "system", "content": _SYSTEM_INSTRUCTION}]
+    if history:
+        recent = history[-_MAX_HISTORY_TURNS:]
+        for turn in recent:
+            q = turn.get("question") or ""
+            a = turn.get("answer") or ""
+            messages.append({"role": "user", "content": q})
+            messages.append({"role": "assistant", "content": a})
+    messages.append({"role": "user", "content": question})
+    return messages
+
+
 async def stream_answer(
-    client: genai.Client,
-    store_name: str,
+    client,
+    vs_id: str,
     question: str,
     history: Optional[list] = None,
 ):
-    """串流回答課程問題（generate_content_stream + file_search）。
+    """串流回答課程問題（OpenAI Responses API + file_search）。
 
-    逐 chunk yield {"event":"token","data":{"text":...}}；
+    逐 ResponseTextDeltaEvent → yield {"event":"token","data":{"text":...}}；
+    ResponseOutputItemDoneEvent(file_search_call) → 收集 course_ids（via results）；
     串流末 yield {"event":"done","data":{"course_ids":[...], "answer_text": 累積全文}}。
-    多輪歷史由 build_qa_contents 帶入 contents（取代 interactions 的 previous_interaction_id）。
+
+    多輪歷史由 _build_openai_input 帶入 input。
     citations join / 防幻覺覆寫 / session 持久化由呼叫端（main.py）處理。
+    OpenAI 模型不外洩 reasoning → 不需 thought 過濾，token 原樣透傳。
     """
-    contents = build_qa_contents(question, history)
-    config = types.GenerateContentConfig(
-        system_instruction=_SYSTEM_INSTRUCTION,
-        temperature=0.2,
-        top_p=0.95,
-        max_output_tokens=4096,   # 2048 在「prose+表格+總結」長答案易截斷（thinking 也吃預算）
+    from backend.retrieval_openai import course_ids_from_search_results
+    from backend.recommend import OPENAI_MODEL
+
+    input_messages = _build_openai_input(question, history)
+
+    raw = ""           # 累積所有 text delta
+    course_ids: list[str] = []
+
+    stream = await client.responses.create(
+        model=OPENAI_MODEL,
+        input=input_messages,
         tools=[
-            types.Tool(
-                file_search=types.FileSearch(
-                    file_search_store_names=[store_name],
-                    top_k=5,   # 明確固定檢索 5 筆 → 參考課綱穩定 ~5 門（不設則浮動，曾實測吐 14 筆）
-                )
-            )
+            {
+                "type": "file_search",
+                "vector_store_ids": [vs_id],
+                "max_num_results": 5,
+                "ranking_options": {"score_threshold": QA_SCORE_THRESHOLD},
+            }
         ],
+        include=["file_search_call.results"],
+        stream=True,
     )
 
-    chunks: list = []
-    raw = ""             # 累積原始文字
-    emitted = 0          # 已吐出的乾淨字元數
-    mode = None          # "prose" | "json"（首段非空白字判定一次）
-    fence_done = False
-    stream = await client.aio.models.generate_content_stream(
-        model="gemini-2.5-flash",
-        contents=contents,
-        config=config,
-    )
-    async for chunk in stream:
-        chunks.append(chunk)
-        text = _visible_text_from_chunk(chunk)   # 只取非 thought part
-        if not text:
-            continue
-        raw += text
-        if mode is None:
-            s = raw.lstrip()
-            if not s:
-                continue
-            mode = "json" if s[0] == "{" else "prose"
-        if mode == "json":
-            # JSON-first：增量抽乾淨 answer 值，絕不串 raw JSON 鷹架
-            ans = _partial_answer(raw)
-            if len(ans) > emitted:
-                yield {"event": "token", "data": {"text": ans[emitted:]}}
-                emitted = len(ans)
+    async for event in stream:
+        # Duck-type matching:
+        # - text delta: has a non-None .delta string attribute and no .item
+        # - output item done with file_search results: has .item with .type=="file_search_call"
+        delta = getattr(event, "delta", None)
+        if delta is not None and isinstance(delta, str):
+            # ResponseTextDeltaEvent
+            if delta:
+                raw += delta
+                yield {"event": "token", "data": {"text": delta}}
         else:
-            # 常態 prose-then-fence：串 ``` 之前的乾淨 prose
-            if fence_done:
-                continue
-            idx = raw.find("```")
-            if idx == -1:
-                safe = max(emitted, len(raw) - 2)   # 留尾端 2 字緩衝，避免吐半截 ``
-                if safe > emitted:
-                    yield {"event": "token", "data": {"text": raw[emitted:safe]}}
-                    emitted = safe
-            else:
-                if idx > emitted:
-                    yield {"event": "token", "data": {"text": raw[emitted:idx]}}
-                emitted = idx
-                fence_done = True
+            item = getattr(event, "item", None)
+            if item is not None and getattr(item, "type", None) == "file_search_call":
+                # ResponseOutputItemDoneEvent (file_search_call)
+                results = getattr(item, "results", None) or []
+                course_ids.extend(course_ids_from_search_results(results))
 
-    # prose 模式且全程無 fence → 補吐保留的尾端緩衝
-    if mode == "prose" and not fence_done and emitted < len(raw):
-        yield {"event": "token", "data": {"text": raw[emitted:]}}
+    # Deduplicate course_ids preserving order
+    course_ids = list(dict.fromkeys(course_ids))
 
-    course_ids = extract_course_ids_from_chunks(chunks)
     yield {"event": "done", "data": {
         "course_ids": course_ids,
         "answer_text": raw,

@@ -1,54 +1,44 @@
 # tests/backend/test_qa_stream_jsonfirst.py
-"""stream_answer：模型 JSON-first（沒寫 prose 直接吐 JSON）時，串流不得漏 raw JSON 鷹架。"""
+"""stream_answer（OpenAI Responses API）：token 原樣透傳，無 JSON 包裝守門，無 fence 截斷。
+
+Phase 2 注：Gemini stream_answer 做 JSON-first/prose-then-fence 兩模式守門（避免 JSON 鷹架洩出）。
+OpenAI Responses API 模型直接吐 Markdown，不包 JSON，故無需守門：
+- token 原樣透傳（含表格、粗體、各種 Markdown）
+- answer_text = 累積全文（供 finalize_qa_answer 做後處理）
+"""
 import asyncio
+from types import SimpleNamespace
+
 from backend import qa
 
 
-class _Chunk:
-    def __init__(self, text):
-        self.text = text
-        self.candidates = []
+def _text_delta(delta: str):
+    return SimpleNamespace(delta=delta)
 
 
-class _AStream:
-    def __init__(self, texts):
-        self._texts = texts
-
-    def __aiter__(self):
-        self._it = iter(self._texts)
-        return self
-
-    async def __anext__(self):
-        try:
-            return _Chunk(next(self._it))
-        except StopIteration:
-            raise StopAsyncIteration
+def _output_item_done_file_search(results=None):
+    item = SimpleNamespace(type="file_search_call", results=results or [])
+    return SimpleNamespace(item=item)
 
 
-class _AioModels:
-    def __init__(self, texts):
-        self._texts = texts
-
-    async def generate_content_stream(self, **kwargs):
-        return _AStream(self._texts)
+def _other():
+    return SimpleNamespace()
 
 
-class _Aio:
-    def __init__(self, texts):
-        self.models = _AioModels(texts)
+async def _aiter(items):
+    for it in items:
+        yield it
 
 
-class _Client:
-    def __init__(self, texts):
-        self.aio = _Aio(texts)
+def _collect(events):
+    async def _create(**kwargs):
+        return _aiter(events)
 
-
-def _collect(texts):
-    client = _Client(texts)
+    client = SimpleNamespace(responses=SimpleNamespace(create=_create))
 
     async def run():
         toks, done = [], None
-        async for ev in qa.stream_answer(client, "stores/x", "問題", None):
+        async for ev in qa.stream_answer(client, "vs_123", "問題", None):
             if ev["event"] == "token":
                 toks.append(ev["data"]["text"])
             elif ev["event"] == "done":
@@ -58,17 +48,27 @@ def _collect(texts):
     return asyncio.run(run())
 
 
-def test_json_first_streams_clean_answer_only(monkeypatch):
-    # 模型直接吐 JSON（沒 prose），分塊到達
-    toks, done = _collect(['{"answer": "政大有', '幾門課', '", "followup_suggestions": []}'])
+def test_plain_markdown_passthrough():
+    """OpenAI 模型直接吐 markdown → 全文原樣串給前端，不截斷。"""
+    events = [
+        _text_delta("政大有"),
+        _text_delta("幾門課"),
+    ]
+    toks, done = _collect(events)
     joined = "".join(toks)
-    assert '{"answer"' not in joined and "```" not in joined
-    assert "政大有" in joined and "幾門課" in joined
+    assert joined == "政大有幾門課"
+    assert done["answer_text"] == "政大有幾門課"
 
 
-def test_prose_then_fence_unchanged(monkeypatch):
-    # 常態：prose 在前、```json 在後 → 只串 prose、遇 ``` 截斷
-    toks, done = _collect(['政大有幾門課程。\n\n', '```json\n{"answer":"政大有幾門課程。","followup_suggestions":[]}\n```'])
+def test_markdown_table_passthrough():
+    """Markdown 表格直接透傳，不做 fence 截斷（非 Gemini JSON-wrapped）。"""
+    events = [
+        _text_delta("以下課程：\n\n"),
+        _text_delta("| 課程 | 系所 |\n| --- | --- |\n"),
+        _text_delta("| **資料探勘** | 資管系 |\n"),
+    ]
+    toks, done = _collect(events)
     joined = "".join(toks)
-    assert "政大有幾門課程。" in joined
-    assert "```" not in joined and '{"answer"' not in joined
+    assert "| 課程 | 系所 |" in joined
+    assert "**資料探勘**" in joined
+    assert "以下課程：" in joined

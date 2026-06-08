@@ -1,20 +1,37 @@
 # tests/backend/test_qa_stream.py
-"""stream_answer async generator：逐 chunk yield token，末尾 yield done（含 course_ids + 累積全文）。
-mock client.aio.models.generate_content_stream 為回傳 async iterator 的 AsyncMock。"""
+"""stream_answer（OpenAI Responses API）：逐 token yield，末尾 yield done（含 course_ids + 累積全文）。
+
+Phase 2 注：stream_answer 已從 Gemini generate_content_stream 切至 OpenAI Responses API。
+mock 改為 client.responses.create 回傳 async iterable。
+"""
 import pytest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+
 from backend.qa import stream_answer
 
 
-def _chunk(text, course_id=None):
-    if course_id:
-        rc = SimpleNamespace(title=f"課程代號: {course_id}", text="", uri=None)
-        gm = SimpleNamespace(grounding_chunks=[SimpleNamespace(retrieved_context=rc)])
-        cands = [SimpleNamespace(grounding_metadata=gm)]
-    else:
-        cands = [SimpleNamespace(grounding_metadata=None)]
-    return SimpleNamespace(text=text, candidates=cands)
+def _text_delta(delta: str):
+    """模擬 ResponseTextDeltaEvent（duck-type：有 .delta str 屬性）"""
+    return SimpleNamespace(delta=delta)
+
+
+def _output_item_done_file_search(results=None):
+    """模擬 ResponseOutputItemDoneEvent (file_search_call)"""
+    item = SimpleNamespace(type="file_search_call", results=results or [])
+    return SimpleNamespace(item=item)
+
+
+def _other_event():
+    """模擬任何其他事件（無 .delta、無有效 .item）"""
+    return SimpleNamespace()
+
+
+def _result(course_id, score=0.9):
+    return SimpleNamespace(
+        attributes={"course_id": course_id},
+        filename=f"{course_id}.txt",
+        score=score,
+    )
 
 
 async def _aiter(items):
@@ -22,10 +39,10 @@ async def _aiter(items):
         yield it
 
 
-def _fake_stream_client(chunks):
-    aio = SimpleNamespace(models=SimpleNamespace(
-        generate_content_stream=AsyncMock(return_value=_aiter(chunks))))
-    return SimpleNamespace(aio=aio)
+def _fake_openai_client(events):
+    async def _create(**kwargs):
+        return _aiter(events)
+    return SimpleNamespace(responses=SimpleNamespace(create=_create))
 
 
 async def _collect(gen):
@@ -38,48 +55,53 @@ def _joined_tokens(events):
 
 @pytest.mark.asyncio
 async def test_stream_yields_tokens_then_done():
-    chunks = [_chunk("政治學"), _chunk(" 很棒", course_id="000211012")]
-    client = _fake_stream_client(chunks)
-    events = await _collect(stream_answer(client, "store", "問政治學", history=None))
+    events = [
+        _other_event(),  # e.g. file_search in_progress
+        _output_item_done_file_search([_result("000211012")]),
+        _text_delta("政治學"),
+        _text_delta(" 很棒"),
+        _other_event(),  # message done
+    ]
+    client = _fake_openai_client(events)
+    result = await _collect(stream_answer(client, "vs_123", "問政治學", history=None))
 
-    # token 可能被重新分塊（緩衝），驗串接後全文
-    assert _joined_tokens(events) == "政治學 很棒"
+    assert _joined_tokens(result) == "政治學 很棒"
 
-    done = [e for e in events if e["event"] == "done"]
+    done = [e for e in result if e["event"] == "done"]
     assert len(done) == 1
     assert done[0]["data"]["course_ids"] == ["000211012"]
     assert done[0]["data"]["answer_text"] == "政治學 很棒"
-    client.aio.models.generate_content_stream.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_stream_skips_empty_text_chunks():
-    chunks = [_chunk(""), _chunk("有字"), _chunk(None)]
-    client = _fake_stream_client(chunks)
-    events = await _collect(stream_answer(client, "store", "q", history=None))
-    assert _joined_tokens(events) == "有字"
+    events = [
+        _text_delta(""),   # empty delta → skip
+        _text_delta("有字"),
+        _text_delta(""),   # empty delta → skip
+    ]
+    client = _fake_openai_client(events)
+    result = await _collect(stream_answer(client, "vs_123", "q", history=None))
+    assert _joined_tokens(result) == "有字"
 
 
 @pytest.mark.asyncio
-async def test_stream_stops_tokens_at_json_fence():
-    """串流到 ```json 包裝就停止吐 token（不串 JSON 給使用者），但 answer_text 仍含全文供解析。"""
-    chunks = [
-        _chunk("這是答案說明。\n\n"),
-        _chunk("| 課程 | 系所 |\n| --- | --- |\n| A | B |\n\n"),
-        _chunk('```json\n{"answer": "這是答案說明。", "followup_suggestions": []}\n```',
-               course_id="000211012"),
+async def test_stream_raw_markdown_passed_through():
+    """OpenAI 不做 JSON 包裝 → markdown 原文（含表格、粗體）直接透傳，不做 fence 截斷。"""
+    md = "這是答案說明。\n\n| 課程 | 系所 |\n| --- | --- |\n| A | B |\n"
+    events = [
+        _output_item_done_file_search([_result("000211012")]),
+        _text_delta("這是答案說明。\n\n"),
+        _text_delta("| 課程 | 系所 |\n| --- | --- |\n| A | B |\n"),
     ]
-    client = _fake_stream_client(chunks)
-    events = await _collect(stream_answer(client, "store", "q", history=None))
+    client = _fake_openai_client(events)
+    result = await _collect(stream_answer(client, "vs_123", "q", history=None))
 
-    streamed = _joined_tokens(events)
-    # 串給前端的不含 JSON 包裝
-    assert "```json" not in streamed
-    assert '"answer"' not in streamed
-    # 但乾淨 prose + 表格有串出去
-    assert "這是答案說明" in streamed
+    streamed = _joined_tokens(result)
+    # 全部 markdown 直接串給前端（無 fence 截斷、無 JSON 包裝）
+    assert "這是答案說明。" in streamed
     assert "| 課程 | 系所 |" in streamed
-    # done 的 answer_text 仍是完整原文（供 parse_qa_response 解析）
-    done = [e for e in events if e["event"] == "done"][0]
-    assert "```json" in done["data"]["answer_text"]
+
+    done = [e for e in result if e["event"] == "done"][0]
     assert done["data"]["course_ids"] == ["000211012"]
+    assert "這是答案說明。" in done["data"]["answer_text"]
