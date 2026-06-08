@@ -5,7 +5,7 @@
 
 ## Goal
 
-把 `backend/recommend.py` 的生成模型從 `gemini-2.5-flash` 遷到 **`gemini-3.5-flash`**，並把 2.5 的 `thinking_budget` 正確對應到 3.5 的 `thinking_level`、fan-out 明設「只檢索一次」。保留 2.5 為 env 可切 fallback。
+把 `backend/recommend.py` 的生成模型從 `gemini-2.5-flash` 遷到 **`gemini-3.5-flash`**（thinking_budget→thinking_level 正確對應、fan-out 明設「只檢索一次」、保留 2.5 env fallback），**並把成本主宰的 fan-out 從「每技能一支（6-8 支 file_search）」合併為「單一支帶全部技能的檢索」**，把每次推薦/建庫的檢索成本砍 ~6-8x（NT$5-7 → ~NT$1）。
 
 ## Background / 現況
 
@@ -44,7 +44,20 @@
 - **fan-out 只檢索一次**：`fanout_query_skill_async` 的 prompt 末尾加一句：
   > 「你只有 1 次 File Search 檢索預算——檢索一次取得相關課綱後直接回，不要反覆多次檢索。」
   （action-budget pattern；封住 agentic 多輪重複計費的上界。注意：內建 file_search 無官方硬上限，此為 prompt 層強導引、非 100% 保證；spike 顯示聚焦查詢本就單輪。）
-- fan-out 仍用 `extract_json_array`（方案 A，最小變更）；budget 格式不變。
+- fan-out 仍用 `extract_json_array`（最小變更）；budget 格式不變。
+
+### 成本優化：fan-out 合併（核心改動）
+
+把「每技能一支 file_search（`fanout_query_skill_async` ×6-8 並行）」合併為**單一支帶全部技能的檢索**：
+- 新增 `consolidated_retrieve_async(client, store, career, skills)`：**一支 file_search**，prompt 帶**全部技能**、要 ~`POOL_SIZE` 門課、`top_k` 提高（新常數 `CONSOLIDATED_TOP_K`，初值 ~24，補足合併後的召回廣度）、加「只檢索一次」指令；`extract_json_array` 解析 → 候選池。
+- `build_recommendation_instrumented_async` / `stream_recommendation` 的 stage1 改呼叫 `consolidated_retrieve_async`（取代 `fanout_retrieve_async`）。
+- **保留 `fanout_retrieve_async` 不刪**，用 env `REC_RETRIEVE=consolidated`(預設) / `fanout`(回退) 切換 → 供 judge A/B 對照、品質不如預期可即時切回。
+- 成本：1 支 ~8k tool_use（vs 6-8 支）→ 檢索成本砍 ~6-8x。延遲：少了並行的尾端等待，單支可能略慢於最慢的一支、但總體相當或更好。
+- **品質把關（必做）**：judge A/B —— 同幾個職涯，比 consolidated vs fanout 的 `judge.py` 推薦理由分數；consolidated 不低於 fanout（或差距在容忍內）才採預設。掉太多 → 維持 fanout（REC_RETRIEVE）。
+
+### 明確不做（排除）
+
+- **清單外職涯「隨用隨快取」**：會把使用者亂打的奇怪/無效職涯一堆 upsert 進 `career_budget` 污染資料 → **不做**。清單外維持每次即時（量少、可接受）。
 
 ### `scripts/build_career_budget.py`
 - 不改碼（用既有 pipeline）。遷移後它自動跑 3.5。
@@ -67,7 +80,7 @@
 
 ### Live 驗證（等 Gemini 503 退去）
 - spike 重跑全 fan-out（6-8 支）+ stage2：量 grounding 不空、parse 正常、延遲、總成本。
-- **judge 品質不低於 2.5 基線**（`judge.py`/`qa_judge` 對推薦理由）：抽數個職涯比對 3.5 vs 2.5 的 judge 分數。
+- **judge 品質不低於基線**（`judge.py` 對推薦理由）：抽數個職涯比對 **(a) 3.5 vs 2.5**、**(b) consolidated vs fanout** 的 judge 分數；consolidated(3.5) 不低於 fanout(2.5) 基線才採預設，否則用 REC_MODEL/REC_RETRIEVE 回退。
 - **Playwright e2e**：真前端推一個職涯 → 結果正常渲染、三區課程、理由、citation/課綱連結、0 console error（桌機代表即可，recommend 非跨裝置敏感如 offcanvas，但仍跑一次）。
 
 ### 部署後
@@ -88,7 +101,8 @@
 - **503 全域過載**：REC_MODEL 可切 2.5；validation/budget 等過載退去；fan-out 單支容錯不拖垮。
 - **品質回歸**：judge 比對 3.5 vs 2.5 把關；不過則維持 2.5（REC_MODEL）。
 
-## 待 spec review 確認
-1. stage2/derive 用 `thinking_level="minimal"`（最省、符 #10）vs 保守 `low`。
-2. 方案 A（保留 extract_json_array）vs 順便做 B（fan-out 改 response_schema）。
-3. fan-out 是否同時也降「並行支數」或 top_k 以省成本（或維持現狀靠 budget 快取）。
+## 已拍板決策（spec review 定案）
+1. stage2/derive → `thinking_level="minimal"`；fan-out/consolidated → `low`。
+2. 最小遷移保留 `extract_json_array`（不順手改 response_schema；方案 B 留後續）。
+3. **fan-out 合併為單一支檢索**（成本根本解，砍 ~6-8x）+ judge A/B 把關 + REC_RETRIEVE 可回退。
+4. **不做**清單外隨用隨快取（污染風險）。
