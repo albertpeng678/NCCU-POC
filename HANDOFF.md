@@ -1,29 +1,28 @@
 # NCCU 課程推薦系統 — 交接文件（HANDOFF.md）
 
 > 專案進展史 + WBS + 待辦。給接手的 agent 快速掌握「做到哪、還剩什麼」。
-> 最後更新：2026-06-08（**Session 7**：離線預算 career_budget 秒回 + 柴犬等候動畫 + Q&A 失敗復原 + Sentry 降噪 + 多輪修復；**⚠️ 留下一個高優先未修 bug：to_thread 污染共用 async client → 「Event loop is closed」**）
+> 最後更新：2026-06-08（**Session 8**：✅ 修掉先前高優先 bug「Event loop is closed」並部署，見下方 🟢；Session 7 摘要：離線預算 career_budget 秒回 + 柴犬等候動畫 + Q&A 失敗復原 + Sentry 降噪 + 多輪修復）
 
 ---
 
-## ★ Session 7 交接（最新，換機器接手第一個讀）★
+## ★ Session 8 交接（最新，換機器接手第一個讀）★
 
-> 分支 **`master`**，**本機 15 commits ahead of `origin/master`（尚未 push）**。要部署＝`git push`（Railway GitHub-connected 自動 build）。
-> 後端測試 **254 passing**；前端資源版本 **`?v=34`**。
-> ⚠️ 工作目錄有一個未追蹤的 `example.com` 雜檔（code-review 抓過）——**不要 commit，刪掉即可**。
+> 分支 **`master`**，**已 push `origin/master`（commit `d6b0490`，Railway 自動 build 部署）**。
+> 後端測試 **256 passing**；前端資源版本 **`?v=34`**。
 
-### 🔴🔴 最高優先：未修 bug「Event loop is closed」（換機器後第一件事）
+### 🟢 已修：先前高優先 bug「Event loop is closed」（Session 8，commit `d6b0490`）
 
-**症狀**：清單外職涯（如「數據分析」「記者」）走 `/recommend/stream` 時，**只要該後端程序在此之前跑過任何一次 `POST /recommend` 即時路徑**，之後所有 `/recommend/stream`（清單外）與 `/qa/stream` 都會秒噴 `查詢失敗：Event loop is closed`。Playwright 真後端 e2e 親證（1 秒就 error）。
+**原症狀**：清單外職涯走 `/recommend/stream` 時，只要該後端程序此前跑過任何一次 `POST /recommend` 即時路徑，之後所有 `/recommend/stream`（清單外）與 `/qa/stream` 都秒噴 `Event loop is closed`。
 
-**根因（已從程式碼確認，非猜測）**：
-- `backend/recommend.py:471 build_recommendation_instrumented`（同步）內部 `asyncio.run(_run())`（:495），`_run` 用**模組層共用的 `_client.aio`**（async client，`fanout_retrieve_async`/`stage2_annotate_pool_async` 都 `await client.aio.models.generate_content`）。
-- `backend/main.py:152` 我把 POST /recommend 改成 `await asyncio.to_thread(build_recommendation_instrumented, ...)`（commit `21e6a93`，為修「asyncio.run cannot be called from a running event loop」）。
-- 但 to_thread 的 worker thread 裡 `asyncio.run` **建一個用完即關的 loop L2** → 共用 `_client.aio` 的 httpx async client **綁到 L2** → L2 關閉後，這個共用 client 綁在死 loop → **後續主 loop L1 上任何 `_client.aio` 呼叫**（stream recommend / qa stream）→ 「Event loop is closed」。
-- **= 我的 `to_thread` 修法把單一請求崩潰，換成「第一次 POST 即時路徑後污染整個 worker 程序的 async client」的更廣 regression。** 單元測試 + code-review 都沒抓到，因為都沒測「同程序的下一個 async 請求」。Session 7 的 e2e 才抓到。
+**根因**：POST /recommend 曾用 `await asyncio.to_thread(build_recommendation_instrumented, ...)`（`21e6a93`），而同步 `build_recommendation_instrumented` 內部 `asyncio.run(_run())` 在 worker thread 開**用完即關的 loop L2**，`_run` 又 `await` 模組層共用 `_client.aio` → 把共用 httpx async client 綁到 L2 → L2 關閉後主 loop L1 上任何 `_client.aio` 呼叫（stream）都炸。**= 把單請求崩潰換成污染整個 worker 程序的更廣 regression**；單元測試/code-review 沒抓到（沒測「同程序下一個 async 請求」），e2e 才抓到。
 
-**正解（下個 session 做，TDD）**：POST /recommend **不要用 `asyncio.run` 同步包裝**。把 pipeline 抽成 async `build_recommendation_instrumented_async`（直接 `await fanout_retrieve_async / stage2_annotate_pool_async`），handler 直接 `await`（全程在主 loop L1，不開新 loop、不 to_thread、不碰共用 client 的跨 loop 綁定）。同步 `build_recommendation_instrumented` 可留給測試/離線腳本。`stream_recommendation`（/recommend/stream 用）本來就是 async 在主 loop，所以**新鮮程序、第一個就打清單外 stream 通常會動**——bug 只在「POST 即時路徑跑過之後」浮現。
-- 反例提醒：不要回退成「在 async handler 直接呼叫同步 asyncio.run 版」（那是原本的崩潰）；也不要每請求 new genai.Client（浪費連線、量測污染）。
-- 驗證門檻（這次學到的教訓）：修完要跑**真後端 e2e 的「先打一次 POST /recommend 清單外 → 再打 /recommend/stream 清單外 + /qa/stream」**，確認第二、三個請求不再「Event loop is closed」。光單元測試不夠。
+**修法（`d6b0490`）**：
+- 抽出 async `build_recommendation_instrumented_async`（直接 `await fanout_retrieve_async / stage2_annotate_pool_async`），POST /recommend handler 直接 `await`（全程主 loop L1，不開新 loop、不 to_thread）。
+- 清單外 derive 也改 `await derive_skills_for_career_async`（review 發現的既有阻塞，順手修）。
+- 同步 `build_recommendation_instrumented`（仍 `asyncio.run`）**只留給 sync 呼叫端**（`build_recommendation` / sync 測試 / scripts）——伺服器路徑勿用。
+- 回歸測試 `tests/backend/test_recommend_loop_fix.py`：鎖定「pipeline 兩階段都在呼叫端 loop」+ 空候選 ValueError。
+
+**驗證（已過）**：256 後端測試綠；嚴格 code review（正確性 reviewer 判「根因已根除」、品質 reviewer「ship it」）；Playwright 全端 e2e —— 瀏覽器內先打 polluter `POST /recommend`(200) → 再由真 UI 點職涯觸發 victim `/recommend/stream` → 渲染 13 卡、**零「Event loop is closed」**；清單外「記者」live 走 derive async 正常；伺服器端 log 零 loop 錯誤。
 
 ### ✅ 本 session 已完成並 commit（未 push）
 
@@ -38,15 +37,15 @@
 5. **Sentry 降噪**（`e9ab554`/`3509eb9`）：後端 `observability.py` `classify_and_downgrade`(before_send) 把暫時性 Gemini 429/503/spending-cap 降 warning + 歸群、真 bug 維持 error；`stream_traces_sampler`。前端 **localhost 不啟用 Sentry**（杜絕本機 e2e/開發污染正式專案——我之前不慎觸發過真實錯誤回報，根因就是前端 DSN hardcode 且在 localhost 也送）。
 6. **compose 關 thinking 提速**（`c2e48e9`）：`stage2_annotate_pool_async` 設 `thinking_budget=0`，A/B 實測（`scripts/probe_compose_thinking_ab.py`）此 schema 約束的「分類+排序+短理由」任務關 thinking **快 ~3x（33s→11s）judge 品質不掉**。見 CLAUDE.md 設計決策 #10 更新。**Q&A 串流的 thinking 仍不可關**。
 7. **推薦分頁 end-state**（`899de0e`/`de35052`）：翻到底顯示「看完了」end-state；換職涯走目錄直接推薦。**殘留 end-state bug** 修法：清理移到 `showLoadingShell`（覆蓋成功/錯誤/no_match 所有路徑）。**5x 連續切換職涯 e2e 親證 staleEndStates:0、0 flake**。
-8. **POST /recommend asyncio 崩潰**（`21e6a93`）：⚠️ **見上方 🔴——此修法引入了「Event loop is closed」regression，需重修。** 原崩潰（asyncio.run in running loop）確實修掉了，但手段錯。
+8. **POST /recommend asyncio 崩潰**（`21e6a93`）：原崩潰（asyncio.run in running loop）已修，但該手段引入「Event loop is closed」regression → **Session 8 `d6b0490` 已正解重修，見上方 🟢。**
 9. 其他：手機 rubber-band 防彈跳 + Q&A 隱藏 hamburger（`e29ac15`）；清單外 notice 框移除 cyan 螢光邊（`9f58b88`）。
 
 ### 驗證狀態（誠實標註，勿過度宣稱）
 - ✅ 殘留 end-state：真後端 Playwright **5x 連續**切換職涯，全 `staleEndStates:0`、職涯名正確、換一批鈕回來。
 - ✅ 多輪追問：live 3/3 + production e2e。
 - ✅ career_budget：Railway 正式 DB 50/50 灌好，命中秒回（PM 1.24s 等）實測。
-- ❌ **清單外職涯（數據分析/記者）完整 e2e 到「真的出結果」＝未通過**：被「Event loop is closed」擋住（見 🔴）。修完 async 化後要補這段 e2e。
-- 254 後端測試全綠（但這些是單元/整合，**沒覆蓋跨請求的 async client 污染**——這就是漏網之魚）。
+- ✅ **清單外職涯完整 e2e（Session 8）**：「記者」live POST /recommend 走 derive async → 回「紀實採寫」等相關課（42s, 200）；polluter→victim stream 序列無「Event loop is closed」。
+- 256 後端測試全綠（Session 8 新增 `test_recommend_loop_fix` 補上「pipeline 在呼叫端 loop」的回歸覆蓋；跨請求 async client 污染另由 e2e 把關）。
 
 ### 換機器須知（沿用，無變動）
 - `.env` gitignored：`GEMINI_API_KEY`（同一把，換 key 看不到 store）、`FILE_SEARCH_STORE_NAME=fileSearchStores/nccucourses1142-znuka50qq2y2`、`SENTRY_DSN`（見 app.js 同一個公開值）、`ALLOWED_ORIGIN=*`。
