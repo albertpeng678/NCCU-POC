@@ -1,7 +1,22 @@
 # backend/judge.py
 from __future__ import annotations
-import json
-from google import genai
+import os
+from pydantic import BaseModel
+
+
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.4-mini")
+
+
+def _clamp(v) -> int:
+    return max(1, min(5, int(v)))
+
+
+class _JudgeOutput(BaseModel):
+    relevance: int
+    grouping: int
+    reason_quality: int
+    diversity: int
+    critique: str
 
 
 def _format_reason(reason) -> str:
@@ -44,31 +59,25 @@ def build_judge_prompt(career: str, result: dict) -> str:
 - reason_quality（原因品質）：每門課的推薦原因是否具體、可幫助學生做決策
 - diversity（多樣性）：推薦課程的系所、領域是否足夠多元，避免同質化
 
-回傳 JSON（只回 JSON，不要其他文字）：
-{{
-  "relevance": <1-5>,
-  "grouping": <1-5>,
-  "reason_quality": <1-5>,
-  "diversity": <1-5>,
-  "critique": "<1-2句整體評語，指出最大優點和最需改進之處>"
-}}"""
+critique 填 1-2 句整體評語，指出最大優點和最需改進之處。"""
 
 
 def parse_judge_response(raw: str) -> dict | None:
-    """Parse LLM judge JSON response. Returns None if malformed."""
+    """Parse LLM judge JSON response. Returns None if malformed.
+
+    Kept for backward compatibility (used by existing unit tests).
+    """
+    import json
     try:
         data = json.loads(raw.strip())
         required = {"relevance", "grouping", "reason_quality", "diversity", "critique"}
         if not required.issubset(data.keys()):
             return None
 
-        def clamp(v) -> int:
-            return max(1, min(5, int(v)))
-
-        r = clamp(data["relevance"])
-        g = clamp(data["grouping"])
-        rq = clamp(data["reason_quality"])
-        d = clamp(data["diversity"])
+        r = _clamp(data["relevance"])
+        g = _clamp(data["grouping"])
+        rq = _clamp(data["reason_quality"])
+        d = _clamp(data["diversity"])
         overall = round((r + g + rq + d) / 4)
 
         return {
@@ -83,18 +92,38 @@ def parse_judge_response(raw: str) -> dict | None:
         return None
 
 
+def _scores_from_parsed(parsed: _JudgeOutput) -> dict:
+    r = _clamp(parsed.relevance)
+    g = _clamp(parsed.grouping)
+    rq = _clamp(parsed.reason_quality)
+    d = _clamp(parsed.diversity)
+    overall = round((r + g + rq + d) / 4)
+    return {
+        "judge_relevance_score": r,
+        "judge_grouping_score": g,
+        "judge_reason_score": rq,
+        "judge_diversity_score": d,
+        "judge_overall_score": overall,
+        "judge_critique": str(parsed.critique)[:500],
+    }
+
+
 async def evaluate_recommendation(
-    client: genai.Client, career: str, result: dict
+    client, career: str, result: dict
 ) -> dict | None:
-    """Run LLM judge. Returns parsed scores or None on failure."""
+    """Run LLM judge via OpenAI structured output. Returns parsed scores or None on failure."""
     try:
         prompt = build_judge_prompt(career, result)
-        resp = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt,
-            config={"response_mime_type": "application/json"},
+        resp = await client.responses.parse(
+            model=OPENAI_MODEL,
+            input=[{"role": "user", "content": prompt}],
+            text_format=_JudgeOutput,
         )
-        return parse_judge_response(resp.text)
+        parsed = resp.output_parsed
+        if parsed is None:
+            print("[judge] output_parsed is None (refusal/token-limit)")
+            return None
+        return _scores_from_parsed(parsed)
     except Exception as e:
         print(f"[judge] Evaluation failed: {e}")
         return None

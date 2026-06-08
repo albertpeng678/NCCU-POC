@@ -119,7 +119,7 @@ async def _background_log_and_judge(career, result, stage1_count, error):
     record = build_log_record(career, result, stage1_count, error)
     log_id = await insert_log(pool, record)
     if log_id and result:  # only judge successful recommendations
-        scores = await evaluate_recommendation(_client, career, result)
+        scores = await evaluate_recommendation(_openai_client, career, result)
         if scores:
             await update_judge_scores(pool, log_id, scores)
 
@@ -258,7 +258,7 @@ async def recommend_stream(request: Request, career: str, seed: int | None = Non
 async def _background_qa_judge(turn_id, question, answer, citation_names):
     """Phase 2: run Q&A judge, update scores. Non-blocking."""
     pool = get_pool()
-    scores = await evaluate_qa(_client, question, answer, citation_names)
+    scores = await evaluate_qa(_openai_client, question, answer, citation_names)
     if scores:
         await update_qa_judge(pool, turn_id, scores)
 
