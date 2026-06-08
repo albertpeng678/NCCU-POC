@@ -23,6 +23,7 @@ _TABLE_RE = re.compile(r"\|.*\|")
 _SEP_RE = re.compile(r"-{3,}")
 _BOLD_RE = re.compile(r"\*\*.+?\*\*")
 _NINE_DIGIT_RE = re.compile(r"\b\d{9}\b")
+_SOURCE_MARKER_RE = re.compile(r"\s*\[[^\]\n]*\.txt[^\]\n]*\]")
 
 # citations 為空但答案看似列具體課程時，覆寫為此訊息（防止 RAG 空命中時幻覺編課名）
 NO_RESULTS_MESSAGE = (
@@ -31,6 +32,18 @@ NO_RESULTS_MESSAGE = (
     "你可以試試：換個關鍵字（例如更通用的領域名稱），或直接告訴我你想培養的**能力**或**職涯方向**，"
     "我再幫你配對應的課程！"
 )
+
+
+def strip_source_markers(text: str) -> str:
+    """移除答案中 file_search 的 inline 來源引註標記（如 [tmpt_ync0ml.txt, tmpvenglr3i.txt]）。
+
+    這些是 store 內部文件暫存檔名，3.5 會插進 answer 字串當引用；真 citation 走結構化卡片，故剝除。
+    只移除『方括號內含 .txt 檔名』的標記，不動一般內文方括號（如 [註1]）。
+    前導 \\s* 把標記前的空白一起吃掉："學生 [tmp.txt]。" → "學生。"。
+    """
+    if not text:
+        return text
+    return _SOURCE_MARKER_RE.sub("", text)
 
 
 def looks_like_course_listing(answer: str) -> bool:
@@ -495,6 +508,8 @@ def finalize_qa_answer(answer: str, followups: list, course_ids: list, meta: dic
     （模型常 grounded 卻沒帶 metadata）；真查無（空 citations + 答案像在列課程）→ 防幻覺覆寫。
     回 (answer, followups, citations, no_match)。no_match=True 時前端走「換個問法」引導而非重試。
     """
+    # 最先剝除 inline 來源標記（[tmp.txt] 雜訊），讓後續 looks_like_course_listing 等判斷對乾淨文字操作
+    answer = strip_source_markers(answer)
     citations = extract_citations(course_ids, meta)
     if not citations:
         citations = extract_citations_by_name(answer, meta)
@@ -931,10 +946,20 @@ async def stream_answer_structured(
         text = _visible_text_from_chunk(chunk)
         if text:
             raw += text
-            ans = _partial_answer(raw)
-            if len(ans) > emitted:
-                yield {"event": "token", "data": {"text": ans[emitted:]}}
-                emitted = len(ans)
+            ans = strip_source_markers(_partial_answer(raw))
+            # 避免吐出半截未閉合的 '['（來源標記可能跨 chunk 切斷）
+            cut = ans.rfind("[")
+            if cut != -1 and "]" not in ans[cut:]:
+                safe = cut      # 暫時不吐未閉合 [ 之後的內容
+            else:
+                safe = len(ans)
+            if safe > emitted:
+                yield {"event": "token", "data": {"text": ans[emitted:safe]}}
+                emitted = safe
         course_ids.extend(_grounding_course_ids_from_chunk(chunk))
+    # 串流結束：補吐剩餘（含最後一個已閉合標記被剝後的尾段）
+    final = strip_source_markers(_partial_answer(raw))
+    if len(final) > emitted:
+        yield {"event": "token", "data": {"text": final[emitted:]}}
     course_ids = list(dict.fromkeys(course_ids))
     yield {"event": "done", "data": {"course_ids": course_ids, "answer_text": raw}}
