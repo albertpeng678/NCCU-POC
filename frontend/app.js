@@ -57,7 +57,7 @@ const HOT_PICKS = window.HOT_PICKS || [];
 let selectedCareer = null;
 let lastCareer = null;   // 上次實際送出的職涯（含清單外自由輸入），供「換一批」沿用
 let activeIdx = -1;
-let pageState = null;    // 分頁 state（整池 + shown）
+let pageState = null;    // 分頁 state（整池 + batchIndex 批次索引；見 pagination.js）
 let lastNotice = null;   // 清單外職涯誠實說明（換批沿用）
 let rerolling = false;   // 續池/切批進行中（去抖，避免 rapid double-click）
 
