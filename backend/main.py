@@ -30,7 +30,7 @@ from backend.observability import before_send as sentry_before_send, stream_trac
 from backend.qa import (
     answer_question, answer_question_structured, finalize_qa_answer,
     extract_citations, stream_answer, stream_answer_structured,
-    parse_qa_response, classify_qa_error,
+    parse_qa_response, classify_qa_error, is_incomplete_answer,
 )
 from backend.qa_judge import evaluate_qa
 from backend.qa_logger import (
@@ -298,6 +298,11 @@ async def qa(req: QaRequest, background_tasks: BackgroundTasks):
         await insert_turn(pool, session_id, turn_number, req.question, None, error)
         raise HTTPException(status_code=503, detail=str(error))
 
+    # 空答案守衛：3.5 偶發 TOO_MANY_TOOL_CALLS → 空答案；不落空白成功 turn，前端 fallback 對 503 走重試
+    # 放在 try/except 外以避免被吞進 error 路徑（不寫 turn、不送 Sentry）
+    if result is not None and is_incomplete_answer(result["answer"]):
+        raise HTTPException(status_code=503, detail="incomplete answer")
+
     # 共用收尾：citations join + 課名補 + 防幻覺覆寫（與 /qa/stream 三處一致）。
     # ⚠️ 必須在 insert_turn 之前：否則幻覺答案（空 citations 卻像列課程）會以未覆寫原文存進 qa_turn，
     #    再經 build_history_from_turns 餵回下一輪污染上下文（/qa/stream 同樣持久化 finalize 後答案）。
@@ -389,7 +394,7 @@ async def qa_stream(request: Request, question: str, session_id: str | None = No
                         yield _sse("token", ev["data"])
                     elif ev["event"] == "done":
                         parsed = parse_qa_response(ev["data"]["answer_text"])
-                        if not parsed["answer"].strip():
+                        if is_incomplete_answer(parsed["answer"]):
                             # 3.5 偶發 TOO_MANY_TOOL_CALLS → 空答案；走既有 transient 重試泡泡，不落半截 turn
                             yield _sse("error", {"error_type": "incomplete", "message": "empty answer"})
                             return

@@ -52,10 +52,20 @@ def should_override_no_results(answer: str, citations: list) -> bool:
     return looks_like_course_listing(answer)
 
 
+def is_incomplete_answer(answer: str) -> bool:
+    """3.5 偶發 TOO_MANY_TOOL_CALLS 空答案判定：空字串或純空白 → True，否則 False。
+
+    作為共用 helper，讓 /qa/stream 與 POST /qa 空答案守衛行為一致。
+    """
+    return not (answer or "").strip()
+
+
 def classify_qa_error(exc) -> str:
     """把 Q&A 例外映射成語意 error_type 給前端走差異化分支。
     rate_limited（429/503 暫時性過載→鼓勵重試）/ timeout / unknown。
     no_match（查無資料）不由此產生——它源自 grounding 空，由 finalize 的 no_match 旗標走 done 事件。
+    incomplete（空答案，非例外）不由此產生——由 /qa/stream 與 POST /qa 的空答案守衛直接送出/觸發。
+    值集：rate_limited | timeout | unknown | incomplete（後者僅由守衛直接使用）。
     """
     if exc is None:
         return "unknown"

@@ -7,4 +7,4 @@ from backend.qa import _SYSTEM_INSTRUCTION
 def test_system_instruction_has_grounding_rule_and_action_budget():
     assert "【鐵則・最高優先】" in _SYSTEM_INSTRUCTION      # grounding 命脈仍在
     assert "行動預算" in _SYSTEM_INSTRUCTION                # action-budget 約束已加
-    assert "2 次 File Search" in _SYSTEM_INSTRUCTION
+    assert "檢索效率" in _SYSTEM_INSTRUCTION               # 段落標題，措辭微調不誤紅
