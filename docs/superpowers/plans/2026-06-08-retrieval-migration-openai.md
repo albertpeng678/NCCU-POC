@@ -403,6 +403,9 @@ def test_stage2_annotate_returns_ranked_via_openai():
 # Phase 2：問答模式切 OpenAI
 
 > 產出：問答跑在 OpenAI（Responses+file_search），多輪/citation/out-of-scope/防幻覺保住。e2e 5x gate。
+>
+> ⚠️ **OpenAI SSE 與 Gemini 不同（使用者特別提醒，格外注意）**：OpenAI 是**逐 token 平滑**輸出，Gemini 是**爆發式一坨 chunk**。現有前端 `createTypewriter`(20cps 緩衝)+漸進 markdown 是**為了平滑 Gemini 爆發**才做的——換 OpenAI 後此緩衝可能多餘/拖慢/雙重緩衝。Task 2.1/2.4 串流要**重新評估**：可能直接餵 token（少緩衝或不緩衝）、或調 cps。Task 2.5 e2e 須親驗串流平滑、無延遲堆積、表格仍逐列長出。
+> 💡 **LLM provider 一律 OpenAI**（gpt-5.4-mini，使用者定）：含 `judge.py`/`qa_judge.py` + `career_budget` 預生成（Task 1.5）。Gemini 設計決策 #12「固定 2.5-flash」已被本遷移取代。
 
 ### Task 2.1：問答 Responses + file_search + 歷史 `[序列][skill: TDD][auditor: backend,db]`
 

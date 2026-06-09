@@ -3,7 +3,7 @@
 線上命中即秒出（0 即時 AI）。低併發避開 embedding-001 區域限流；冪等可重跑、可只補缺。
 
 用法（env）：
-  GEMINI_API_KEY=...  FILE_SEARCH_STORE_NAME=...  DATABASE_URL=<postgres>
+  OPENAI_API_KEY=...  OPENAI_VECTOR_STORE_ID=...  DATABASE_URL=<postgres>
   CONCURRENCY=2            # 預設 2，避免放大 embedding 429
   ONLY_MISSING=1          # 只補尚未預算的職涯（冪等增量）
   ONLY="產品經理(PM)"      # 只跑單一職涯（驗證/重補用）
@@ -20,13 +20,12 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import asyncpg
-from google import genai
-from google.genai import types
+from openai import AsyncOpenAI
 
 from backend.recommend import load_careers, stream_recommendation
 from backend.career_budget import upsert_budget
 
-_MODEL = "gemini-2.5-flash"
+_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.4-mini")
 
 
 def select_careers_to_build(all_careers, existing, only=None, only_missing=False):
@@ -51,8 +50,8 @@ async def _build_one(client, store, career):
 
 
 async def main():
-    api_key = os.environ["GEMINI_API_KEY"]
-    store = os.environ["FILE_SEARCH_STORE_NAME"]
+    api_key = os.environ["OPENAI_API_KEY"]
+    store = os.environ["OPENAI_VECTOR_STORE_ID"]
     db_url = os.environ.get("DATABASE_URL") or os.environ.get("DATABASE_PUBLIC_URL")
     if not db_url:
         sys.exit("需要 DATABASE_URL（或 DATABASE_PUBLIC_URL）才能寫 career_budget")
@@ -60,13 +59,8 @@ async def main():
     only = os.environ.get("ONLY") or None
     only_missing = os.environ.get("ONLY_MISSING", "") not in ("", "0", "false")
 
-    client = genai.Client(api_key=api_key, http_options=types.HttpOptions(
-        timeout=180_000,
-        retry_options=types.HttpRetryOptions(
-            attempts=5, initial_delay=1.0, max_delay=20.0, exp_base=2.0, jitter=1.0,
-            http_status_codes=[429, 503],
-        ),
-    ))
+    # OpenAI client：SDK 內建退避重試（429/503）；同一 event loop 內用。
+    client = AsyncOpenAI(api_key=api_key, max_retries=5, timeout=180.0)
     pool = await asyncpg.create_pool(db_url, min_size=1, max_size=max(concurrency, 2))
 
     # 確保表存在（冪等）

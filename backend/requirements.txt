@@ -1,6 +1,5 @@
 fastapi>=0.115
 uvicorn[standard]>=0.30
-google-genai>=1.0
 python-dotenv>=1.0
 pydantic>=2.7
 pytest>=8.0
@@ -10,3 +9,4 @@ asyncpg>=0.29
 sentry-sdk[fastapi]>=2.0
 sse-starlette>=2.1
 json-repair>=0.30
+openai>=2.0

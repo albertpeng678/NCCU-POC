@@ -1,10 +1,10 @@
 // app.js — NCCU Course Map frontend logic
-import { createPaginationState, nextBatch, prevBatch, appendPool, groupBatch, batchPosition } from "./pagination.js?v=36";
-import { drainCount } from "./progressive-md.js?v=36";
-import { stageNarration, easeApproach, fillToDone, SHIBA_TOTAL } from "./shiba-progress.js?v=36";
-import { qaErrorUiState, buildRetryState, noMatchChips, TRANSIENT_MSG, NO_MATCH_MSG } from "./qa-recovery.js?v=36";
-import { buildEndStateHtml } from "./end-state.js?v=36";
-import { CAREER_CATEGORIES } from "./career-categories.js?v=36";
+import { createPaginationState, nextBatch, prevBatch, appendPool, groupBatch, batchPosition } from "./pagination.js?v=37";
+import { drainCount } from "./progressive-md.js?v=37";
+import { stageNarration, easeApproach, fillToDone, SHIBA_TOTAL } from "./shiba-progress.js?v=37";
+import { qaErrorUiState, buildRetryState, noMatchChips, TRANSIENT_MSG, NO_MATCH_MSG } from "./qa-recovery.js?v=37";
+import { buildEndStateHtml } from "./end-state.js?v=37";
+import { CAREER_CATEGORIES } from "./career-categories.js?v=37";
 
 const CONFIG = {
   // Local dev default; overwrite before Railway deploy.
@@ -805,7 +805,7 @@ function renderSafeMarkdown(raw){
 }
 
 // 固定節奏打字機：token 進緩衝，定時吐字（與到達速度脫鉤）
-const TYPE_CPS = 20;                 // 慢速 20 字/秒（使用者偏好較慢、更滑順）
+const TYPE_CPS = 70;                 // ~70 字/秒：配合 OpenAI 逐 token 平滑串流的到達速率（不再像 Gemini 時代用慢速 throttle 平滑爆發 chunk）；搭配 drainCount 自適應，base 追得上、尾巴也順
 const TYPE_INTERVAL = 1000 / TYPE_CPS;
 const RENDER_THROTTLE = 80;          // markdown 重渲染節流
 

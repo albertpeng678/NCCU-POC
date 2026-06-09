@@ -1,7 +1,103 @@
 # NCCU 課程推薦系統 — 交接文件（HANDOFF.md）
 
 > 專案進展史 + WBS + 待辦。給接手的 agent 快速掌握「做到哪、還剩什麼」。
-> 最後更新：2026-06-08（**Session 9**：問答回退 2.5 + 戰略決策「必須正面修 2.5 JSON」+ Track C 推薦遷 3.5/成本優化在分支；見下方 ★Session 9）
+> 最後更新：2026-06-08（**Session 10**：**整個檢索層 + 生成從 Gemini 遷 OpenAI**——Phase 0/1/2 程式+審查+live 親證完成、career_budget 100/100 重算，未 merge/未上線、未過 e2e gate/三審；見下方 ★Session 10）
+
+---
+
+## ★ Session 10 交接（最新，換機器接手第一個讀）★
+
+> **大事：把檢索層整套從 Gemini 硬切到 OpenAI**（使用者決定，因 Gemini 持續不穩）。分支 **`feat/retrieval-openai`**（**未 merge master、未 push**）。spec/plan：`docs/superpowers/{specs,plans}/2026-06-08-retrieval-migration-openai*`。
+
+---
+
+## ★★ 最新狀態（2026-06-09，換機器接手「先讀這段」）★★
+
+> 下面的「✅已完成/⏳還沒做」是 Session 10 早期寫的，**已過時**；以本段為準。分支 `feat/retrieval-openai`，**28 commits ahead of master、未 merge、未 push**。
+
+### 🔴 第一優先：測試紅燈（必先修，否則不能 merge/deploy）
+**`pytest tests/ -q` = 37 failed / 378 passed。** 失敗全在 **main.py 層級 API 測試**（`test_api`、`test_stream_api`、`test_qa_post_history`、`test_qa_ephemeral_api`、`test_recommend_budget_hit`、`test_recommend_stream_*`、`test_open_career_api`、`test_qa_stream_*`、`test_qa_condense`、`test_qa_followups`…）。
+- **高度懷疑根因＝judge 遷移 commit `cc5db5b`**（把 main.py 的 judge 呼叫改傳 `_openai_client`）引入的 main.py 級破壞——judge subagent 自報「411 passed」，但合到分支後紅。**用 systematic-debugging 先 `git show cc5db5b` 對 main.py 的改動 + 跑單一失敗測試看 traceback**（多半是 import/fixture/`_openai_client` 相關）。先修綠再往下。
+
+### 🟢 這次 session 已完成（已 commit，未 push）
+- **新 store 重建（根治名字/系所問題）**：`OPENAI_VECTOR_STORE_ID=vs_6a26fe2c36b8819182550837ed5fce7d`（**取代舊 `vs_6a26b97862...`**）。建庫腳本 `scripts/build_openai_vector_store.py` 改成 **每課注入完整 header（課名+代號+系所+老師，每 2500 字）+ `chunking_strategy` max 4096 / overlap 0**（context7 確認參數）。**根因**：OpenAI 把長課綱（中位 3689 字、53% 課 >3500 字）切多 chunk，中段 chunk 無 header → 模型看不到課名/系所 → 名字不全/捏造/「系所:未顯示於目前片段」。注入後 **每 chunk 都帶完整 header（3 長課實測 11/11 帶名+系所）**；真打「PM 對應課程」系所欄全填、無「未顯示」「課綱未顯示完整課名」。`.env` 已指向新 store（**新機器要自己設 OPENAI_VECTOR_STORE_ID=vs_6a26fe2c...**）。
+- **問答品質一連串修法（使用者 live 抓 + 我真打驗）**：① filecite 引用標記串流剝除（狀態機 U+E200/E201，官方 citation-formatting helper）② 台灣繁中（禁「對口」等陸語）③ markdown 表格穩定（system prompt 加 few-shot 範例，`gpt-5.4-mini` 靠規則不夠）④ followup 改短句 10-18 字 ⑤ 答案要分行/粗體/結構 ⑥ 多輪 condense-then-search ⑦ citation 跨掛課**按前 6 碼去重**（`3243c0f`，046008001/011/021 同課多班次）⑧ **grounding 兩層**（`c1a42f2`：Layer1 prompt 照抄課名禁發明、Layer2 `strip_fabricated_courses` 用 retrieved_ids 錨定 + NFKC 正規化模糊比對，取代脆弱全 meta 完全比對）⑨ 清單外 out-of-scope 用 derive 的 `is_legitimate_career`（`6aa4991`，流浪漢/黑道老大→no_match、記者/網紅→照推，真打驗過）。
+- **前端 SSE 70cps**（`6f808ff`，使用者已驗）：打字機 20→70cps 配合 OpenAI 逐 token，cache `?v=37`。
+- **judge 遷 OpenAI**（`cc5db5b`，⚠️見上方紅燈）。
+- **CLAUDE.md/.env.example 文件更新**（`e526990`）。
+
+### ⏳ 還沒做（接手依序）
+1. **🔴 修 37 紅燈測試**（見上，先做）。
+2. **三審 backend FAIL 的 3 個 blocking**（frontend ✅ / db ✅ 已過）：
+   - 🔴 **judge 評到空推薦**：`judge.py build_judge_prompt(result)` 讀 `result["groups"]` 但 pipeline 回**扁平 `result["courses"]`**（含 group 欄）→ judge prompt 永遠空、分數無意義。修：從扁平重建 groups。
+   - 🟠 **OpenAI client None 守門**：`_openai_client` 在 OPENAI_API_KEY 缺時 None → handler AttributeError 而非乾淨 503。加守門 + lifespan 警告。
+   - 🟠 **Gemini env 硬必需**：見下方 #3。
+3. **★ 完全移除 Gemini（使用者明確要求「與 Gemini 毫無關係」）**＝原 Phase 3 清理，且**取代**上面三審 #3：移除問答的 `replay`/`stream35` Gemini 模式（只留 OpenAI `stream`）、Gemini `_client`、`GEMINI_API_KEY`/`FILE_SEARCH_STORE_NAME` 讀取、`qa.py` 的 `answer_question`/`answer_question_structured`/`stream_answer_structured`/`_visible_text_from_chunk`/Gemini 模板/雙 SDK 相容碼、`recommend.py` Gemini 死碼（`stage1_retrieve`/`stage2_group`/同步 derive 等）、`requirements.txt` 的 `google-genai`、`.env.example` Gemini 鍵。移除後 `import backend.main` 無 google-genai 也要起得來。**這會大量動 main.py/qa.py/recommend.py + 刪 Gemini 模式測試**——小步、常跑測試。
+4. **Playwright 5x e2e gate**（推薦+問答全流程）+ 截 PNG 給使用者「對」（Live demo gate；本 session 多為真打 curl + 使用者瀏覽器手測，未正式 5x）。⚠️ **本機 e2e 網路坑**：頁面開 `127.0.0.1:8000`，前端 `CONFIG.API_URL` 對 localhost 寫死會走 IPv6 `::1` 連不到（後端綁 127.0.0.1）→ 解法用 Playwright `addInitScript(()=>window.__API_URL__="http://127.0.0.1:8000")` 注入（前端為 e2e 設計的覆蓋點）。
+5. **career_budget**：目前 100/100 是用**舊 store** 跑的；course_id 不變故仍可用，但若要與新 store 一致，可 `ONLY_MISSING=1` 重算（非必須）。
+6. **部署**：Railway 設 `OPENAI_API_KEY`/`OPENAI_VECTOR_STORE_ID=vs_6a26fe2c36b8819182550837ed5fce7d`/`OPENAI_MODEL=gpt-5.4-mini`（**移除 Gemini env**）→ merge feat/retrieval-openai → git push → `curl https://nccu-course.up.railway.app/health` 確認 `retrieval_backend=openai` → Sentry MCP 監看。
+7. **清理**：刪除本 session 建的 probe 暫存 store（`vs_6a26b9.../6a26fb.../6a26fc.../6a26fe0d...` 等小庫）+ 舊正式 store `vs_6a26b97862...`（切新 store 後）。`example.com` 雜檔（docs agent 報已不存在）。
+
+### 換機器 `.env` 完整設定（一五一十；`.env` gitignored、不跨機，要自己建）
+```ini
+# === 必填 ===
+OPENAI_API_KEY=sk-...                 # ⚠️ 你自己的 OpenAI key（platform.openai.com/api-keys）。密鑰，勿提交/勿貼進任何會 push 的檔。
+OPENAI_VECTOR_STORE_ID=vs_6a26fe2c36b8819182550837ed5fce7d   # 新 store（含 header 注入根治名字/系所）；非密，可記。
+OPENAI_MODEL=gpt-5.4-mini             # 推薦標註/問答/judge/derive 一律此模型
+ALLOWED_ORIGIN=*                      # 本機測試用 *（部署填 frontend URL）
+# === 選填 ===
+SENTRY_DSN=                           # 本機「留空」（別污染正式 Sentry）；正式值是公開的，見 frontend/app.js 的 CONFIG.SENTRY_DSN
+# === 不要寫進 .env（用環境變數臨時傳）===
+# DATABASE_URL：本機跑要連 Railway Postgres 時，用 `railway variables -s Postgres --json` 撈 DATABASE_PUBLIC_URL，
+#   以環境變數傳給指令（DATABASE_URL=... python ...），勿寫進 .env（會覆蓋部署設定；且 auto-mode 會擋把 DB 密鑰落地檔案）。
+#   問答多輪/career_budget 才需要 DB；純測檢索/推薦 live 不需要。
+```
+> 換 OpenAI key＝看不到舊 Vector Store（store 綁帳號）。新機器用**同一把 key** 才能存取 `vs_6a26fe2c...`。
+
+### 本機跑法（新 store）
+```bash
+# .env 設好上面後：
+KEY=$(grep '^OPENAI_API_KEY=' .env | cut -d= -f2-)
+SENTRY_DSN='' OPENAI_API_KEY="$KEY" OPENAI_VECTOR_STORE_ID=vs_6a26fe2c36b8819182550837ed5fce7d OPENAI_MODEL=gpt-5.4-mini ALLOWED_ORIGIN='*' \
+  nohup .venv/bin/python -m uvicorn backend.main:app --port 8000 --host 127.0.0.1 &
+# 前端同源開 http://127.0.0.1:8000/（瀏覽器硬重整載 ?v=37）
+# 問答多輪要 DB：再前綴 DATABASE_URL="$(railway variables -s Postgres --json | python -c 'import sys,json;print(json.load(sys.stdin)["DATABASE_PUBLIC_URL"])')"
+```
+⚠️ **.env 編輯**：曾因 API_KEY 行無換行尾、`echo >> .env` 黏成同一行污染 key → 用 python 改 .env；DB 密鑰勿落地檔案（auto-mode 會擋）。
+
+---
+
+> ↓↓ 以下為 Session 10 早期版本（已過時，僅留參考）↓↓
+
+### 定案決策（不可再迴避）
+- **供應商一律 OpenAI**：檢索=**Vector Stores**、生成=**`gpt-5.4-mini`**（已真打確認此 model id 有效）、含 career_budget + judge。Gemini 設計決策 #12「固定 2.5-flash」**已被取代**。硬切、不留 Gemini 回退抽象（安全網=上線前 e2e gate + 三審）。
+- **OpenAI Vector Store**：`OPENAI_VECTOR_STORE_ID=vs_6a26b97862ec8191b9bfa34727a0c8fb`（**2718 課全灌、檔名=course_id、attributes 帶 course_id/syllabus_url**）。建庫腳本 `scripts/build_openai_vector_store.py`（ONLY_MISSING 可續）。
+- **citation 用 path B**（已 context7+真打確認）：file_search 的 **annotations 只在模型內文主動引用才有（常空）**；要可靠拿「答案根據哪幾門課」用 **`include=["file_search_call.results"]`**（= Gemini grounding_chunks 對等）。`retrieval_openai.course_ids_from_search_results`。
+- **OpenAI SSE 逐 token 平滑**（一答約 459 delta，非 Gemini 爆發式）→ **前端打字機緩衝(20cps)要拔/改**（尚未做，見待辦）。
+- **followup 兩段式**：串流乾淨 markdown 答案（第一段，file_search）+ 答案後一個 **structured-output 小呼叫**（`responses.parse` text_format Pydantic、無 file_search）生 3 個 followup。**不可把 answer 包進 JSON 串流**（會重蹈 Session 5「JSON 鷹架洩漏」覆轍）。`qa.generate_followups`。
+
+### ✅ 已完成（程式+審查+live 親證）
+- **Phase 0 建庫**：`backend/openai_client.py`(AsyncOpenAI singleton, startup 建避免 event-loop 污染)、`backend/retrieval_openai.py`(`search_skill`/`course_ids_from_annotations`/`course_ids_from_search_results`)、建庫腳本。**2718 課灌完、7 題繁中 smoke 全準**。
+- **Phase 1 推薦**（`backend/recommend.py`/`main.py`）：fan-out 改 `search_skill`、stage2/derive 改 `_openai_structured`(`responses.parse`)、`/health` 加 `retrieval_backend`/`model`。spec審+質審+**3 輪修**（含抓到「**合併池塌成 1 門**」regression：course_name 設空→`deduplicate_by_name` 全併；修法=從 courses_meta 填真課名）。**live 親證 PM 30 門池/17s**。**career_budget 100/100 用 OpenAI 重算**（健康池 23-29）。
+- **Phase 2 問答**（`backend/qa.py`/`main.py`）：`stream_answer` 改 Responses+file_search、path B citation、out-of-scope(results 空→查無)、followup 兩段式。spec審 **SPEC COMPLIANT**。**live 親證 /qa/stream：citations 5、followup 3、乾淨 markdown 逐 token**。
+
+### ⏳ 還沒做（接手繼續）
+1. **Phase 2 code quality 審查**（qa.py 重寫，spec 審過、質審待做）。
+2. **前端 SSE 平滑化**：OpenAI 逐 token 已平滑，前端 `createTypewriter`(20cps 緩衝)+漸進 markdown 要重評估（拔緩衝/直餵 token），否則雙重緩衝拖慢。**前端零改動原則的唯一例外**。
+3. **Playwright 5x e2e + 截 PNG 給使用者「對」**（Live demo gate）：推薦（清單內/外、卡片/分組/換一批）+ 問答（多輪「那金融呢」、離題查無、citation 對回真課綱、followup chips）。先徹底讀 playwright-skill（已讀 pitfalls+斷言）。
+4. **三審 release gate**：frontend/backend/db auditor 並行、全過才 release。
+5. **Phase 3 清理**：移除 Gemini 死碼（`answer_question`、`_visible_text_from_chunk` 若 stream35 也廢、雙 SDK 相容碼）、`google-genai` 依賴、舊 env；更新 CLAUDE.md（技術棧 Gemini→OpenAI、設計決策）。
+6. **部署**：Railway 設 `OPENAI_API_KEY`/`OPENAI_VECTOR_STORE_ID`/`OPENAI_MODEL` → merge → git push → Sentry MCP 監看。
+
+### 本機跑法（OpenAI 後端）
+```
+# .env 已有 OPENAI_API_KEY / OPENAI_MODEL=gpt-5.4-mini / OPENAI_VECTOR_STORE_ID=vs_6a26b97862ec8191b9bfa34727a0c8fb
+SENTRY_DSN='' OPENAI_API_KEY=<.env> OPENAI_VECTOR_STORE_ID=<.env> OPENAI_MODEL=gpt-5.4-mini ALLOWED_ORIGIN='*' \
+  .venv/bin/python -m uvicorn backend.main:app --port 8000 --host 127.0.0.1
+# 前端同源：開 http://127.0.0.1:8000/
+# career_budget 重算：上面 env + DATABASE_URL=<Railway DATABASE_PUBLIC_URL，用 railway variables -s Postgres 撈> CONCURRENCY=2 python scripts/build_career_budget.py
+```
+⚠️ **.env 編輯小心**：曾因 API_KEY 行無換行尾、`echo >> .env` 黏成同一行污染 key（已修）。用 python 改 .env、勿把 DB 密鑰寫進檔案。
 
 ---
 

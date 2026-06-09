@@ -1,9 +1,21 @@
 # backend/qa_judge.py
 from __future__ import annotations
+import os
+from pydantic import BaseModel
 
-import json
 
-from google import genai
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.4-mini")
+
+
+def _clamp(v) -> int:
+    return max(1, min(5, int(v)))
+
+
+class _QaJudgeOutput(BaseModel):
+    faithfulness: int
+    relevancy: int
+    context_precision: int
+    critique: str
 
 
 def build_qa_judge_prompt(
@@ -25,35 +37,29 @@ def build_qa_judge_prompt(
 - relevancy（相關性）：回答是否切題，有效回應學生的問題
 - context_precision（脈絡精確性）：引用的課程資料是否精準、恰當，沒有包含不相關資訊
 
-回傳 JSON（只回 JSON，不要其他文字）：
-{{
-  "faithfulness": <1-5>,
-  "relevancy": <1-5>,
-  "context_precision": <1-5>,
-  "critique": "<1-2句整體評語，指出最大優點和最需改進之處>"
-}}"""
+critique 填 1-2 句整體評語，指出最大優點和最需改進之處。"""
 
 
 def parse_qa_judge(raw: str) -> dict | None:
     """Parse LLM judge JSON response for QA.
+
+    Kept for backward compatibility (used by existing unit tests).
 
     Returns dict with keys:
         judge_faithfulness, judge_relevancy, judge_context_prec,
         judge_overall, judge_critique
     Returns None if malformed.
     """
+    import json
     try:
         data = json.loads(raw.strip())
         required = {"faithfulness", "relevancy", "context_precision", "critique"}
         if not required.issubset(data.keys()):
             return None
 
-        def clamp(v) -> int:
-            return max(1, min(5, int(v)))
-
-        f = clamp(data["faithfulness"])
-        r = clamp(data["relevancy"])
-        c = clamp(data["context_precision"])
+        f = _clamp(data["faithfulness"])
+        r = _clamp(data["relevancy"])
+        c = _clamp(data["context_precision"])
         overall = round((f + r + c) / 3)
 
         return {
@@ -67,24 +73,42 @@ def parse_qa_judge(raw: str) -> dict | None:
         return None
 
 
+def _scores_from_parsed(parsed: _QaJudgeOutput) -> dict:
+    f = _clamp(parsed.faithfulness)
+    r = _clamp(parsed.relevancy)
+    c = _clamp(parsed.context_precision)
+    overall = round((f + r + c) / 3)
+    return {
+        "judge_faithfulness": f,
+        "judge_relevancy": r,
+        "judge_context_prec": c,
+        "judge_overall": overall,
+        "judge_critique": str(parsed.critique)[:500],
+    }
+
+
 async def evaluate_qa(
-    client: genai.Client,
+    client,
     question: str,
     answer: str,
     citation_names: list[str],
 ) -> dict | None:
-    """Run RAGAS 3-dim LLM judge for QA evaluation.
+    """Run RAGAS 3-dim LLM judge via OpenAI structured output.
 
     Returns parsed scores dict or None on failure.
     """
     try:
         prompt = build_qa_judge_prompt(question, answer, citation_names)
-        resp = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt,
-            config={"response_mime_type": "application/json"},
+        resp = await client.responses.parse(
+            model=OPENAI_MODEL,
+            input=[{"role": "user", "content": prompt}],
+            text_format=_QaJudgeOutput,
         )
-        return parse_qa_judge(resp.text)
+        parsed = resp.output_parsed
+        if parsed is None:
+            print("[qa_judge] output_parsed is None (refusal/token-limit)")
+            return None
+        return _scores_from_parsed(parsed)
     except Exception as e:
         print(f"[qa_judge] Evaluation failed: {e}")
         return None

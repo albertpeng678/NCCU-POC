@@ -3,14 +3,15 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import random
 import re
 import time
 from pathlib import Path
-from google import genai
-from google.genai import types
-from google.genai import errors as genai_errors
+from openai import APIError as OpenAIAPIError
 from pydantic import BaseModel
+
+from backend.retrieval_openai import search_skill
 
 logger = logging.getLogger(__name__)
 
@@ -21,8 +22,6 @@ _NAME_INDEX: dict | None = None
 
 
 # --- 多樣性參數（跨次輪替）---
-# 生成模型：維持 gemini-2.5-flash（品質優先；flash-lite 雖快但品質低約 10%，使用者要求保留原模型）
-_GEN_MODEL = "gemini-2.5-flash"
 POOL_SIZE = 24       # stage1 檢索候選池大小（降輸出量→降延遲；仍足夠多樣性）
 ANCHOR_COUNT = 4     # 每次必留的最相關門數（保品質）
 SAMPLE_SIZE = 14     # 送進 stage2 的候選數
@@ -32,6 +31,10 @@ FANOUT_TOP_K = 8          # 每支 file_search 的 chunk 上限（壓 retrieved 
 FANOUT_PER_SKILL = 5      # 每技能 prompt 要求的課數
 POOL_TARGET = 30          # 合併池上限（round-robin 後截斷前 N）
 DEFAULT_BATCH_SIZE = 10   # 前端每批顯示數（後端給預設）
+
+# --- OpenAI 遷移參數 ---
+REC_SCORE_THRESHOLD = 0.0   # vector store 檢索分數門檻（0.0 = 不過濾）
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.4-mini")
 
 
 def sample_candidates(
@@ -197,7 +200,7 @@ def join_metadata(raw_courses: list[dict], meta: dict) -> list[dict]:
     return result
 
 
-# --- Gemini Stage 2 Schema ---
+# --- Stage 2 grouped schema（build_groups 用；structured output）---
 
 class _ReasonPoint(BaseModel):
     term: str       # 粗體關鍵詞，2-6 字
@@ -225,6 +228,42 @@ class _RankedItem(BaseModel):
 
 class _RankedOutput(BaseModel):
     courses: list[_RankedItem]          # 依推薦強度由高到低排序（rank = index）
+
+
+# --- OpenAI structured-output helper ---
+
+class _DerivedSkills(BaseModel):
+    """Schema for derive_skills_for_career_async via _openai_structured.
+
+    is_legitimate_career: LLM 判斷此輸入是否為真實、合法、大學課程能有意義培養的職業。
+    - True → 正當清單外職涯（如記者、網紅、電競選手、數據分析師）
+    - False → 非職業/非法/無厘頭/亂打（流浪漢、黑道老大、殺手、asdfgh）
+    False 時即使 skills 非空也應走 no_match（is_legitimate_career 優先）。
+    """
+    is_legitimate_career: bool
+    skills: list[str]
+
+
+async def _openai_structured(client, system: str, user: str, schema_model):
+    """呼叫 OpenAI Responses API 做結構化輸出，回傳 output_parsed（schema_model 實例）。
+
+    API: client.responses.parse(model=OPENAI_MODEL, input=[...], text_format=schema_model)
+    output_parsed 在模型 refusal / token 上限時會是 None → 拋 ValueError（防下游 AttributeError）。
+    """
+    resp = await client.responses.parse(
+        model=OPENAI_MODEL,
+        input=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        text_format=schema_model,
+    )
+    parsed = resp.output_parsed
+    if parsed is None:
+        raise ValueError(
+            f"structured output None (refusal/token-limit); output_text={resp.output_text!r}"
+        )
+    return parsed
 
 
 def build_groups(
@@ -363,103 +402,8 @@ def build_ranked_courses(
         len(ranked.courses), len(out),
     )
     return out
-
-
-def derive_skills_for_career(client: genai.Client, career: str) -> list[str] | None:
-    """為清單外職涯用 LLM 推導『可轉移／學術可教』技能關鍵字。回 None 表示非真實職涯。"""
-    prompt = (
-        f"使用者輸入的職涯目標：「{career}」\n\n"
-        "請判斷這是否為一個真實的職涯/工作。若不是（例如亂打的字），回傳空陣列 []。\n"
-        "若是，請推導 5-8 個此職涯所需、且大學課程可能教授的『可轉移能力』關鍵字"
-        "（聚焦學術可教的能力，如管理、溝通、公共衛生、資料分析；避免純體力或無法在課堂教的技能）。\n"
-        '只回傳 JSON 陣列，例：["公共衛生","基礎管理","人際溝通"]'
-    )
-    resp = client.models.generate_content(
-        model=_GEN_MODEL,
-        contents=prompt,
-        config={
-            "response_mime_type": "application/json",
-            "thinking_config": types.ThinkingConfig(thinking_budget=0),  # 關 thinking 降延遲
-        },
-    )
-    try:
-        skills = json.loads(resp.text)
-    except (json.JSONDecodeError, TypeError):
-        return None
-    if not isinstance(skills, list) or not skills:
-        return None
-    return [str(s) for s in skills][:8]
-
-
-def stage1_retrieve(
-    client: genai.Client, store_name: str, career: str, skills: list[str]
-) -> list[dict]:
-    """Stage 1: Use Gemini File Search to retrieve top 15 candidate courses."""
-    skill_str = "、".join(skills)
-    prompt = (
-        f"職涯目標：{career}\n"
-        f"所需技能：{skill_str}\n\n"
-        "請從課程知識庫找出最相關的 "
-        f"{POOL_SIZE} 門課程。\n"
-        "每門課必須回傳：\n"
-        "- course_id：9位數課程代號（如 000211012），出現在文件「課程代號:」欄位\n"
-        "- course_name：課程名稱\n"
-        "- relevance：與職涯目標的相關原因（一句）\n\n"
-        '回傳 JSON：[{"course_id": "xxx", "course_name": "xxx", "relevance": "xxx"}]\n'
-        "若知識庫中沒有任何課程與這些技能真正相關，請回傳空陣列 []，不要硬湊不相關的課。\n"
-    )
-    resp = client.models.generate_content(
-        model=_GEN_MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            tools=[
-                types.Tool(
-                    file_search=types.FileSearch(
-                        file_search_store_names=[store_name]
-                    )
-                )
-            ],
-        ),
-    )
-    return extract_json_array(resp.text)
-
-
-def stage2_group(
-    client: genai.Client, career: str, skills: list[str], candidates: list[dict]
-) -> _Stage2Output:
-    """Stage 2: Group 15 candidates into core/supporting/extended with reasons."""
-    skill_str = "、".join(skills)
-    candidates_text = "\n".join(
-        f"{i + 1}. [{c['course_id']}] {c.get('course_name', '')} — {c.get('relevance', '')}"
-        for i, c in enumerate(candidates)
-    )
-    prompt = (
-        f"職涯目標：{career}\n"
-        f"核心技能：{skill_str}\n\n"
-        f"以下是 {len(candidates)} 門候選課程：\n{candidates_text}\n\n"
-        "請選出最推薦的 10 門課，分三組：\n"
-        "- core（核心技能）：3-4門，直接對應職涯核心能力\n"
-        "- supporting（輔助技能）：3-4門，強化周邊能力\n"
-        "- extended（延伸視野）：2-3門，跨域拓展\n\n"
-        f"規則：course_id 前6碼相同者只推薦一次。\n\n"
-        f"每門課的推薦理由需簡潔說明與「{career}」目標的關聯：\n"
-        "- reason_lead：一句總述（25 字內），點出核心價值\n"
-        "- reason_points：恰 2 個重點，每個含 term（2-6字粗體關鍵詞，如「需求分析」）"
-        "與 detail（簡短一句，20 字內，說明如何對應職涯能力）"
-    )
-    resp = client.models.generate_content(
-        model=_GEN_MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=_Stage2Output,
-        ),
-    )
-    return resp.parsed
-
-
 def build_recommendation(
-    client: genai.Client, store_name: str, career: str, seed: int = 0, skills: list[str] | None = None
+    client, store_name: str, career: str, seed: int = 0, skills: list[str] | None = None
 ) -> dict:
     """Full fan-out pipeline. Returns RecommendResponse-compatible dict（扁平 courses）。"""
     result, _ = build_recommendation_instrumented(
@@ -469,14 +413,13 @@ def build_recommendation(
 
 
 async def build_recommendation_instrumented_async(
-    client: genai.Client, store_name: str, career: str, seed: int = 0, skills: list[str] | None = None
+    client, vs_id: str, career: str, seed: int = 0, skills: list[str] | None = None
 ) -> tuple[dict, int]:
     """fan-out + 整池標註 pipeline（回傳 result, pool_count）。**async 入口（POST /recommend 用）**。
 
-    直接 await、跑在呼叫端 event loop —— **不可改用 asyncio.run**：worker thread 的臨時 loop 跑完即關，
-    會把共用 client.aio 的 transport 綁到死掉的 loop → 之後 /recommend/stream、/qa/stream 噴
-    「Event loop is closed」（根因見 HANDOFF Session 7 🔴 / 設計決策 #22）。
+    直接 await、跑在呼叫端 event loop —— **不可改用 asyncio.run**：worker thread 的臨時 loop 跑完即關。
     seed 保留於回應（前端續池用新 seed 呼叫；多樣性由前端分頁 + 續池新 seed 達成）。
+    client: AsyncOpenAI（OpenAI 遷移後）。vs_id: OpenAI vector store id。
     """
     t0 = time.monotonic()
     careers = load_careers()
@@ -486,7 +429,7 @@ async def build_recommendation_instrumented_async(
             raise ValueError(f"Unknown career: {career}")
         skills = careers[career]["skills"]
 
-    candidates = await fanout_retrieve_async(client, store_name, career, skills)
+    candidates = await fanout_retrieve_async(client, vs_id, career, skills)
     if not candidates:
         raise ValueError("Stage 1 returned no candidate courses")
     ranked = await stage2_annotate_pool_async(client, career, skills, candidates)
@@ -505,12 +448,12 @@ async def build_recommendation_instrumented_async(
 
 
 def build_recommendation_instrumented(
-    client: genai.Client, store_name: str, career: str, seed: int = 0, skills: list[str] | None = None
+    client, vs_id: str, career: str, seed: int = 0, skills: list[str] | None = None
 ) -> tuple[dict, int]:
     """同步入口（sync 呼叫端用：scripts / sync 測試）。**伺服器請改用 build_recommendation_instrumented_async**，
     避免 asyncio.run 的臨時 loop 污染共用 client.aio（見上方 async 版說明）。"""
     return asyncio.run(
-        build_recommendation_instrumented_async(client, store_name, career, seed, skills=skills)
+        build_recommendation_instrumented_async(client, vs_id, career, seed, skills=skills)
     )
 
 
@@ -518,107 +461,80 @@ def build_recommendation_instrumented(
 # 與上方同步版邏輯一致，僅把 client.models.generate_content 改為 await client.aio...
 
 async def derive_skills_for_career_async(
-    client: genai.Client, career: str
+    client, career: str
 ) -> list[str] | None:
-    """async 版 derive_skills_for_career（清單外職涯技能推導）。"""
-    prompt = (
-        f"使用者輸入的職涯目標：「{career}」\n\n"
-        "請判斷這是否為一個真實的職涯/工作。若不是（例如亂打的字），回傳空陣列 []。\n"
-        "若是，請推導 5-8 個此職涯所需、且大學課程可能教授的『可轉移能力』關鍵字"
-        "（聚焦學術可教的能力，如管理、溝通、公共衛生、資料分析；避免純體力或無法在課堂教的技能）。\n"
-        '只回傳 JSON 陣列，例：["公共衛生","基礎管理","人際溝通"]'
+    """async 版 derive_skills_for_career（清單外職涯技能推導）。改用 OpenAI _openai_structured。
+
+    判斷準則（is_legitimate_career）：
+    - True：正當清單外職涯（如記者、網紅、電競選手、數據分析師、護理師）→ 推 5-8 個可轉移能力技能。
+    - False：非職業/非法/無厘頭/亂打（流浪漢、黑道老大、殺手、asdfgh）→ is_legitimate_career=False。
+    ⚠️ 務必誠實判斷：不要因「想幫忙」就把不正當輸入硬判 True——對應用的是 no_match 溫和引導路徑。
+    is_legitimate_career=False 時即使 skills 非空也回 None（→ no_match）。
+    """
+    system = (
+        "你是課程推薦助理。請判斷使用者輸入是否為真實、合法、大學課程能有意義培養的職業，"
+        "並在 is_legitimate_career 欄位誠實回答。"
+        "正當清單外職涯（如記者、網紅、電競選手、數據分析師）→ is_legitimate_career=true，並推導技能；"
+        "非職業/非法/無厘頭/亂打（流浪漢、黑道老大、殺手、asdfgh 等）→ is_legitimate_career=false。"
+        "⚠️ 務必誠實：不要因「想幫忙」就把不正當輸入硬判為 true——那正是要修的 bug。"
     )
-    resp = await client.aio.models.generate_content(
-        model=_GEN_MODEL,
-        contents=prompt,
-        config={
-            "response_mime_type": "application/json",
-            "thinking_config": types.ThinkingConfig(thinking_budget=0),
-        },
+    user = (
+        f"使用者輸入的職涯目標：「{career}」\n\n"
+        "先判斷 is_legitimate_career（true/false），若為 true，"
+        "再推導此職涯所需、且大學課程可能教授的 5-8 個『可轉移能力』關鍵字"
+        "（聚焦學術可教的能力，如管理、溝通、公共衛生、資料分析；避免純體力或無法在課堂教的技能）。\n"
+        '範例（正當）：{"is_legitimate_career": true, "skills": ["公共衛生","基礎管理","人際溝通"]}\n'
+        '範例（非正當）：{"is_legitimate_career": false, "skills": []}'
     )
     try:
-        skills = json.loads(resp.text)
-    except (json.JSONDecodeError, TypeError):
+        result = await _openai_structured(client, system, user, _DerivedSkills)
+    except Exception as e:
+        logger.warning("derive_skills failed for %r: %r", career, e)
         return None
-    if not isinstance(skills, list) or not skills:
+    if not result or not result.is_legitimate_career or not result.skills:
         return None
-    return [str(s) for s in skills][:8]
-
-
-async def stage1_retrieve_async(
-    client: genai.Client, store_name: str, career: str, skills: list[str]
-) -> list[dict]:
-    """async 版 stage1_retrieve（File Search 海選候選池）。"""
-    skill_str = "、".join(skills)
-    prompt = (
-        f"職涯目標：{career}\n"
-        f"所需技能：{skill_str}\n\n"
-        "請從課程知識庫找出最相關的 "
-        f"{POOL_SIZE} 門課程。\n"
-        "每門課必須回傳：\n"
-        "- course_id：9位數課程代號（如 000211012），出現在文件「課程代號:」欄位\n"
-        "- course_name：課程名稱\n"
-        "- relevance：與職涯目標的相關原因（一句）\n\n"
-        '回傳 JSON：[{"course_id": "xxx", "course_name": "xxx", "relevance": "xxx"}]\n'
-        "若知識庫中沒有任何課程與這些技能真正相關，請回傳空陣列 []，不要硬湊不相關的課。\n"
-    )
-    resp = await client.aio.models.generate_content(
-        model=_GEN_MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            tools=[
-                types.Tool(
-                    file_search=types.FileSearch(
-                        file_search_store_names=[store_name]
-                    )
-                )
-            ],
-        ),
-    )
-    return extract_json_array(resp.text)
-
-
+    return [str(s) for s in result.skills][:8]
 async def fanout_query_skill_async(
-    client: genai.Client, store_name: str, career: str, skill: str
+    client, vs_id: str, career: str, skill: str
 ) -> list[dict]:
-    """單一技能 → 一支聚焦小檢索（file_search top_k 受限），回候選 list。
+    """單一技能 → 一支 OpenAI vector store 檢索，回候選 list。
 
-    與 stage1_retrieve_async 不同：prompt 只聚焦『一個』技能、只要 ~FANOUT_PER_SKILL 門課、
-    FileSearch(top_k=FANOUT_TOP_K) 壓住 retrieved chunk 量 → 單支快（壓 thinking）。
+    改用 search_skill（OpenAI vector stores search API），取代 Gemini File Search。
     解析失敗 / 空輸出 → 回 []（呼叫端用 return_exceptions 容錯）。
     """
-    prompt = (
-        f"職涯目標：{career}\n"
-        f"聚焦技能：{skill}\n\n"
-        f"請從課程知識庫找出與「{skill}」最相關的 {FANOUT_PER_SKILL} 門課程。\n"
-        "每門課必須回傳：\n"
-        "- course_id：9位數課程代號（如 000211012），出現在文件「課程代號:」欄位\n"
-        "- course_name：課程名稱\n"
-        "- relevance：與此技能的相關原因（一句）\n\n"
-        '回傳 JSON：[{"course_id": "xxx", "course_name": "xxx", "relevance": "xxx"}]\n'
-        "若知識庫中沒有任何課程與此技能真正相關，請回傳空陣列 []，不要硬湊。\n"
+    raw = await search_skill(
+        client, vs_id, skill,
+        top_k=FANOUT_TOP_K,
+        score_threshold=REC_SCORE_THRESHOLD,
     )
-    resp = await client.aio.models.generate_content(
-        model=_GEN_MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            tools=[
-                types.Tool(
-                    file_search=types.FileSearch(
-                        file_search_store_names=[store_name],
-                        top_k=FANOUT_TOP_K,
-                    )
-                )
-            ],
-        ),
-    )
-    return extract_json_array(resp.text)
+    # search_skill 回 list[{course_id, score, content}]
+    # 轉成 pipeline 期望的 {course_id, course_name, relevance} 形狀。
+    # course_name 從 courses_meta.json 查真實短課名：
+    #   - 不用 ""（空字串）：deduplicate_by_name 會把所有空名視為同名 → 全去重成 1 門（regression）。
+    #   - 不用 chunk 全文（content）：數百字會灌爆 stage2 prompt。
+    meta = load_courses_meta()
+    seen_ids: set[str] = set()  # Fix D：依 course_id 去重保序（同課多 chunk 只保第一筆）
+    candidates = []
+    for item in raw:
+        cid = item.get("course_id", "")
+        if not cid:
+            continue
+        if cid in seen_ids:
+            continue
+        seen_ids.add(cid)
+        course_name = meta.get(cid, {}).get("name", "")
+        candidates.append({
+            "course_id": cid,
+            "course_name": course_name,  # 真實短課名；查不到則 "" (join_metadata 後續會過濾)
+            "relevance": skill,          # 檢索技能關鍵字作為 relevance
+        })
+    return candidates
 
 
 async def fanout_retrieve_async(
-    client: genai.Client, store_name: str, career: str, skills: list[str]
+    client, vs_id: str, career: str, skills: list[str]
 ) -> list[dict]:
-    """並行 fan-out 檢索：每技能一支 file_search，asyncio.gather 並行。
+    """並行 fan-out 檢索：每技能一支 OpenAI vector store search，asyncio.gather 並行。
 
     - 單支失敗（raise 503/timeout）或回非 list → 視為 []，不拖垮整體（容錯）。
     - 合併委派 merge_fanout_results（round-robin 交錯 + 修正 id + 去重 + 池上限）。
@@ -626,7 +542,7 @@ async def fanout_retrieve_async(
     """
     meta = load_courses_meta()
     results = await asyncio.gather(
-        *(fanout_query_skill_async(client, store_name, career, s) for s in skills),
+        *(fanout_query_skill_async(client, vs_id, career, s) for s in skills),
         return_exceptions=True,
     )
     per_skill: list[list[dict]] = []
@@ -637,48 +553,13 @@ async def fanout_retrieve_async(
         else:
             per_skill.append(r)
     return merge_fanout_results(per_skill, meta)
-
-
-async def stage2_group_async(
-    client: genai.Client, career: str, skills: list[str], candidates: list[dict]
-) -> _Stage2Output:
-    """async 版 stage2_group（分組 + 生成理由）。"""
-    skill_str = "、".join(skills)
-    candidates_text = "\n".join(
-        f"{i + 1}. [{c['course_id']}] {c.get('course_name', '')} — {c.get('relevance', '')}"
-        for i, c in enumerate(candidates)
-    )
-    prompt = (
-        f"職涯目標：{career}\n"
-        f"核心技能：{skill_str}\n\n"
-        f"以下是 {len(candidates)} 門候選課程：\n{candidates_text}\n\n"
-        "請選出最推薦的 10 門課，分三組：\n"
-        "- core（核心技能）：3-4門，直接對應職涯核心能力\n"
-        "- supporting（輔助技能）：3-4門，強化周邊能力\n"
-        "- extended（延伸視野）：2-3門，跨域拓展\n\n"
-        f"規則：course_id 前6碼相同者只推薦一次。\n\n"
-        f"每門課的推薦理由需簡潔說明與「{career}」目標的關聯：\n"
-        "- reason_lead：一句總述（25 字內），點出核心價值\n"
-        "- reason_points：恰 2 個重點，每個含 term（2-6字粗體關鍵詞，如「需求分析」）"
-        "與 detail（簡短一句，20 字內，說明如何對應職涯能力）"
-    )
-    resp = await client.aio.models.generate_content(
-        model=_GEN_MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=_Stage2Output,
-        ),
-    )
-    return resp.parsed
-
-
 async def stage2_annotate_pool_async(
-    client: genai.Client, career: str, skills: list[str], candidates: list[dict]
+    client, career: str, skills: list[str], candidates: list[dict]
 ) -> _RankedOutput:
     """整池標註：為池中『每一門』課標 group + 理由，並依推薦強度全域排序。
 
     取代『選 10 門分三組』；改為『標註整池、扁平 ranked 清單』。
+    改用 OpenAI _openai_structured（responses.parse）取代 Gemini generate_content。
     回傳順序即 rank（index 0 = 最推薦）。
     """
     skill_str = "、".join(skills)
@@ -686,7 +567,10 @@ async def stage2_annotate_pool_async(
         f"{i + 1}. [{c['course_id']}] {c.get('course_name', '')} — {c.get('relevance', '')}"
         for i, c in enumerate(candidates)
     )
-    prompt = (
+    system = (
+        "你是大學課程推薦助理。請為每門候選課程標註推薦分組與理由，並全域排序。"
+    )
+    user = (
         f"職涯目標：{career}\n"
         f"核心技能：{skill_str}\n\n"
         f"以下是 {len(candidates)} 門候選課程：\n{candidates_text}\n\n"
@@ -700,19 +584,7 @@ async def stage2_annotate_pool_async(
         "與 detail（簡短一句，20 字內，說明如何對應職涯能力）\n\n"
         "務必涵蓋每一門候選課，不要遺漏、不要新增不在清單中的課。"
     )
-    resp = await client.aio.models.generate_content(
-        model=_GEN_MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=_RankedOutput,
-            # 關 thinking：A/B 實測（probe_compose_thinking_ab）此分類+排序+短理由任務
-            # 關了快 ~3x（33s→11s）且 judge 品質不掉（reason 維持滿分）。
-            # 註：CLAUDE.md #10「不可關」是舊版自由文字 compose 的結論，不適用此 response_schema 版。
-            thinking_config=types.ThinkingConfig(thinking_budget=0),
-        ),
-    )
-    return resp.parsed
+    return await _openai_structured(client, system, user, _RankedOutput)
 
 
 # ===== SSE 串流產生器：逐階段 yield 事件（誠實對應後端真實工作） =====
@@ -733,14 +605,14 @@ def _stage_event(n: int, key: str, status: str) -> dict:
 
 
 async def stream_recommendation(
-    client: genai.Client, store_name: str, career: str,
+    client, vs_id: str, career: str,
     seed: int = 0, skills: list[str] | None = None,
 ):
     """逐階段串流推薦（fan-out + 整池標註）。事件序列與舊版一致。
 
     - retrieve 階段內部 = 並行 fan-out（fanout_retrieve_async，已含去重/修正/池上限）。
     - filter 階段保留為純標記（合併去重已在 fan-out 內完成）。
-    - compose 階段 = 整池標註（stage2_annotate_pool_async）。
+    - compose 階段 = 整池標註（stage2_annotate_pool_async，改用 OpenAI responses.parse）。
     - finalize 階段 = build_ranked_courses（前綴復原 + join meta + 同名去重）。
     - 最終 result 帶扁平 courses + batch_size。空池行為沿用（清單外→no_match；清單內→error）。
     """
@@ -765,7 +637,7 @@ async def stream_recommendation(
 
     # --- 階段 2：retrieve（並行 fan-out 海選）---
     yield _stage_event(2, "retrieve", "start")
-    candidates = await fanout_retrieve_async(client, store_name, career, skills)
+    candidates = await fanout_retrieve_async(client, vs_id, career, skills)
     if not candidates:
         if is_open:
             yield {"event": "no_match", "data": {
@@ -788,10 +660,10 @@ async def stream_recommendation(
     yield _stage_event(4, "compose", "start")
     try:
         ranked = await stage2_annotate_pool_async(client, career, skills, candidates)
-    except genai_errors.APIError as e:
-        # 只接 Gemini API 層暫時性錯誤（503/429，退避用盡後拋）→ 優雅降級成友善 error 事件、不 unhandled 炸出去；
-        # 程式 bug（KeyError/parse 等）不在此攔，照常往上拋給 main.py 的 Sentry（保留觀測性）。
-        logger.warning("compose (annotate-pool) API error: %r", e)
+    except OpenAIAPIError as e:
+        # 暫時性 OpenAI API 錯誤（503/429/rate-limit，退避用盡後拋）→ 優雅降級成友善 error 事件。
+        # 程式 bug（AttributeError/KeyError/ValueError 等）不在此攔，往上拋給 main.py 的 Sentry（保留觀測性）。
+        logger.warning("compose API error: %r", e)
         yield {"event": "error", "data": {
             "error_type": type(e).__name__,
             "message": "AI 服務目前較繁忙，請稍後再試一次。",

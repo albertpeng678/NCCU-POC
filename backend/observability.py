@@ -1,44 +1,41 @@
 """Sentry 觀測性輔助（純函式，不 import sentry_sdk，便於單測與輕量）。
 
-設計：把預期內的「暫時性 Gemini 錯誤」（429 限流 / 503 過載 / 月度 spending cap）在 before_send
+設計：把預期內的「暫時性 OpenAI 錯誤」（429 限流 / 5xx 過載/高需求）在 before_send
 降成 warning + 穩定 fingerprint（同類歸成一個 issue、不再被當嚴重 bug 洗版/Escalating），
-但**降級不丟棄**（仍記錄、看得到次數趨勢）。真 bug（其他 4xx/5xx、一般例外）一律不動、維持原樣。
+但**降級不丟棄**（仍記錄、看得到次數趨勢）。真 bug（其他 4xx、一般例外）一律不動、維持原樣。
 
 另提供 traces_sampler：超長串流端點（/recommend/stream ~2m、/qa/stream ~42s）是「正常但久」，
 降取樣避免污染 performance 報表與燒 quota。
 """
-from google.genai import errors as genai_errors
+import openai
 
 # 預期內暫時性錯誤 → (fingerprint, tag) 對映
-_FP_SPENDING = ("gemini-spending-cap", "spending-cap")
-_FP_RATE = ("gemini-rate-limit-429", "rate-limit")
-_FP_DEMAND = ("gemini-high-demand-503", "high-demand")
+_FP_RATE = ("openai-rate-limit-429", "rate-limit")
+_FP_TRANSIENT = ("openai-transient-5xx", "high-demand")
+
+# OpenAI 高需求/過載類暫時性 HTTP 狀態碼（429 另有專屬 RateLimitError 分支）
+_TRANSIENT_STATUS = {429, 500, 502, 503, 504}
 
 
 def classify_and_downgrade(event, hint):
-    """Sentry before_send：暫時性 Gemini 錯誤 → warning + fingerprint；其餘原樣回傳（不丟棄）。"""
+    """Sentry before_send：暫時性 OpenAI 錯誤 → warning + fingerprint；其餘原樣回傳（不丟棄）。"""
     exc_info = (hint or {}).get("exc_info")
     exc = exc_info[1] if exc_info else None
-    if not isinstance(exc, genai_errors.APIError):
-        return event  # 非 Gemini API 錯誤（含真 bug）一律不動
+    if exc is None:
+        return event
 
-    code = getattr(exc, "code", None)
-    msg = (getattr(exc, "message", "") or "").lower()
-
-    # ⚠️ spending cap 無專屬 code，只能靠 Google 的 message 文案比對；若 Google 改字/在地化，
-    # 會退回純 429(rate-limit) 分類 —— 仍是 warning、不會漏報，只是 fingerprint 較不精確。
-    if "spending limit" in msg or "spending cap" in msg:
-        fp, tag = _FP_SPENDING          # spending cap 文案優先於純 429
-    elif code == 429:
+    # 限流（429）：OpenAI SDK 專屬 RateLimitError → rate-limit fingerprint
+    if isinstance(exc, openai.RateLimitError):
         fp, tag = _FP_RATE
-    elif code == 503:
-        fp, tag = _FP_DEMAND
+    # 其他帶 status_code 的 OpenAI API 錯誤（含 APIStatusError）：5xx/429 過載 → transient fingerprint
+    elif isinstance(exc, openai.APIError) and getattr(exc, "status_code", None) in _TRANSIENT_STATUS:
+        fp, tag = _FP_TRANSIENT
     else:
-        return event                    # 其他 APIError（400/404 等真 bug）維持 error 醒目
+        return event  # 非暫時性 OpenAI 錯誤（含真 bug 4xx、一般例外）一律不動
 
     event["level"] = "warning"
     event["fingerprint"] = [fp]
-    event.setdefault("tags", {})["gemini_transient"] = tag
+    event.setdefault("tags", {})["openai_transient"] = tag
     return event
 
 

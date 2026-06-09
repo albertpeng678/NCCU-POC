@@ -9,8 +9,6 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from sse_starlette.sse import EventSourceResponse
 from dotenv import load_dotenv
-from google import genai
-from google.genai import types
 import sentry_sdk
 
 from backend.models import (
@@ -28,9 +26,10 @@ from backend.judge import evaluate_recommendation
 from backend.db import init_pool, close_pool, get_pool
 from backend.observability import before_send as sentry_before_send, stream_traces_sampler
 from backend.qa import (
-    answer_question, answer_question_structured, finalize_qa_answer,
-    extract_citations, stream_answer, stream_answer_structured,
+    finalize_qa_answer,
+    extract_citations, stream_answer,
     parse_qa_response, classify_qa_error, is_incomplete_answer,
+    generate_followups, condense_question,
 )
 from backend.qa_judge import evaluate_qa
 from backend.qa_logger import (
@@ -38,17 +37,15 @@ from backend.qa_logger import (
     update_qa_judge, get_session_turns, build_history_from_turns,
 )
 
+from backend.openai_client import get_client as _get_openai_client
+from backend.recommend import OPENAI_MODEL
+
 load_dotenv()
-_GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
-_STORE_NAME = os.environ["FILE_SEARCH_STORE_NAME"]
+_VS_ID = os.environ.get("OPENAI_VECTOR_STORE_ID", "")   # OpenAI vector store（推薦 + 問答）
 _ALLOWED_ORIGIN = os.environ.get("ALLOWED_ORIGIN", "*")
-_QA_MODE = os.environ.get("QA_MODE", "stream")   # stream(預設 2.5 串流) | stream35(3.5 結構化串流) | replay(3.5 非串流)
-# ⚠️（Session 9）預設改回 2.5（stream）：3.5 GA 上線窗口 high-demand 503 嚴重，時間敏感的問答經不起重試延遲
-#    （見 CLAUDE #12 / HANDOFF Session 9）。3.5 容量回穩或 2.5 JSON 治本完成後再評估翻回 stream35。
-# 啟動即驗證：打錯字(如 "Replay")不可靜默退回預設（會悄悄改行為、忽略 GEMINI_QA_MODEL）
-if _QA_MODE not in {"replay", "stream", "stream35"}:
-    raise RuntimeError(f"QA_MODE 必須是 'stream35' / 'stream' / 'replay'，收到 {_QA_MODE!r}")
-_QA_MODEL = os.environ.get("GEMINI_QA_MODEL", "gemini-3.5-flash")  # 僅 replay 生效，須 3-series
+# 問答只剩一條路徑：OpenAI Responses API 串流（Gemini 遷移完成後 stream35/replay 已移除）。
+# 保留此常數作 /health 外露與既有測試的 patch 點；恆為 "stream"。
+_QA_MODE = "stream"
 
 # Sentry：錯誤監控 + tracing。SENTRY_DSN 未設則優雅停用（本機/無監控環境照常運作）。
 # FastAPI/Starlette 整合由 sentry-sdk 自動偵測啟用。
@@ -57,39 +54,46 @@ if _SENTRY_DSN:
     sentry_sdk.init(
         dsn=_SENTRY_DSN,
         environment=os.environ.get("SENTRY_ENVIRONMENT", "production"),
-        # 預期內暫時性 Gemini 錯誤(429/503/spending cap)降 warning+歸群、真 bug 維持 error；降級不丟棄
+        # 預期內暫時性 OpenAI 錯誤(429/5xx)降 warning+歸群、真 bug 維持 error；降級不丟棄
         before_send=sentry_before_send,
         # 超長串流端點(/recommend/stream ~2m、/qa/stream)取樣降至 0.1，避免污染 performance 報表
         traces_sampler=stream_traces_sampler,
         send_default_pii=False,
     )
 
-# ⚠️ 429「high demand」風暴的真正根因：SDK 預設 timeout 僅 60s，但我們 recommend 檢索/分組
-# 單次可達 ~80-100s（thinking + File Search）> 60s → client 逾時放棄、伺服器仍在跑 → retry 再送
-# 新請求 → 同一邏輯呼叫分裂成多個併發請求 → 燒爆 RPM → 429。研究(Context7+web)：HttpOptions.timeout
-# 單位毫秒、預設 60s，轉成 X-Server-Timeout header。把 timeout 設大(>最長請求)即可讓單一請求跑完、
-# 不分裂、不誤觸發重試風暴。retry 仍保留供「真・速率/過載」429/503 退避(指數+jitter)。
-_client = genai.Client(
-    api_key=_GEMINI_API_KEY,
-    http_options=types.HttpOptions(
-        timeout=180_000,          # 180s（>最長請求 ~100s）→ 不再 60s 逾時、不再分裂成多請求
-        retry_options=types.HttpRetryOptions(
-            attempts=5,            # timeout 修好後不需太多次；保留供真 429/503 退避
-            initial_delay=1.0,
-            max_delay=20.0,
-            exp_base=2.0,
-            jitter=1.0,            # 隨機抖動，避免多請求同時重試撞牆
-            http_status_codes=[429, 503],
-        ),
-    ),
-)
+# OpenAI client（推薦 fan-out 檢索 + stage2 標註 + 問答串流）。
+# 延遲建立（event loop 啟動後第一次 get_client() 呼叫）；OPENAI_API_KEY 未設時回 None（CI/test 環境）。
+_openai_client = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global _openai_client
+    _openai_client = _get_openai_client()   # lazy init inside event loop（同一 loop 重用）
+    if _openai_client is None:
+        print("[startup] WARNING: OPENAI_API_KEY 未設定 — /recommend 與 /qa(stream) 端點將回 503")
     await init_pool()
     yield
     await close_pool()
+
+
+def _require_openai_client():
+    """Ensure the OpenAI client is configured; lazy-init if lifespan didn't run.
+
+    `_openai_client` is normally populated by `lifespan()` at startup. But bare
+    `TestClient(app)` (and any caller that skips the ASGI lifespan) leaves it None
+    even when OPENAI_API_KEY *is* set. Lazily build it here so the guard reflects
+    whether a key is actually configured — not whether lifespan happened to run —
+    and raise 503 only when no client can be built (key genuinely absent).
+    """
+    global _openai_client
+    # Relies on get_client() being idempotent (returns the same singleton): two
+    # concurrent first-requests could both rebuild, but they converge to one client
+    # and the loser is discarded — no lock needed. Keep the factory cheap/idempotent.
+    if _openai_client is None:
+        _openai_client = _get_openai_client()
+    if _openai_client is None:
+        raise HTTPException(status_code=503, detail="OpenAI client 未設定（OPENAI_API_KEY 缺少）")
 
 
 app = FastAPI(title="NCCU Course Recommender", lifespan=lifespan)
@@ -103,12 +107,17 @@ app.add_middleware(
 
 
 async def _background_log_and_judge(career, result, stage1_count, error):
-    """Phase 1: insert log row. Phase 2: run judge, update scores. Both non-blocking."""
+    """Phase 1: insert log row. Phase 2: run judge, update scores. Both non-blocking.
+
+    `_openai_client` is read at execution time. It's guaranteed non-None here because
+    the /recommend request path ran `_require_openai_client()` before scheduling this
+    task. (Even if it were None, evaluate_recommendation catches and returns None.)
+    """
     pool = get_pool()
     record = build_log_record(career, result, stage1_count, error)
     log_id = await insert_log(pool, record)
     if log_id and result:  # only judge successful recommendations
-        scores = await evaluate_recommendation(_client, career, result)
+        scores = await evaluate_recommendation(_openai_client, career, result)
         if scores:
             await update_judge_scores(pool, log_id, scores)
 
@@ -117,11 +126,18 @@ async def _background_log_and_judge(career, result, stage1_count, error):
 def health():
     # qa_mode 外露：線上實際跑哪個問答模式一目了然（curl /health 即知），
     # 用可觀測性取代「在 Railway 釘隱形環境變數」的技術債（見 CLAUDE #12 / HANDOFF Session 9）。
-    return {"status": "ok", "qa_mode": _QA_MODE}
+    # retrieval_backend/model 外露：Phase 1 OpenAI 遷移後可一眼確認推薦用 OpenAI。
+    return {
+        "status": "ok",
+        "qa_mode": _QA_MODE,
+        "retrieval_backend": "openai",
+        "model": OPENAI_MODEL,
+    }
 
 
 @app.post("/recommend")
 async def recommend(req: RecommendRequest, background_tasks: BackgroundTasks):
+    _require_openai_client()
     careers = load_careers()
     seed = req.seed if req.seed is not None else random.randrange(1_000_000)
 
@@ -140,7 +156,8 @@ async def recommend(req: RecommendRequest, background_tasks: BackgroundTasks):
             }
     else:
         # async derive：直接 await 在主 loop（與 build pipeline 一致），不阻塞 event loop。
-        skills = await derive_skills_for_career_async(_client, req.career)
+        # 改用 OpenAI client（Phase 1 遷移）。
+        skills = await derive_skills_for_career_async(_openai_client, req.career)
         if not skills:
             return {
                 "career": req.career,
@@ -152,15 +169,13 @@ async def recommend(req: RecommendRequest, background_tasks: BackgroundTasks):
     stage1_count = 0
     error = None
     try:
-        # async pipeline 直接 await 在主 loop（共用 _client.aio 跑在同一 loop，與串流端點一致）。
-        # **不可改回 asyncio.to_thread + asyncio.run**：worker thread 臨時 loop 關閉會污染共用 client.aio
-        # → 之後 /recommend/stream、/qa/stream 噴「Event loop is closed」（根因見 HANDOFF Session 7 🔴 / #22）。
+        # async pipeline 直接 await 在主 loop（OpenAI AsyncOpenAI client，同一 loop 重用）。
         result, stage1_count = await build_recommendation_instrumented_async(
-            _client, _STORE_NAME, req.career, seed, skills=skills
+            _openai_client, _VS_ID, req.career, seed, skills=skills
         )
     except Exception as e:
         error = e
-        sentry_sdk.capture_exception(e)   # 回報被吞掉的 Gemini/pipeline 錯誤（Sentry 未啟用時 no-op）
+        sentry_sdk.capture_exception(e)   # 回報被吞掉的 pipeline 錯誤（Sentry 未啟用時 no-op）
 
     # 清單外但檢索空 → no_match（誠實，不硬湊）
     if not error and skills is not None and result is not None and not result["courses"]:
@@ -205,6 +220,7 @@ def _spawn_bg(coro) -> None:
 
 @app.get("/recommend/stream")
 async def recommend_stream(request: Request, career: str, seed: int | None = None):
+    _require_openai_client()
     resolved_seed = seed if seed is not None else random.randrange(1_000_000)
 
     async def event_gen():
@@ -213,11 +229,11 @@ async def recommend_stream(request: Request, career: str, seed: int | None = Non
         # 命中離線預算 → 瞬間串流（0 即時 AI）；未命中/無 DB/清單外 → 即時串流
         budget = await get_budget(get_pool(), career) if career in load_careers() else None
         gen = (stream_recommendation_from_budget(career, budget, resolved_seed) if budget
-               else stream_recommendation(_client, _STORE_NAME, career, resolved_seed, skills=None))
+               else stream_recommendation(_openai_client, _VS_ID, career, resolved_seed, skills=None))
         try:
             async for ev in gen:
                 if await request.is_disconnected():
-                    break  # 前端已關閉（收到終態 es.close()）→ 中止，勿續燒 Gemini
+                    break  # 前端已關閉（收到終態 es.close()）→ 中止
                 if ev["event"] == "result":
                     result = ev["data"]   # 收尾後補 logging/judge（與 POST /recommend 對齊）
                 elif ev["event"] == "error":
@@ -242,13 +258,14 @@ async def recommend_stream(request: Request, career: str, seed: int | None = Non
 async def _background_qa_judge(turn_id, question, answer, citation_names):
     """Phase 2: run Q&A judge, update scores. Non-blocking."""
     pool = get_pool()
-    scores = await evaluate_qa(_client, question, answer, citation_names)
+    scores = await evaluate_qa(_openai_client, question, answer, citation_names)
     if scores:
         await update_qa_judge(pool, turn_id, scores)
 
 
 @app.post("/qa", response_model=QaResponse)
 async def qa(req: QaRequest, background_tasks: BackgroundTasks):
+    _require_openai_client()
     pool = get_pool()
 
     # Resolve session: new or existing
@@ -263,9 +280,8 @@ async def qa(req: QaRequest, background_tasks: BackgroundTasks):
         # create_session 在無 DB 時回 ephemeral uuid（不再回 None）→ 移除硬性 503 死路徑。
         session_id = await create_session(pool)
 
-    # Call Gemini（QA_MODE 切換新舊堆疊）。
-    # 兩模式都用 history-based 多輪（stateless、穩定）；不碰 interactions API/`previous_interaction_id`
-    # （beta 易碎，且串流回合把 last_interaction_id 存成 "" → 傳空字串給 interactions 必 400「Invalid previous_interaction_id」）。
+    # OpenAI Responses API 串流（history-based 多輪，stateless、穩定）。
+    # POST 是前端 SSE 斷線時的 fallback：drain 與 /qa/stream 同一條生成路徑成完整答案 → 兩路徑一致。
     result = None
     error = None
     try:
@@ -273,29 +289,27 @@ async def qa(req: QaRequest, background_tasks: BackgroundTasks):
         if req.session_id:
             turns = await get_session_turns(pool, session_id)
             history = build_history_from_turns(turns)
-        if _QA_MODE == "replay":
-            result = await asyncio.to_thread(
-                answer_question_structured, _client, _STORE_NAME, req.question, history, _QA_MODEL
-            )
+        # condense-then-search（與 GET /qa/stream 對齊）：有歷史時把簡短追問改寫成可獨立檢索的問題；
+        # 持久化仍存原始 question（req.question）。
+        if history:
+            q_for_search = await condense_question(_openai_client, req.question, history)
         else:
-            # stream/stream35 模式 POST（前端 SSE 斷線時的 fallback）：drain 與 /qa/stream 同一條 history-based
-            # 生成路徑成完整答案 → 兩路徑一致、零 interactions 依賴。
-            _gen = stream_answer if _QA_MODE == "stream" else stream_answer_structured
-            answer_text, course_ids = "", []
-            async for ev in _gen(_client, _STORE_NAME, req.question, history):
-                if ev["event"] == "done":
-                    course_ids = ev["data"].get("course_ids", []) or []
-                    answer_text = ev["data"].get("answer_text", "") or ""
-            parsed = parse_qa_response(answer_text)
-            result = {
-                "answer": parsed["answer"],
-                "followup_suggestions": parsed["followup_suggestions"],
-                "citations_course_ids": course_ids,
-                "latency_ms": 0,
-            }
+            q_for_search = req.question
+        answer_text, course_ids = "", []
+        async for ev in stream_answer(_openai_client, _VS_ID, q_for_search, history):
+            if ev["event"] == "done":
+                course_ids = ev["data"].get("course_ids", []) or []
+                answer_text = ev["data"].get("answer_text", "") or ""
+        parsed = parse_qa_response(answer_text)
+        result = {
+            "answer": parsed["answer"],
+            "followup_suggestions": parsed["followup_suggestions"],
+            "citations_course_ids": course_ids,
+            "latency_ms": 0,
+        }
     except Exception as e:
         error = e
-        sentry_sdk.capture_exception(e)   # 回報被吞掉的 Gemini 問答錯誤（Sentry 未啟用時 no-op）
+        sentry_sdk.capture_exception(e)   # 回報被吞掉的問答錯誤（Sentry 未啟用時 no-op）
 
     if error:
         # 失敗也記一筆 turn（result=None）以利後續排查，再回 503
@@ -311,9 +325,12 @@ async def qa(req: QaRequest, background_tasks: BackgroundTasks):
     # ⚠️ 必須在 insert_turn 之前：否則幻覺答案（空 citations 卻像列課程）會以未覆寫原文存進 qa_turn，
     #    再經 build_history_from_turns 餵回下一輪污染上下文（/qa/stream 同樣持久化 finalize 後答案）。
     meta = load_courses_meta()
+    # course_ids 來自 OpenAI file_search results → 模糊比對，容許模型改寫課名
+    _post_retrieved_ids = set(result.get("citations_course_ids") or [])
     result["answer"], result["followup_suggestions"], citations, _no_match = finalize_qa_answer(
         result["answer"], result.get("followup_suggestions", []),
         result.get("citations_course_ids", []), meta,
+        retrieved_ids=_post_retrieved_ids,
     )  # POST 是 fallback 路徑，不走分支③，no_match 略過
 
     # Persist turn (Phase 1) — 存 finalize 後答案
@@ -340,6 +357,7 @@ async def qa(req: QaRequest, background_tasks: BackgroundTasks):
 
 @app.get("/qa/stream")
 async def qa_stream(request: Request, question: str, session_id: str | None = None):
+    _require_openai_client()
     pool = get_pool()
 
     # 解析 session（沿用 POST /qa 規則）
@@ -364,62 +382,50 @@ async def qa_stream(request: Request, question: str, session_id: str | None = No
         result_dict = None
         error = None
         try:
-            if _QA_MODE == "replay":
-                yield _sse("stage", {"label": "檢索課綱中…"})   # 立即觸發前端 firstEvent
-                if await request.is_disconnected():
-                    return
-                result = await asyncio.to_thread(
-                    answer_question_structured, _client, _STORE_NAME, question, history, _QA_MODEL
-                )
-                answer, followups, citations, no_match = finalize_qa_answer(
-                    result["answer"], result["followup_suggestions"],
-                    result["citations_course_ids"], meta,
-                )
-                result_dict = {
-                    "answer": answer,
-                    "citations_course_ids": result["citations_course_ids"],
-                    "followup_suggestions": followups,
-                    "latency_ms": result["latency_ms"],
-                }
-                yield _sse("done", {
-                    "answer": answer,
-                    "citations": citations,
-                    "followup_suggestions": followups,
-                    "no_match": no_match,   # 查無資料 → 前端走「換個問法」引導而非重試
-                    "session_id": session_id,
-                    "turn_number": turn_number,
-                })
+            # condense-then-search：有歷史時把簡短追問結合歷史改寫成可獨立檢索的問題（CondenseQuestion）。
+            # 持久化 turn 時仍存原始 question（使用者實際輸入，供歷史顯示）。
+            if history:
+                q_for_search = await condense_question(_openai_client, question, history)
             else:
-                _gen = stream_answer if _QA_MODE == "stream" else stream_answer_structured
-                async for ev in _gen(_client, _STORE_NAME, question, history):
-                    if await request.is_disconnected():
-                        return  # 前端已關閉 → 中止
-                    if ev["event"] == "token":
-                        yield _sse("token", ev["data"])
-                    elif ev["event"] == "done":
-                        parsed = parse_qa_response(ev["data"]["answer_text"])
-                        if is_incomplete_answer(parsed["answer"]):
-                            # 3.5 偶發 TOO_MANY_TOOL_CALLS → 空答案；走既有 transient 重試泡泡，不落半截 turn
-                            yield _sse("error", {"error_type": "incomplete", "message": "empty answer"})
-                            return
-                        answer, followups, citations, no_match = finalize_qa_answer(
-                            parsed["answer"], parsed["followup_suggestions"],
-                            ev["data"]["course_ids"], meta,
+                q_for_search = question
+            async for ev in stream_answer(_openai_client, _VS_ID, q_for_search, history):
+                if await request.is_disconnected():
+                    return  # 前端已關閉 → 中止
+                if ev["event"] == "token":
+                    yield _sse("token", ev["data"])
+                elif ev["event"] == "done":
+                    parsed = parse_qa_response(ev["data"]["answer_text"])
+                    if is_incomplete_answer(parsed["answer"]):
+                        # 偶發空答案；走既有 transient 重試泡泡，不落半截 turn
+                        yield _sse("error", {"error_type": "incomplete", "message": "empty answer"})
+                        return
+                    # course_ids 來自 OpenAI file_search results → 模糊比對，容許模型改寫課名
+                    _stream_retrieved_ids = set(ev["data"]["course_ids"])
+                    answer, followups, citations, no_match = finalize_qa_answer(
+                        parsed["answer"], parsed["followup_suggestions"],
+                        ev["data"]["course_ids"], meta,
+                        retrieved_ids=_stream_retrieved_ids,
+                    )
+                    # OpenAI 吐純 markdown 無 JSON，followups 恆空；
+                    # 兩段式補回：答案串完後快速呼叫 generate_followups（不帶 file_search）。
+                    if not followups:
+                        followups = await generate_followups(
+                            _openai_client, question, answer
                         )
-                        result_dict = {
-                            "answer": answer,
-                            "citations_course_ids": ev["data"]["course_ids"],
-                            "followup_suggestions": followups,
-                            "latency_ms": 0,
-                        }
-                        yield _sse("done", {
-                            "answer": answer,   # 最終權威答案（含防幻覺覆寫）；前端據此覆蓋已串流文字
-                            "citations": citations,
-                            "followup_suggestions": followups,
-                            "no_match": no_match,   # 查無資料 → 前端走「換個問法」引導而非重試
-                            "session_id": session_id,
-                            "turn_number": turn_number,
-                        })
+                    result_dict = {
+                        "answer": answer,
+                        "citations_course_ids": ev["data"]["course_ids"],
+                        "followup_suggestions": followups,
+                        "latency_ms": 0,
+                    }
+                    yield _sse("done", {
+                        "answer": answer,   # 最終權威答案（含防幻覺覆寫）；前端據此覆蓋已串流文字
+                        "citations": citations,
+                        "followup_suggestions": followups,
+                        "no_match": no_match,   # 查無資料 → 前端走「換個問法」引導而非重試
+                        "session_id": session_id,
+                        "turn_number": turn_number,
+                    })
         except Exception as e:
             error = e
             sentry_sdk.capture_exception(e)
