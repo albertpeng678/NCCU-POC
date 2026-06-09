@@ -1,11 +1,28 @@
 # NCCU 課程推薦系統 — 交接文件（HANDOFF.md）
 
 > 專案進展史 + WBS + 待辦。給接手的 agent 快速掌握「做到哪、還剩什麼」。
-> 最後更新：2026-06-08（**Session 10**：**整個檢索層 + 生成從 Gemini 遷 OpenAI**——Phase 0/1/2 程式+審查+live 親證完成、career_budget 100/100 重算，未 merge/未上線、未過 e2e gate/三審；見下方 ★Session 10）
+> 最後更新：2026-06-09（**Session 11**：完成 OpenAI 遷移收尾——已 merge master、**完整移除 Gemini**、QA 引用精準度修正、e2e + 三審通過、部署中；見下方 ★Session 11）
 
 ---
 
-## ★ Session 10 交接（最新，換機器接手第一個讀）★
+## ★ Session 11 交接（最新，接手第一個讀）★
+
+> **把 Session 10 的 OpenAI 遷移收尾並上線。**
+
+**已完成（皆已 commit 在 master）：**
+1. **修 37 紅燈**（`ba77aca`）：被打斷的 agent 在工作區留半套 `_require_openai_client` 守門，依賴 lifespan，但 bare `TestClient` 不跑 lifespan → 全域 None → 503。改成守門 lazy-init from factory（反映「key 是否設定」而非「lifespan 是否跑過」）。
+2. **完整移除 Gemini**（`c2614ef`）：backend runtime 零 `google-genai`（`grep genai backend/` 空）；QA 收斂成單一 OpenAI 串流（刪 replay/stream35）；recommend 刪死 Gemini 函式；**observability Sentry 分類改寫成 OpenAI 版**（`RateLimitError`→rate-limit、`APIError` 429/5xx→high-demand）；刪 11 個 Gemini-only 測試檔。新增 `tests/backend/test_no_gemini.py` 守門防復活。
+3. **QA 引用精準度**（`314327f`）：file_search 回 top_k 檢索全集但模型不一定全引用 → 無關課（如查 PM 冒出碳市場）會混進參考課綱。OpenAI annotations 對本庫**實測為空**、內文 `turn0fileN` marker 索引語意**未公開不可靠**（實測 file1≠results[1]）→ 改「課名出現在答案」過濾，fallback 全沒提到時保留全集。
+4. **前端課程數**（`1f859c6`）：hero 副標 2877→2718。
+5. 測試 388 綠；QA + recommend 真瀏覽器 e2e（Playwright MCP）通過；三審 approve。
+
+**踩過的大坑（已記 memory）：** Playwright MCP 瀏覽器**殘留上次 e2e 的 `page.route` mock**，把 `/qa/stream` 攔下回假 `rate_limited`「伺服器正忙」，但 curl 同端點正常——繞了很久才用唯一 marker grep 後端 log（沒到後端=被 mock）確認，`unrouteAll` 清掉。**OpenAI 帳號其實沒限速**（gpt-5.4-mini 30k RPM/180M TPM）。
+
+**部署狀態：** 已 merge `feat/retrieval-openai`→master。**Railway 環境變數待校正**：確認 `OPENAI_API_KEY`（密鑰，由使用者設）、`OPENAI_VECTOR_STORE_ID=fileSearchStores 換成 `vs_6a26fe2c36b8819182550837ed5fce7d`、`OPENAI_MODEL=gpt-5.4-mini`；移除 `GEMINI_API_KEY`/`FILE_SEARCH_STORE_NAME`/`GEMINI_QA_MODEL`。push 觸發 Railway 自動部署。
+
+---
+
+## ★ Session 10 交接 ★
 
 > **大事：把檢索層整套從 Gemini 硬切到 OpenAI**（使用者決定，因 Gemini 持續不穩）。分支 **`feat/retrieval-openai`**（**未 merge master、未 push**）。spec/plan：`docs/superpowers/{specs,plans}/2026-06-08-retrieval-migration-openai*`。
 
