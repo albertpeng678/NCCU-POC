@@ -1,7 +1,7 @@
 # NCCU 課程推薦系統 — 交接文件（HANDOFF.md）
 
 > 專案進展史 + WBS + 待辦。給接手的 agent 快速掌握「做到哪、還剩什麼」。
-> 最後更新：2026-06-09（**Session 11**：完成 OpenAI 遷移收尾——已 merge master、**完整移除 Gemini**、QA 引用精準度修正、e2e + 三審通過、部署中；見下方 ★Session 11）
+> 最後更新：2026-06-09（**Session 11**：完成 OpenAI 遷移收尾並**✅ 已上線**——已 merge master、**完整移除 Gemini**、QA 引用精準度修正、e2e + 三審通過、Railway 部署成功 + production 測試全綠；見下方 ★Session 11）
 
 ---
 
@@ -18,7 +18,7 @@
 
 **踩過的大坑（已記 memory）：** Playwright MCP 瀏覽器**殘留上次 e2e 的 `page.route` mock**，把 `/qa/stream` 攔下回假 `rate_limited`「伺服器正忙」，但 curl 同端點正常——繞了很久才用唯一 marker grep 後端 log（沒到後端=被 mock）確認，`unrouteAll` 清掉。**OpenAI 帳號其實沒限速**（gpt-5.4-mini 30k RPM/180M TPM）。
 
-**部署狀態：** 已 merge `feat/retrieval-openai`→master。**Railway 環境變數待校正**：確認 `OPENAI_API_KEY`（密鑰，由使用者設）、`OPENAI_VECTOR_STORE_ID=fileSearchStores 換成 `vs_6a26fe2c36b8819182550837ed5fce7d`、`OPENAI_MODEL=gpt-5.4-mini`；移除 `GEMINI_API_KEY`/`FILE_SEARCH_STORE_NAME`/`GEMINI_QA_MODEL`。push 觸發 Railway 自動部署。
+**部署狀態：✅ 已上線**（2026-06-09）。已 merge `feat/retrieval-openai`→master、push origin/master、Railway 自動部署 `8641a6a5` SUCCESS。**Railway production env 最終狀態**：`OPENAI_API_KEY`(sk-,167)、`OPENAI_VECTOR_STORE_ID=vs_6a26fe2c36b8819182550837ed5fce7d`、`OPENAI_MODEL=gpt-5.4-mini`、`ALLOWED_ORIGIN=*`、`DATABASE_URL`、`SENTRY_DSN`；**Gemini 變數（GEMINI_API_KEY/FILE_SEARCH_STORE_NAME/QA_MODE）已全刪**。**production 測試全通過**：`https://nccu-course.up.railway.app` /health=`retrieval_backend:openai,model:gpt-5.4-mini`、/qa/stream 453 token 0 error、/recommend 200/30 課（budget 命中 0.5s）、Sentry 過去 1h 零新錯誤。⚠️ 換機器時 `OPENAI_API_KEY` 是 service-account 密鑰（`sk-svcacct-…`），存於本機 `.env`（gitignored、不跨機）。
 
 ---
 

@@ -1,7 +1,7 @@
 # NCCU 課程推薦系統 — 專案說明（CLAUDE.md）
 
 > 給 AI agent 的專案全貌速覽。讀完即可掌握架構、檔案、計畫與慣例。
-> 最後更新：2026-06-09（**Session 11**）。**Session 10-11：整個檢索層+生成從 Gemini 硬切到 OpenAI（已完成上線）**（Vector Stores + Responses API + `gpt-5.4-mini`，含推薦/問答/judge；career_budget 100/100 用 OpenAI 重算）。**✅ Session 11 收尾：已 merge master + 完整移除 Gemini（backend 零 google-genai；`test_no_gemini.py` 守門防復活；observability Sentry 分類改 OpenAI 版 RateLimitError/APIStatusError）+ QA 引用精準度（只列答案實際引用的課，非檢索全集——OpenAI annotations 對本庫實測為空、turn0fileN marker 索引語意未公開不可靠，改「課名出現在答案」過濾）+ 前端課程數 2877→2718；QA/recommend 真瀏覽器 e2e 通過、三審 approve、388 測試綠；部署中**。教訓：Playwright MCP 瀏覽器殘留上次 e2e 的 `page.route` mock 會造成「伺服器正忙」假象，用 `unrouteAll` 清（見 memory `playwright-mcp-stale-route-mock`）。詳見 HANDOFF Session 10/11。原 Session 9 重點：：(1) **問答預設回退 2.5**（`QA_MODE=stream`）——3.5 GA 上線窗口 high-demand 503 嚴重、問答時間敏感經不起重試延遲（web 研究證實是可預期的上線潮現象，~1-3 週緩解）；**戰略決策：不能用「切 3.5」迴避 2.5 JSON 脆弱性，必須正面治本**（見設計決策 #12，待辦見 HANDOFF Session 9）。(2) **Track C 推薦遷 3.5 + fan-out 合併**（成本砍~6-8x）已在分支 `feat/recommend-3.5` 完成（6 commits + docs、309 測試綠、含 503 自動降級 + 空池安全網），**未 merge，live 驗證同卡 3.5 503**。Session 8 摘要：✅ 修「Event loop is closed」（`d6b0490`）。Session 7 摘要：離線預算 `career_budget`（50 職涯預算進 Postgres，命中秒回 0 即時 AI）＋柴犬等候動畫（Lottie 三色、done-driven 數字）＋Q&A 失敗復原（過載重試泡泡/查無資料引導）＋Sentry 降噪（暫時性 Gemini 錯誤降 warning、本機不啟用）＋多輪追問修復（history-based 統一）。**✅ Session 8 已修先前高優先 bug「Event loop is closed」（commit `d6b0490`）**：POST /recommend 改全程 async `await build_recommendation_instrumented_async`（不再 to_thread + asyncio.run），清單外 derive 也改 `await derive_skills_for_career_async`（見設計決策 #22）。已過嚴格 code review + Playwright 全端 e2e（polluter POST → victim stream 無 loop 錯誤）+ 256 後端測試綠，**已 push origin/master 部署**。前端 `?v=34`。注意 `~/.claude` 的 memory 不會跨機器，必要資訊都在 HANDOFF/CLAUDE。
+> 最後更新：2026-06-09（**Session 11**）。**Session 10-11：整個檢索層+生成從 Gemini 硬切到 OpenAI（已完成上線）**（Vector Stores + Responses API + `gpt-5.4-mini`，含推薦/問答/judge；career_budget 100/100 用 OpenAI 重算）。**✅ Session 11 收尾：已 merge master + 完整移除 Gemini（backend 零 google-genai；`test_no_gemini.py` 守門防復活；observability Sentry 分類改 OpenAI 版 RateLimitError/APIStatusError）+ QA 引用精準度（只列答案實際引用的課，非檢索全集——OpenAI annotations 對本庫實測為空、turn0fileN marker 索引語意未公開不可靠，改「課名出現在答案」過濾）+ 前端課程數 2877→2718；QA/recommend 真瀏覽器 e2e 通過、三審 approve、388 測試綠；**✅ 已上線**（deploy `8641a6a5` SUCCESS、production 五項測試全通過：/health=openai、/qa/stream 453 token、/recommend 200/30課、Railway env 只剩 OpenAI 三項+DB/Sentry、Sentry 零錯誤）**。教訓：Playwright MCP 瀏覽器殘留上次 e2e 的 `page.route` mock 會造成「伺服器正忙」假象，用 `unrouteAll` 清（見 memory `playwright-mcp-stale-route-mock`）。詳見 HANDOFF Session 10/11。原 Session 9 重點：：(1) **問答預設回退 2.5**（`QA_MODE=stream`）——3.5 GA 上線窗口 high-demand 503 嚴重、問答時間敏感經不起重試延遲（web 研究證實是可預期的上線潮現象，~1-3 週緩解）；**戰略決策：不能用「切 3.5」迴避 2.5 JSON 脆弱性，必須正面治本**（見設計決策 #12，待辦見 HANDOFF Session 9）。(2) **Track C 推薦遷 3.5 + fan-out 合併**（成本砍~6-8x）已在分支 `feat/recommend-3.5` 完成（6 commits + docs、309 測試綠、含 503 自動降級 + 空池安全網），**未 merge，live 驗證同卡 3.5 503**。Session 8 摘要：✅ 修「Event loop is closed」（`d6b0490`）。Session 7 摘要：離線預算 `career_budget`（50 職涯預算進 Postgres，命中秒回 0 即時 AI）＋柴犬等候動畫（Lottie 三色、done-driven 數字）＋Q&A 失敗復原（過載重試泡泡/查無資料引導）＋Sentry 降噪（暫時性 Gemini 錯誤降 warning、本機不啟用）＋多輪追問修復（history-based 統一）。**✅ Session 8 已修先前高優先 bug「Event loop is closed」（commit `d6b0490`）**：POST /recommend 改全程 async `await build_recommendation_instrumented_async`（不再 to_thread + asyncio.run），清單外 derive 也改 `await derive_skills_for_career_async`（見設計決策 #22）。已過嚴格 code review + Playwright 全端 e2e（polluter POST → victim stream 無 loop 錯誤）+ 256 後端測試綠，**已 push origin/master 部署**。前端 `?v=34`。注意 `~/.claude` 的 memory 不會跨機器，必要資訊都在 HANDOFF/CLAUDE。
 >
 > ── 歷史 ── Session 5 摘要：探索過 3.5-flash（原生 response_schema 免解析，但**現階段 high-demand 503 延遲不穩**，故未採為預設）→ 決定 **Q&A 留 2.5-flash 串流**，用 (A) JSON 三層強化（`parse_qa_response` 補 `json_repair`+`_strip_fences` 絕不漏鷹架；`stream_answer` JSON-first 守門用 `_partial_answer` 增量抽乾淨值）(B) 平滑串流打字機（SSE token 餵 `createTypewriter` 定速 **20cps** 緩衝 + `drainCount` backlog 自適應；**表格逐列滑順長出**——`safeMarkdownPrefix` 改「保留已完成列、只藏正在打的半截列」，非整塊 snap-in；`renderFinal`/committed 用 `mdToHtml` 不套 heal，避免結尾表格列被誤砍）壓掉「漏 JSON / 不平滑 / 表格 raw」。`QA_MODE=stream`(預設 2.5 強化) / `replay`(3.5 非串流選項)。Playwright 動態實測通過（無 JSON 鷹架、表格逐列建構、0 console error）。spec/plan：`docs/superpowers/{specs,plans}/2026-06-05-qa-2.5-hardening-smooth-stream*`。**已 push master 部署（Railway）；前端 cache-bust `?v=19`**。注意 `~/.claude` 的 memory 不會跨機器，所有必要資訊都已寫進 HANDOFF/CLAUDE。
 
@@ -12,7 +12,7 @@
 ## 兩大功能模式
 
 1. **職涯推薦**（`POST /recommend`）：
-   - **50 種預設職涯**之一 → 用 `career_skills.json` 靜態技能。
+   - **100 種預設職涯**之一 → 用 `career_skills.json` 靜態技能。
    - **清單外職涯**（如「記者」「清潔工」）→ `derive_skills_for_career` 用 LLM 即時推導「可轉移能力」技能 → 真實檢索；推不出（亂打）或檢索空 → 回 `no_match`（前端溫和導向問答，不卡死）。
    - **（Session 4 改 fan-out）** stage1＝**每技能一支並行小檢索**(`fanout_retrieve_async`，top_k=8，asyncio.gather 容錯) 合併成候選池 → stage2＝**整池標註**(`stage2_annotate_pool_async` 扁平 ranked + group) → `build_ranked_courses`。`RecommendResponse` 改**扁平 `courses: list[Course]`**(含 group/rank)+`batch_size`。**延遲 ~124s→~79s**（fan-out 44 + stage2 35）。⚠️ 代價：每請求 embedding 1→6-8 次（放大花費 + 撞 `gemini-embedding-001` 限流；見設計決策 #19）。
    - **「換一批」改前端分頁**：首載回整池，前端 `pagination.js` 依 rank 切批每批 10、`groupBatch` 排名分桶顯示三區；換一批**純前端切片 0 網路請求**；池乾以新 seed 續池。`/recommend` 可帶 `seed`；response 回 `seed`。
@@ -51,7 +51,7 @@ NCCU-poc/
 │   ├── qa_logger.py        # qa_session/qa_turn 持久化與讀回
 │   ├── logger.py           # query_log 寫入 + judge 分數更新
 │   ├── db.py               # asyncpg pool（DATABASE_URL 未設則優雅跳過）
-│   ├── career_skills.json  # 50 職涯 → 技能關鍵字（靜態）
+│   ├── career_skills.json  # 100 職涯 → 技能關鍵字（靜態）
 │   ├── courses_meta.json   # 2718 課 metadata（已 commit；backend runtime 依賴）
 │   ├── schema.sql          # query_log + qa_session + qa_turn 建表
 │   ├── Dockerfile          # uvicorn backend.main:app，context=repo root
@@ -61,7 +61,7 @@ NCCU-poc/
 │   ├── index.html          # 雙模式 SPA；引入 Sentry/marked/DOMPurify CDN；資源連結帶 ?v=N（cache-bust）
 │   ├── style.css           # navy glassmorphism；推薦/Q&A/markdown/等待UX/換一批/RWD 樣式
 │   ├── app.js              # 模式切換、autocomplete、/recommend、/qa、markdown渲染、換一批、等待UX、CONFIG(API_URL,SENTRY_DSN)
-│   ├── careers.js          # 50 職涯清單 + 6 熱門
+│   ├── careers.js          # 100 職涯清單 + 6 熱門
 │   ├── Dockerfile          # nginx:1.27-alpine + envsubst $PORT
 │   └── nginx.conf.template # listen $PORT + SPA fallback
 │
