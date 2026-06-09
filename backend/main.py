@@ -43,8 +43,8 @@ from backend.openai_client import get_client as _get_openai_client
 from backend.recommend import OPENAI_MODEL
 
 load_dotenv()
-_GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
-_STORE_NAME = os.environ["FILE_SEARCH_STORE_NAME"]      # Gemini store（qa.py 仍用）
+_GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+_STORE_NAME = os.environ.get("FILE_SEARCH_STORE_NAME", "")      # Gemini store（qa.py 仍用）
 _VS_ID = os.environ.get("OPENAI_VECTOR_STORE_ID", "")   # OpenAI vector store（推薦用）
 _ALLOWED_ORIGIN = os.environ.get("ALLOWED_ORIGIN", "*")
 _QA_MODE = os.environ.get("QA_MODE", "stream")   # stream(預設 2.5 串流) | stream35(3.5 結構化串流) | replay(3.5 非串流)
@@ -74,20 +74,24 @@ if _SENTRY_DSN:
 # 新請求 → 同一邏輯呼叫分裂成多個併發請求 → 燒爆 RPM → 429。研究(Context7+web)：HttpOptions.timeout
 # 單位毫秒、預設 60s，轉成 X-Server-Timeout header。把 timeout 設大(>最長請求)即可讓單一請求跑完、
 # 不分裂、不誤觸發重試風暴。retry 仍保留供「真・速率/過載」429/503 退避(指數+jitter)。
-_client = genai.Client(
-    api_key=_GEMINI_API_KEY,
-    http_options=types.HttpOptions(
-        timeout=180_000,          # 180s（>最長請求 ~100s）→ 不再 60s 逾時、不再分裂成多請求
-        retry_options=types.HttpRetryOptions(
-            attempts=5,            # timeout 修好後不需太多次；保留供真 429/503 退避
-            initial_delay=1.0,
-            max_delay=20.0,
-            exp_base=2.0,
-            jitter=1.0,            # 隨機抖動，避免多請求同時重試撞牆
-            http_status_codes=[429, 503],
+try:
+    _client = genai.Client(
+        api_key=_GEMINI_API_KEY,
+        http_options=types.HttpOptions(
+            timeout=180_000,          # 180s（>最長請求 ~100s）→ 不再 60s 逾時、不再分裂成多請求
+            retry_options=types.HttpRetryOptions(
+                attempts=5,            # timeout 修好後不需太多次；保留供真 429/503 退避
+                initial_delay=1.0,
+                max_delay=20.0,
+                exp_base=2.0,
+                jitter=1.0,            # 隨機抖動，避免多請求同時重試撞牆
+                http_status_codes=[429, 503],
+            ),
         ),
-    ),
-)
+    )
+except Exception as _e:
+    _client = None  # type: ignore[assignment]
+    print(f"[startup] Gemini client 未建立（GEMINI_API_KEY 未設或無效）：{_e}")
 
 # OpenAI client（推薦 fan-out 檢索 + stage2 標註）。
 # 延遲建立（event loop 啟動後第一次 get_client() 呼叫）；OPENAI_API_KEY 未設時回 None（CI/test 環境）。
@@ -98,9 +102,30 @@ _openai_client = None
 async def lifespan(app: FastAPI):
     global _openai_client
     _openai_client = _get_openai_client()   # lazy init inside event loop（同一 loop 重用）
+    if _openai_client is None:
+        print("[startup] WARNING: OPENAI_API_KEY 未設定 — /recommend 與 /qa(stream) 端點將回 503")
     await init_pool()
     yield
     await close_pool()
+
+
+def _require_openai_client():
+    """Ensure the OpenAI client is configured; lazy-init if lifespan didn't run.
+
+    `_openai_client` is normally populated by `lifespan()` at startup. But bare
+    `TestClient(app)` (and any caller that skips the ASGI lifespan) leaves it None
+    even when OPENAI_API_KEY *is* set. Lazily build it here so the guard reflects
+    whether a key is actually configured — not whether lifespan happened to run —
+    and raise 503 only when no client can be built (key genuinely absent).
+    """
+    global _openai_client
+    # Relies on get_client() being idempotent (returns the same singleton): two
+    # concurrent first-requests could both rebuild, but they converge to one client
+    # and the loser is discarded — no lock needed. Keep the factory cheap/idempotent.
+    if _openai_client is None:
+        _openai_client = _get_openai_client()
+    if _openai_client is None:
+        raise HTTPException(status_code=503, detail="OpenAI client 未設定（OPENAI_API_KEY 缺少）")
 
 
 app = FastAPI(title="NCCU Course Recommender", lifespan=lifespan)
@@ -114,7 +139,12 @@ app.add_middleware(
 
 
 async def _background_log_and_judge(career, result, stage1_count, error):
-    """Phase 1: insert log row. Phase 2: run judge, update scores. Both non-blocking."""
+    """Phase 1: insert log row. Phase 2: run judge, update scores. Both non-blocking.
+
+    `_openai_client` is read at execution time. It's guaranteed non-None here because
+    the /recommend request path ran `_require_openai_client()` before scheduling this
+    task. (Even if it were None, evaluate_recommendation catches and returns None.)
+    """
     pool = get_pool()
     record = build_log_record(career, result, stage1_count, error)
     log_id = await insert_log(pool, record)
@@ -139,6 +169,7 @@ def health():
 
 @app.post("/recommend")
 async def recommend(req: RecommendRequest, background_tasks: BackgroundTasks):
+    _require_openai_client()
     careers = load_careers()
     seed = req.seed if req.seed is not None else random.randrange(1_000_000)
 
@@ -221,6 +252,7 @@ def _spawn_bg(coro) -> None:
 
 @app.get("/recommend/stream")
 async def recommend_stream(request: Request, career: str, seed: int | None = None):
+    _require_openai_client()
     resolved_seed = seed if seed is not None else random.randrange(1_000_000)
 
     async def event_gen():
@@ -265,6 +297,8 @@ async def _background_qa_judge(turn_id, question, answer, citation_names):
 
 @app.post("/qa", response_model=QaResponse)
 async def qa(req: QaRequest, background_tasks: BackgroundTasks):
+    if _QA_MODE == "stream":
+        _require_openai_client()
     pool = get_pool()
 
     # Resolve session: new or existing
@@ -372,6 +406,8 @@ async def qa(req: QaRequest, background_tasks: BackgroundTasks):
 
 @app.get("/qa/stream")
 async def qa_stream(request: Request, question: str, session_id: str | None = None):
+    if _QA_MODE == "stream":
+        _require_openai_client()
     pool = get_pool()
 
     # 解析 session（沿用 POST /qa 規則）

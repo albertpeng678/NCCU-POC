@@ -29,7 +29,15 @@ def _format_reason(reason) -> str:
 
 
 def build_judge_prompt(career: str, result: dict) -> str:
-    groups = result.get("groups", {})
+    # Support both legacy {"groups": {...}} and current flat {"courses": [...]} pipeline format.
+    groups = result.get("groups") or {}
+    if not groups:
+        courses = result.get("courses", [])
+        groups = {
+            "core": [c for c in courses if c.get("group") == "core"],
+            "supporting": [c for c in courses if c.get("group") == "supporting"],
+            "extended": [c for c in courses if c.get("group") == "extended"],
+        }
 
     def format_group(name: str, courses: list[dict]) -> str:
         if not courses:

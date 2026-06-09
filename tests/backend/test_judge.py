@@ -40,3 +40,21 @@ def test_build_judge_prompt_contains_career_and_courses():
     assert "行銷管理" in prompt
     assert "relevance" in prompt
     assert "1-5" in prompt
+
+
+def test_build_judge_prompt_flat_courses():
+    """Fix 1: build_judge_prompt must work with flat courses list (current pipeline format)."""
+    result = {
+        "career": "軟體工程師",
+        "courses": [
+            {"name": "資料結構", "department": "資科系", "group": "core", "reason": "演算法基礎"},
+            {"name": "作業系統", "department": "資科系", "group": "supporting", "reason": "系統底層"},
+            {"name": "人工智慧", "department": "資科系", "group": "extended", "reason": "延伸視野"},
+        ],
+    }
+    prompt = build_judge_prompt(career="軟體工程師", result=result)
+    assert "軟體工程師" in prompt
+    assert "資料結構" in prompt
+    assert "作業系統" in prompt
+    assert "人工智慧" in prompt
+    assert "relevance" in prompt
