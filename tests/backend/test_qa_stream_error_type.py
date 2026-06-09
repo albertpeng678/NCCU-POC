@@ -3,11 +3,12 @@
 讓前端走差異化分支（暫時性過載→重試 vs 查無資料→換個問法）。
 """
 import json
+import httpx
 import pytest
 from unittest.mock import patch
 from fastapi.testclient import TestClient
 
-from google.genai import errors as genai_errors
+from openai import APIStatusError as _OAIStatus
 from backend import qa_logger
 
 
@@ -54,7 +55,12 @@ def _err_type(client, exc):
 
 
 def test_stream_error_503_is_rate_limited(client):
-    assert _err_type(client, genai_errors.ServerError(503, {"error": {"message": "overloaded"}})) == "rate_limited"
+    exc = _OAIStatus(
+        "overloaded",
+        response=httpx.Response(503, request=httpx.Request("GET", "http://test.example.com")),
+        body=None,
+    )
+    assert _err_type(client, exc) == "rate_limited"
 
 
 def test_stream_error_generic_is_unknown(client):

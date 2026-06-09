@@ -1,5 +1,5 @@
 # tests/backend/test_qa_stream_empty_answer.py
-"""/qa/stream：stream35 模式下空答案（TOO_MANY_TOOL_CALLS）→ 送 error(incomplete)，不送 done。"""
+"""/qa/stream：空答案 → 送 error(incomplete)，不送 done。"""
 import json
 import pytest
 from unittest.mock import patch
@@ -32,21 +32,21 @@ def _events(text):
 
 
 async def _fake_stream_empty_answer(_client, _store, _question, _history=None, **_kw):
-    """模擬 TOO_MANY_TOOL_CALLS → stream_answer_structured 回空 answer。"""
+    """模擬空答案 → stream_answer 回空 answer_text。"""
     yield {
         "event": "done",
         "data": {
             "course_ids": [],
-            "answer_text": '{"answer":"","followup_suggestions":[]}',
+            "answer_text": "",
         },
     }
 
 
-def test_stream35_empty_answer_yields_error_not_done(client):
+def test_stream_empty_answer_yields_error_not_done(client):
     """空答案 → 回應含 event: error 且 error_type=incomplete，不含 event: done。"""
-    with patch("backend.main._QA_MODE", "stream35"), \
+    with patch("backend.main._QA_MODE", "stream"), \
          patch("backend.main.get_pool", return_value=None), \
-         patch("backend.main.stream_answer_structured", _fake_stream_empty_answer), \
+         patch("backend.main.stream_answer", _fake_stream_empty_answer), \
          patch("backend.main.load_courses_meta", return_value={}):
         resp = client.get("/qa/stream?question=廣泛查詢測試")
 

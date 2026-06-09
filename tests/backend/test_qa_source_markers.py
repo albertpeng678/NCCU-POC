@@ -1,10 +1,6 @@
 # tests/backend/test_qa_source_markers.py
 """strip_source_markers：剝除 file_search inline 來源引註標記（TDD）。"""
-import pytest
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
-
-from backend.qa import strip_source_markers, finalize_qa_answer, stream_answer_structured
+from backend.qa import strip_source_markers, finalize_qa_answer
 
 
 # ─── 1. 純函式：strip_source_markers ───────────────────────────────────────
@@ -83,68 +79,3 @@ def test_finalize_source_markers_stripped_before_no_match_check():
     )
     assert ".txt" not in answer
     assert no_match is False   # 無 course_listing，不應觸發覆寫
-
-
-# ─── 3. stream_answer_structured：含來源標記的 token 串出後乾淨 ────────────
-
-def _chunk_text(text, course_id=None):
-    """Helper：建立無 thought 的 chunk，candidates 無 content（退回 chunk.text）。"""
-    if course_id:
-        rc = SimpleNamespace(
-            custom_metadata=None,
-            title=f"課程代號: {course_id}",
-            text="", uri=None,
-        )
-        gm = SimpleNamespace(grounding_chunks=[SimpleNamespace(retrieved_context=rc)])
-        cands = [SimpleNamespace(grounding_metadata=gm, content=None)]
-    else:
-        cands = [SimpleNamespace(grounding_metadata=None, content=None)]
-    return SimpleNamespace(text=text, candidates=cands)
-
-
-async def _aiter(items):
-    for it in items:
-        yield it
-
-
-def _fake_client(chunks):
-    aio = SimpleNamespace(models=SimpleNamespace(
-        generate_content_stream=AsyncMock(return_value=_aiter(chunks))))
-    return SimpleNamespace(aio=aio)
-
-
-@pytest.mark.asyncio
-async def test_stream_strips_source_markers_from_tokens():
-    """串流 token 串接後不含 [tmp...txt] 標記，但正文完整。"""
-    # 模擬 3.5 在 answer 中插入 inline 標記（標記跨兩個 chunk）
-    chunks = [
-        _chunk_text('{"answer": "推薦 **資料探勘** [tmpt_yn'),          # 標記在 chunk 邊界被切斷
-        _chunk_text('c0ml.txt, tmpvenglr3i.txt]。課程很棒",'),
-        _chunk_text(' "followup_suggestions": []}', course_id="000211012"),
-    ]
-    client = _fake_client(chunks)
-    events = [ev async for ev in stream_answer_structured(client, "store", "問資料探勘", None)]
-
-    tokens = "".join(e["data"]["text"] for e in events if e["event"] == "token")
-    # 最終串接的 token 不應含 tmp*.txt 標記
-    assert ".txt" not in tokens
-    # 正文（課程名稱、其餘文字）應完整保留
-    assert "資料探勘" in tokens
-    assert "課程很棒" in tokens
-
-    done = [e for e in events if e["event"] == "done"]
-    assert len(done) == 1
-
-
-@pytest.mark.asyncio
-async def test_stream_clean_text_without_markers_unaffected():
-    """無 inline 標記時，串流行為與現有行為一致，正文完整吐出。"""
-    chunks = [
-        _chunk_text('{"answer": "政治學'),
-        _chunk_text(' 很棒",'),
-        _chunk_text(' "followup_suggestions": []}', course_id="000211012"),
-    ]
-    client = _fake_client(chunks)
-    events = [ev async for ev in stream_answer_structured(client, "store", "問政治學", None)]
-    tokens = "".join(e["data"]["text"] for e in events if e["event"] == "token")
-    assert tokens == "政治學 很棒"
