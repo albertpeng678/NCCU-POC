@@ -642,6 +642,14 @@ def finalize_qa_answer(
     citations = extract_citations(course_ids, meta)
     if not citations:
         citations = extract_citations_by_name(answer, meta)
+    else:
+        # file_search 回的是 top_k 檢索全集，但模型不一定每門都引用（OpenAI annotations 對本庫實測為空，
+        # 內文 turn0fileN 標記的索引語意又未公開、不可靠）→ 改用「課名是否出現在答案」判定實際引用，
+        # 排除『檢索到卻沒被提到』的無關課（如查 PM 卻冒出碳市場那門）。模型被要求照抄課名，故精確子字串可靠。
+        # fallback：若全都沒被提到（答案純概念、未列課）→ 保留全集，避免誤清空 citations。
+        referenced = [c for c in citations if c.get("name") and c["name"] in answer]
+        if referenced:
+            citations = referenced
     no_match = False
     if should_override_no_results(answer, citations):
         # 空 grounding + 答案像列課程 → 防幻覺覆寫（整塊替換，剝除無意義）
