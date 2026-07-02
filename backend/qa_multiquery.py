@@ -18,10 +18,17 @@ def _clamp(qs: list[str]) -> list[str]:
 
 
 async def _vs_search(**kwargs):
-    """薄包裝 OpenAI `vector_stores.search`，方便測試時 monkeypatch。"""
+    """薄包裝 OpenAI `vector_stores.search`，方便測試時 monkeypatch。
+
+    OPENAI_API_KEY 未設（get_client() 回 None）時回 None，讓呼叫端 fail-open 當空結果處理。
+    """
     from backend.openai_client import get_client
 
-    return await get_client().vector_stores.search(**kwargs)
+    client = get_client()
+    if client is None:
+        return None
+
+    return await client.vector_stores.search(**kwargs)
 
 
 async def multi_query_search(
@@ -56,7 +63,7 @@ async def multi_query_search(
             max_num_results=max_num_results,
             filters=f,
         )
-        return list(getattr(r, "data", []) or [])
+        return list(getattr(r, "data", []) or []) if r is not None else []
 
     data = await _run(filt)
     if not data and filt is not None:

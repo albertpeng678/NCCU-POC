@@ -36,11 +36,15 @@ _REWRITE_SYS = (
 )
 
 
-async def _call_rewrite_llm(question: str) -> QueriesOut:
+async def _call_rewrite_llm(question: str) -> Optional[QueriesOut]:
     from backend.openai_client import get_client
     from backend.recommend import OPENAI_MODEL
 
-    resp = await get_client().responses.parse(
+    client = get_client()
+    if client is None:
+        return None
+
+    resp = await client.responses.parse(
         model=OPENAI_MODEL,
         input=[
             {"role": "system", "content": _REWRITE_SYS},

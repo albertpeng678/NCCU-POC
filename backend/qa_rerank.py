@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+from typing import Optional
+
 from pydantic import BaseModel
 
 
@@ -21,15 +23,19 @@ _RERANK_SYS = (
 )
 
 
-async def _call_rerank_llm(question: str, candidates: list) -> RerankOut:
+async def _call_rerank_llm(question: str, candidates: list) -> Optional[RerankOut]:
     from backend.openai_client import get_client
     from backend.recommend import OPENAI_MODEL
+
+    client = get_client()
+    if client is None:
+        return None
 
     lines = [
         f'- {c["course_id"]}｜{c.get("name", "")}｜{(c.get("text", "") or "")[:180]}'
         for c in candidates
     ]
-    resp = await get_client().responses.parse(
+    resp = await client.responses.parse(
         model=OPENAI_MODEL,
         input=[
             {"role": "system", "content": _RERANK_SYS},

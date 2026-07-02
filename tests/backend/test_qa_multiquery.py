@@ -31,3 +31,16 @@ def test_empty_with_filter_retries_without(monkeypatch):
     out = asyncio.run(mq.multi_query_search(["a"], {"college": "文學院"}, "vs"))
     assert calls[0]["filters"] is not None and calls[1]["filters"] is None  # 撈空去 filter 重搜
     assert out == [{"id": 9}]
+
+
+def test_empty_query_no_search_call(monkeypatch):
+    calls = []
+
+    async def fake_search(**k):
+        calls.append(k)
+        return type("R", (), {"data": []})()
+
+    monkeypatch.setattr(mq, "_vs_search", fake_search)
+    out = asyncio.run(mq.multi_query_search([], {}, "vs"))
+    assert out == []
+    assert len(calls) == 0
