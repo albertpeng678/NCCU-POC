@@ -29,3 +29,27 @@ def _dept_filter_off_by_default(monkeypatch):
         return {"department": None, "college": None, "degree_level": None}
 
     monkeypatch.setattr("backend.dept_query.extract_slots", _empty_slots)
+
+
+@pytest.fixture(autouse=True)
+def _qa_retrieval_off_by_default(monkeypatch):
+    """預設受控檢索門面（qa-retr T4）預設關閉：backend.qa.retrieve_and_rerank 回 (None, [])。
+
+    背景與上面 _dept_filter_off_by_default 相同：backend.qa.stream_answer 現在會在 dept 分支
+    落空後，預設呼叫 retrieve_and_rerank（backend.qa_retrieval 的門面，門面內部經
+    rewrite_to_queries/multi_query_search/rerank_courses 呼叫 backend.openai_client.get_client()
+    全域 singleton）。若不攔截，既有（與此檢索改造無關）的 qa 測試會在背景真的打多次 OpenAI API
+    （dummy key 會觸發 client 端重試，拖慢/卡住測試、在無網路 CI 變 flaky）。
+    此 autouse fixture 把它鎖死成 (None, [])（等同『沒有檢索結果』）→ 既有測試維持純離線、
+    落回既有 file_search 路徑，行為不變。需要測這條新路徑的測試會自行
+    monkeypatch.setattr("backend.qa.retrieve_and_rerank", ...) 覆寫掉這個預設值。
+
+    ⚠️ 特意 patch backend.qa.retrieve_and_rerank（qa.py 頂層 `from backend.qa_retrieval import
+    retrieve_and_rerank` 綁入自己命名空間的那份），而非 backend.qa_retrieval.retrieve_and_rerank
+    本身——後者是 tests/backend/test_qa_retrieval.py 直接單元測試的對象，兩份名稱在匯入後已是
+    各自獨立的 dict entry，patch 前者不會誤傷後者的單元測試。
+    """
+    async def _empty_retrieval(question, vs_id):
+        return None, []
+
+    monkeypatch.setattr("backend.qa.retrieve_and_rerank", _empty_retrieval)

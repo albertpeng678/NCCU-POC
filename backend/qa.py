@@ -14,6 +14,8 @@ from pydantic import BaseModel
 
 from openai import RateLimitError as _OAIRateLimit, APITimeoutError as _OAITimeout, APIStatusError as _OAIStatus
 
+from backend.qa_retrieval import retrieve_and_rerank
+
 
 # ===== Q&A 格式 / 防幻覺 輔助（純函式，可單元測試）=====
 
@@ -691,7 +693,8 @@ def _build_openai_input(
     格式：[{"role":"system","content":...}, {"role":"user","content":...}, ...]
     多輪歷史取最近 _MAX_HISTORY_TURNS 輪；歷史 assistant 角色用 "assistant"。
 
-    extra_system / context_text：系所感知受控檢索分支（見 retrieve_dept_filtered_context）專用的
+    extra_system / context_text：注入 context 生成分支（系所感知受控檢索
+    retrieve_dept_filtered_context、預設受控檢索 backend.qa_retrieval.retrieve_and_rerank）共用的
     『追加』參數——extra_system 接在 _SYSTEM_INSTRUCTION 後面（不改寫鐵則段本體），context_text
     附加在本輪 user 訊息尾端（已檢索課程原文）。兩者預設空/None → 既有呼叫（不帶這兩個參數）
     產生的 input 與改動前逐字相同，行為不變。
@@ -725,6 +728,19 @@ def _build_openai_input(
 
 _QA_DEPT_MAX_RESULTS = 10  # 系所硬篩下噪音已低，比純語意路徑的 5 筆多帶一些
 _DEPT_SEARCH_TIMEOUT = 8.0  # 系所偵測/檢索的個別呼叫逾時秒數（fail-open，不拖垮整個問答請求）
+
+# 預設受控檢索（qa-retr T4，見 backend.qa_retrieval.retrieve_and_rerank）逾時秒數。
+# 比 _DEPT_SEARCH_TIMEOUT 寬，因為這條路徑串接 3 次連續呼叫（rewrite LLM → 多路 search →
+# rerank LLM），不是單一呼叫；逾時或任何例外皆 fail-open 落回既有 file_search 路徑。
+_QA_RETRIEVAL_TIMEOUT = 15.0
+
+_RETRIEVAL_APPEND = """
+
+【檢索補充說明（僅本輪適用）】
+系統已在後端完成本輪問題的檢索與篩選，檢索到的課程原文已整理在下方使用者訊息的「已檢索課程資料」
+區塊中。這一輪你不需要、也無法再呼叫 File Search 工具，請只根據該區塊的內容作答，嚴禁用自身知識
+或臆測補充區塊以外的課程；若區塊內沒有夠貼切的課，就誠實說明沒有直接對應的課，不要硬湊。
+"""
 
 _DEPT_FILTER_APPEND = """
 
@@ -925,10 +941,14 @@ async def stream_answer(
     citations join / 防幻覺覆寫 / session 持久化由呼叫端（main.py）處理。
     OpenAI 模型不外洩 reasoning → 不需 thought 過濾，token 原樣透傳。
 
-    系所感知受控檢索分支（Task 7，見 retrieve_dept_filtered_context）：question 帶明確
-    系所/學院/學制條件且後端檢索有結果時，改走『注入 context 生成、不掛 file_search tool』；
-    偵測不到條件、或篩選後仍查無結果 → dept_ctx 為 None，完全落回下方既有 file_search 路徑，
-    此路徑（含下面的 tools/include 參數與逐字元 suppress 邏輯）保持與改動前逐字相同。
+    兩層受控檢索分支（優先序由上而下，任一命中即注入 context 生成、不掛 file_search tool；
+    全部落空才用下方既有 file_search 路徑，此路徑含下面的 tools/include 參數與逐字元 suppress
+    邏輯保持與改動前逐字相同）：
+    1. 系所感知受控檢索（Task 7，見 retrieve_dept_filtered_context）：question 帶明確
+       系所/學院/學制條件且後端檢索有結果時走這條。
+    2. 預設受控檢索（qa-retr T4，見 backend.qa_retrieval.retrieve_and_rerank）：上面沒命中時，
+       改走「rewrite→多路檢索→LLM rerank」取代舊版純語意模型自驅 file_search 當預設。
+    兩層皆逾時/例外/空結果 → fail-open，完全落回既有 file_search 路徑。
     """
     from backend.retrieval_openai import course_ids_from_search_results
     from backend.recommend import OPENAI_MODEL
@@ -967,6 +987,51 @@ async def stream_answer(
                         yield {"event": "token", "data": {"text": clean}}
 
         course_ids = list(dict.fromkeys(dept_course_ids))
+        yield {"event": "done", "data": {
+            "course_ids": course_ids,
+            "answer_text": raw,
+        }}
+        return
+
+    # ── 預設受控檢索分支（qa-retr T4，見 backend.qa_retrieval.retrieve_and_rerank）──────────
+    # dept 分支（上面）優先；沒偵測到系所/學院/學制條件時，改走這條「rewrite→多路檢索→
+    # LLM rerank」取代舊版「直接掛 file_search tool、模型自驅」當預設路徑。任一環節空、
+    # 逾時或例外 → ctx 為 None → fail-open 完全落回下方既有 file_search 路徑。
+    try:
+        ctx, retr_course_ids = await asyncio.wait_for(
+            retrieve_and_rerank(question, vs_id), timeout=_QA_RETRIEVAL_TIMEOUT
+        )
+    except Exception:
+        ctx, retr_course_ids = None, []
+
+    if ctx is not None:
+        retr_input_messages = _build_openai_input(
+            question, history,
+            extra_system=_RETRIEVAL_APPEND,
+            context_text=ctx,
+        )
+        async with await client.responses.create(
+            model=OPENAI_MODEL,
+            input=retr_input_messages,
+            stream=True,
+        ) as stream:
+            async for event in stream:
+                delta = getattr(event, "delta", None)
+                if delta is not None and isinstance(delta, str) and delta:
+                    visible = []
+                    for ch in delta:
+                        if ch == "":
+                            suppressing = True
+                        elif ch == "":
+                            suppressing = False
+                        elif not suppressing:
+                            visible.append(ch)
+                    clean = "".join(visible)
+                    if clean:
+                        raw += clean
+                        yield {"event": "token", "data": {"text": clean}}
+
+        course_ids = list(dict.fromkeys(retr_course_ids))
         yield {"event": "done", "data": {
             "course_ids": course_ids,
             "answer_text": raw,
