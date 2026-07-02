@@ -14,6 +14,8 @@ from pydantic import BaseModel
 
 from openai import RateLimitError as _OAIRateLimit, APITimeoutError as _OAITimeout, APIStatusError as _OAIStatus
 
+from backend.qa_retrieval import retrieve_and_rerank
+
 
 # ===== Q&A 格式 / 防幻覺 輔助（純函式，可單元測試）=====
 
@@ -680,13 +682,24 @@ def _partial_answer(raw: str) -> str:
 QA_SCORE_THRESHOLD = 0.0  # file_search ranking_options score_threshold（0.0 = 不過濾）
 
 
-def _build_openai_input(question: str, history: Optional[list] = None) -> list:
+def _build_openai_input(
+    question: str,
+    history: Optional[list] = None,
+    extra_system: str = "",
+    context_text: Optional[str] = None,
+) -> list:
     """組 OpenAI Responses API 的 input 清單：system + 多輪歷史 + 本輪問題。
 
     格式：[{"role":"system","content":...}, {"role":"user","content":...}, ...]
     多輪歷史取最近 _MAX_HISTORY_TURNS 輪；歷史 assistant 角色用 "assistant"。
+
+    extra_system / context_text：注入 context 生成分支（系所感知受控檢索
+    retrieve_dept_filtered_context、預設受控檢索 backend.qa_retrieval.retrieve_and_rerank）共用的
+    『追加』參數——extra_system 接在 _SYSTEM_INSTRUCTION 後面（不改寫鐵則段本體），context_text
+    附加在本輪 user 訊息尾端（已檢索課程原文）。兩者預設空/None → 既有呼叫（不帶這兩個參數）
+    產生的 input 與改動前逐字相同，行為不變。
     """
-    messages: list = [{"role": "system", "content": _SYSTEM_INSTRUCTION}]
+    messages: list = [{"role": "system", "content": _SYSTEM_INSTRUCTION + extra_system}]
     if history:
         recent = history[-_MAX_HISTORY_TURNS:]
         for turn in recent:
@@ -694,8 +707,119 @@ def _build_openai_input(question: str, history: Optional[list] = None) -> list:
             a = turn.get("answer") or ""
             messages.append({"role": "user", "content": q})
             messages.append({"role": "assistant", "content": a})
-    messages.append({"role": "user", "content": question})
+    user_content = question
+    if context_text:
+        user_content = f"{question}\n\n【已檢索課程資料】\n{context_text}"
+    messages.append({"role": "user", "content": user_content})
     return messages
+
+
+# ── 系所感知受控檢索分支（Task 7）──────────────────────────────────────────
+#
+# 設計：condense 後的問句若帶有明確系所/學院/學制條件（extract_slots 判斷得出），
+# 後端自己用 filters 硬篩 vector_stores.search，把篩選到的課程原文注入 prompt 生成
+# （不掛 file_search tool，因為這次的檢索已經是後端做好的、不需要模型自己再查）。
+# 偵測不到條件、或篩選/放寬後仍查無結果 → 回 None，呼叫端（stream_answer）完全
+# 落回既有 file_search tool 路徑，行為與改動前一字不差。
+#
+# ⚠️ 正式 vector store 目前尚未 backfill dept_canonical/degree_level attributes
+# （見 CLAUDE.md HANDOFF），所以在 attribute 補齊之前，這條分支在真實環境會因為
+# filters 永遠篩不到東西而回 None、自動退回現狀——這是刻意的安全網，不是 bug。
+
+_QA_DEPT_MAX_RESULTS = 10  # 系所硬篩下噪音已低，比純語意路徑的 5 筆多帶一些
+_DEPT_SEARCH_TIMEOUT = 8.0  # 系所偵測/檢索的個別呼叫逾時秒數（fail-open，不拖垮整個問答請求）
+
+# 預設受控檢索（qa-retr T4，見 backend.qa_retrieval.retrieve_and_rerank）逾時秒數。
+# 比 _DEPT_SEARCH_TIMEOUT 寬，因為這條路徑串接 3 次連續呼叫（rewrite LLM → 多路 search →
+# rerank LLM），不是單一呼叫；逾時或任何例外皆 fail-open 落回既有 file_search 路徑。
+_QA_RETRIEVAL_TIMEOUT = 15.0
+
+_RETRIEVAL_APPEND = """
+
+【檢索補充說明（僅本輪適用）】
+系統已在後端完成本輪問題的檢索與篩選，檢索到的課程原文已整理在下方使用者訊息的「已檢索課程資料」
+區塊中。這一輪你不需要、也無法再呼叫 File Search 工具，請只根據該區塊的內容作答，嚴禁用自身知識
+或臆測補充區塊以外的課程；若區塊內沒有夠貼切的課，就誠實說明沒有直接對應的課，不要硬湊。
+"""
+
+_DEPT_FILTER_APPEND = """
+
+【系所篩選模式補充說明（僅本輪適用）】
+系統已依你偵測到的系所／學院／學制條件，在後端完成篩選檢索，檢索到的課程原文已整理在下方使用者
+訊息的「已檢索課程資料」區塊中。這一輪你不需要、也無法再呼叫 File Search 工具，請只根據該區塊的
+內容作答，嚴禁用自身知識或臆測補充區塊以外的課程；若區塊內沒有夠貼切的課，就誠實說明沒有直接
+對應的課，不要硬湊。
+"""
+
+
+def _format_dept_context(results: list) -> str:
+    """把系所篩選後的檢索結果組成注入 prompt 的 context 文字。
+
+    課程原文已在建庫時注入完整 header（課名/代號/系所/老師，見 CLAUDE.md 設計決策 #29），
+    故這裡不需另外查 courses_meta，直接帶原文（截 1500 字避免單一長課綱把 prompt 塞爆）即可。
+    """
+    blocks = []
+    for r in results:
+        attrs = getattr(r, "attributes", None) or {}
+        filename = getattr(r, "filename", "") or ""
+        course_id = attrs.get("course_id") or filename.removesuffix(".txt")
+        text = "".join(getattr(c, "text", "") for c in (getattr(r, "content", None) or []))[:1500]
+        blocks.append(f"【課程代號：{course_id}】\n{text}")
+    return "\n\n".join(blocks)
+
+
+async def retrieve_dept_filtered_context(client, vs_id: str, query: str):
+    """系所感知受控檢索：偵測到明確系所/學院/學制條件時，後端自己 search + 硬篩。
+
+    回傳 (context_text, course_ids) 或 None：
+    - extract_slots 判斷『沒有』明確條件（build_dept_filter 回 None）→ 回 None。
+    - 有條件但檢索空、filter 為多條件（and）→ 放寬成只留 dept_canonical 那條再試一次。
+    - 放寬後仍空、或本來就非 and（無可放寬）→ 放棄過濾，回 None（呼叫端走純語意 fallback）。
+    - 有結果 → 回 (context_text, course_ids)。
+
+    fail-open：extract_slots/search 的例外或逾時一律視為『沒有過濾條件』，不可讓這條分支
+    的任何意外拖垮或拖慢整個問答請求（見 _DEPT_SEARCH_TIMEOUT）。
+    """
+    from backend.dept_query import extract_slots, build_dept_filter
+    from backend.retrieval_openai import course_ids_from_search_results
+
+    try:
+        slots = await asyncio.wait_for(extract_slots(query), timeout=_DEPT_SEARCH_TIMEOUT)
+    except Exception:
+        return None
+
+    filt = build_dept_filter(slots)
+    if not filt:
+        return None
+
+    async def _search(f):
+        items = []
+        async for item in client.vector_stores.search(
+            vector_store_id=vs_id,
+            query=query,
+            max_num_results=_QA_DEPT_MAX_RESULTS,
+            ranking_options={"score_threshold": QA_SCORE_THRESHOLD},
+            filters=f,
+        ):
+            items.append(item)
+        return items
+
+    try:
+        data = await asyncio.wait_for(_search(filt), timeout=_DEPT_SEARCH_TIMEOUT)
+        if not data and filt.get("type") == "and":
+            dept_only = next(
+                (c for c in filt.get("filters", []) if c.get("key") == "dept_canonical"),
+                None,
+            )
+            if dept_only:
+                data = await asyncio.wait_for(_search(dept_only), timeout=_DEPT_SEARCH_TIMEOUT)
+    except Exception:
+        return None
+
+    if not data:
+        return None
+
+    return _format_dept_context(data), course_ids_from_search_results(data)
 
 
 class _Followups(BaseModel):
@@ -816,15 +940,106 @@ async def stream_answer(
     多輪歷史由 _build_openai_input 帶入 input。
     citations join / 防幻覺覆寫 / session 持久化由呼叫端（main.py）處理。
     OpenAI 模型不外洩 reasoning → 不需 thought 過濾，token 原樣透傳。
+
+    兩層受控檢索分支（優先序由上而下，任一命中即注入 context 生成、不掛 file_search tool；
+    全部落空才用下方既有 file_search 路徑，此路徑含下面的 tools/include 參數與逐字元 suppress
+    邏輯保持與改動前逐字相同）：
+    1. 系所感知受控檢索（Task 7，見 retrieve_dept_filtered_context）：question 帶明確
+       系所/學院/學制條件且後端檢索有結果時走這條。
+    2. 預設受控檢索（qa-retr T4，見 backend.qa_retrieval.retrieve_and_rerank）：上面沒命中時，
+       改走「rewrite→多路檢索→LLM rerank」取代舊版純語意模型自驅 file_search 當預設。
+    兩層皆逾時/例外/空結果 → fail-open，完全落回既有 file_search 路徑。
     """
     from backend.retrieval_openai import course_ids_from_search_results
     from backend.recommend import OPENAI_MODEL
 
-    input_messages = _build_openai_input(question, history)
-
     raw = ""           # 累積所有 text delta（已剝標記）
     course_ids: list[str] = []
     suppressing = False   # 串流狀態機：是否在 citation 標記內
+
+    dept_ctx = await retrieve_dept_filtered_context(client, vs_id, question)
+    if dept_ctx is not None:
+        context_text, dept_course_ids = dept_ctx
+        dept_input_messages = _build_openai_input(
+            question, history,
+            extra_system=_DEPT_FILTER_APPEND,
+            context_text=context_text,
+        )
+        async with await client.responses.create(
+            model=OPENAI_MODEL,
+            input=dept_input_messages,
+            stream=True,
+        ) as stream:
+            async for event in stream:
+                delta = getattr(event, "delta", None)
+                if delta is not None and isinstance(delta, str) and delta:
+                    visible = []
+                    for ch in delta:
+                        if ch == "":
+                            suppressing = True
+                        elif ch == "":
+                            suppressing = False
+                        elif not suppressing:
+                            visible.append(ch)
+                    clean = "".join(visible)
+                    if clean:
+                        raw += clean
+                        yield {"event": "token", "data": {"text": clean}}
+
+        course_ids = list(dict.fromkeys(dept_course_ids))
+        yield {"event": "done", "data": {
+            "course_ids": course_ids,
+            "answer_text": raw,
+        }}
+        return
+
+    # ── 預設受控檢索分支（qa-retr T4，見 backend.qa_retrieval.retrieve_and_rerank）──────────
+    # dept 分支（上面）優先；沒偵測到系所/學院/學制條件時，改走這條「rewrite→多路檢索→
+    # LLM rerank」取代舊版「直接掛 file_search tool、模型自驅」當預設路徑。任一環節空、
+    # 逾時或例外 → ctx 為 None → fail-open 完全落回下方既有 file_search 路徑。
+    try:
+        ctx, retr_course_ids = await asyncio.wait_for(
+            retrieve_and_rerank(question, vs_id), timeout=_QA_RETRIEVAL_TIMEOUT
+        )
+    except Exception:
+        ctx, retr_course_ids = None, []
+
+    if ctx is not None:
+        retr_input_messages = _build_openai_input(
+            question, history,
+            extra_system=_RETRIEVAL_APPEND,
+            context_text=ctx,
+        )
+        async with await client.responses.create(
+            model=OPENAI_MODEL,
+            input=retr_input_messages,
+            stream=True,
+        ) as stream:
+            async for event in stream:
+                delta = getattr(event, "delta", None)
+                if delta is not None and isinstance(delta, str) and delta:
+                    visible = []
+                    for ch in delta:
+                        if ch == "":
+                            suppressing = True
+                        elif ch == "":
+                            suppressing = False
+                        elif not suppressing:
+                            visible.append(ch)
+                    clean = "".join(visible)
+                    if clean:
+                        raw += clean
+                        yield {"event": "token", "data": {"text": clean}}
+
+        course_ids = list(dict.fromkeys(retr_course_ids))
+        yield {"event": "done", "data": {
+            "course_ids": course_ids,
+            "answer_text": raw,
+        }}
+        return
+
+    # ── 既有路徑（filt 為 None 或篩選後仍空時的 fallback）：一字不改 ──
+    input_messages = _build_openai_input(question, history)
 
     async with await client.responses.create(
         model=OPENAI_MODEL,

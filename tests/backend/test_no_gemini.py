@@ -19,7 +19,9 @@ _BACKEND = Path(__file__).resolve().parents[2] / "backend"
 _RUNTIME_MODULES = ["main.py", "qa.py", "recommend.py", "observability.py",
                     "judge.py", "qa_judge.py", "models.py", "logger.py",
                     "qa_logger.py", "career_budget.py", "openai_client.py",
-                    "retrieval_openai.py", "db.py"]
+                    "retrieval_openai.py", "db.py",
+                    "qa_retrieval.py", "qa_rewrite.py", "qa_multiquery.py",
+                    "qa_rerank.py"]
 
 
 @pytest.mark.parametrize("modname", _RUNTIME_MODULES)
