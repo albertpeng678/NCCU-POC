@@ -49,3 +49,30 @@ def test_pinyin_layer_still_rejects_garbage():
     assert normalize_college("商院子") is None
     assert normalize_department("asdfqwer") is None
     assert normalize_college("中") is None
+
+
+def test_pinyin_layer_does_not_false_positive_on_common_suffix():
+    # Critical bug（review 抓到）：拼音比對若把「學系/學院」這種通用字尾也算進相似度，
+    # 會讓短查詢被共同字尾灌分，誤配到不相關的系所/學院。
+    # 修法：拼音比對前先砍通用單位字尾、只比「核心」，核心拼音須精確相等。
+    assert normalize_department("數學系") is None      # 原誤配 "社會學系"（fuzz 84.21）
+    assert normalize_college("醫學院") is None          # 原誤配 "理學院"（88.89）
+    assert normalize_college("體育學院") is None        # 原誤配 "教育學院"（83.33）
+    assert normalize_college("海洋學院") is None        # 原誤配 "商學院"（84.62）
+
+
+def test_pinyin_layer_still_catches_homophones_after_core_fix():
+    # 修法不可誤傷本來要救的同音字案例。
+    assert normalize_department("立是系") == "歷史學系"
+    assert normalize_department("心裡系") == "心理學系"
+
+
+def test_broad_scan_no_false_positive_on_real_sounding_names():
+    # 廣掃一批「聽起來像真系所/學院但非本校 canonical」的名稱，確認不會被拼音層誤配。
+    assert normalize_department("音樂系") is None
+    assert normalize_department("電機系") is None
+    assert normalize_department("機械系") is None
+    assert normalize_college("藝術學院") is None
+    # 「外文系」核心「外文」與本校真實特別單位「外文中心」的核心（砍「中心」後）字面完全相同
+    # （非拼音灌水巧合），屬合理對映，非誤配。
+    assert normalize_department("外文系") == "外文中心"
