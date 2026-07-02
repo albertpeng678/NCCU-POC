@@ -1,5 +1,6 @@
 # backend/dept_query.py
 from __future__ import annotations
+from pypinyin import lazy_pinyin
 from rapidfuzz import process, fuzz
 from backend.dept_vocab import (
     CANONICAL_DEPTS, DEPT_ALIASES, COLLEGE_ALIASES, DEGREE_ALIASES,
@@ -8,6 +9,10 @@ from backend.dept_vocab import (
 
 _COLLEGES = set(COLLEGE_ALIASES.values()) | {"文學院","理學院","社會科學學院","法學院","商學院","外國語文學院","傳播學院","國際事務學院","教育學院","資訊學院","創新國際學院"}
 _FUZZ_CUTOFF = 82  # 字面相似度門檻；低於此視為對不上
+_PINYIN_CUTOFF = 82  # 拼音相似度門檻（校準見 .superpowers/sdd/task-6a-report.md）
+
+def _pinyin(s: str) -> str:
+    return "".join(lazy_pinyin(s))
 
 def _match(raw: str | None, alias: dict[str, str], canonical: set[str]) -> str | None:
     if not raw:
@@ -29,7 +34,17 @@ def _match(raw: str | None, alias: dict[str, str], canonical: set[str]) -> str |
     if hit:
         val = hit[0]
         return alias.get(val, val)
-    return None                     # 層3：對不上 → None（不過濾）
+    # 層3：拼音比對（治同音字，如「立是系」拼音同「歷史系」但字形無關，rapidfuzz 字形比對抓不到）。
+    # 池只用 canonical（不含 alias.keys()）：alias 多為短別名，轉拼音後長度被壓縮，
+    # 會讓不相關字串（如「商院子」vs 別名「商院」）因長度正規化虛高命中而誤配；
+    # 已知同音別名（如「歷史系」）本就會在層1b 精確比對命中，不依賴這層。
+    hit = process.extractOne(
+        raw, list(canonical), scorer=fuzz.ratio, score_cutoff=_PINYIN_CUTOFF, processor=_pinyin
+    )
+    if hit:
+        val = hit[0]
+        return alias.get(val, val)
+    return None                     # 層4：對不上 → None（不過濾）
 
 def normalize_department(raw: str | None) -> str | None:
     return _match(raw, DEPT_ALIASES, CANONICAL_DEPTS)

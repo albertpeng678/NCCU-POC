@@ -33,3 +33,19 @@ def test_short_or_junk_strings_never_guessed():
     assert normalize_college("中") is None
     assert normalize_department("法") is None
     assert normalize_college("商院子") is None
+
+
+def test_pinyin_layer_catches_homophone_typos():
+    # 層4：拼音比對治同音字（rapidfuzz 字形比對抓不到，因字形完全無關）。
+    # 「立是系」拼音 lishixi，「歷史系」（alias key）拼音同為 lishixi → 100% 命中。
+    assert normalize_department("立是系") == "歷史學系"
+    # 「心裡系」拼音 xinlixi vs 「心理學系」拼音 xinlixuexi → fuzz.ratio ≈ 82.35，命中。
+    assert normalize_department("心裡系") == "心理學系"
+
+
+def test_pinyin_layer_still_rejects_garbage():
+    # 拼音層不可把守門變鬆：短字串/無關字串仍須回 None。
+    assert normalize_department("法") is None
+    assert normalize_college("商院子") is None
+    assert normalize_department("asdfqwer") is None
+    assert normalize_college("中") is None
