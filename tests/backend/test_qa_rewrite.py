@@ -1,5 +1,8 @@
 import asyncio
 
+import pytest
+from pydantic import ValidationError
+
 import backend.qa_rewrite as qr
 
 
@@ -34,3 +37,17 @@ def test_rewrite_returns_none_path(monkeypatch):
 
 def test_clamp_strips_blanks():
     assert qr._clamp_queries(["  ", "a", "", "  b  "]) == ["a", "b"]
+
+
+def test_queries_out_college_degree_level_are_literal_enums():
+    # canonical Literal 值可過
+    ok = qr.QueriesOut(queries=["q"], college="傳播學院", degree_level="碩士")
+    assert ok.college == "傳播學院"
+    assert ok.degree_level == "碩士"
+
+    # 非法值（不在 12 學院 / 5 學制值域內）要 raise ValidationError，
+    # 證明 schema 層面已收斂值域（不再是自由文字，降低複合縮寫拆法漂移）。
+    with pytest.raises(ValidationError):
+        qr.QueriesOut(queries=["q"], college="不存在學院")
+    with pytest.raises(ValidationError):
+        qr.QueriesOut(queries=["q"], degree_level="不存在學制")
