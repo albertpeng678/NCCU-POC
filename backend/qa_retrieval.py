@@ -13,10 +13,16 @@ from __future__ import annotations
 from backend.qa_rewrite import rewrite_to_queries
 from backend.qa_multiquery import multi_query_search
 from backend.qa_rerank import rerank_courses
+from backend.recommend import load_courses_meta
 
 
 def _norm_cands(data: list) -> list:
-    """把 multi_query_search 回傳的原始搜尋結果（SDK 物件或 dict）正規化成統一 dict 形狀。"""
+    """把 multi_query_search 回傳的原始搜尋結果（SDK 物件或 dict）正規化成統一 dict 形狀。
+
+    name 欄位查 courses_meta.json 拿真課名（key=course_id）；filename 是「課號.txt」，
+    不是課名，查無 meta 時才 fallback 回 filename 去掉 .txt（不崩、但保留舊行為）。
+    """
+    meta = load_courses_meta()
     out = []
     for d in data:
         a = (getattr(d, "attributes", None) if not isinstance(d, dict) else d.get("attributes")) or {}
@@ -24,7 +30,8 @@ def _norm_cands(data: list) -> list:
         content = (getattr(d, "content", None) if not isinstance(d, dict) else d.get("content")) or []
         cid = a.get("course_id") or fn.replace(".txt", "")
         text = "".join(getattr(x, "text", "") if not isinstance(x, dict) else x.get("text", "") for x in content)
-        out.append({"course_id": cid, "name": fn.replace(".txt", ""), "filename": fn, "attributes": a, "content": content, "text": text})
+        name = (meta.get(cid) or {}).get("name") or fn.replace(".txt", "")
+        out.append({"course_id": cid, "name": name, "filename": fn, "attributes": a, "content": content, "text": text})
     return out
 
 
@@ -33,7 +40,7 @@ def _fmt(cands: list) -> str:
     rows = []
     for c in cands:
         a = c.get("attributes") or {}
-        rows.append(f'課名：{c.get("filename", "")}｜系所：{a.get("dept_canonical", "")}\n{(c.get("text", "") or "")[:1200]}')
+        rows.append(f'課名：{c.get("name", "")}｜系所：{a.get("dept_canonical", "")}\n{(c.get("text", "") or "")[:1200]}')
     return "\n\n".join(rows)
 
 

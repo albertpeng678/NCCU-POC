@@ -42,6 +42,9 @@ async def _call_rerank_llm(question: str, candidates: list) -> Optional[RerankOu
             {"role": "user", "content": f"需求：{question}\n候選：\n" + "\n".join(lines)},
         ],
         text_format=RerankOut,
+        # 排序任務不需深度推理；與 qa_rewrite 一致省延遲。gpt-5.4-mini 不支援
+        # effort="minimal"（400 unsupported_value），故用 "none"。
+        reasoning={"effort": "none"},
     )
     return resp.output_parsed
 
