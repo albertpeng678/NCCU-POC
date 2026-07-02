@@ -174,14 +174,13 @@ COLLEGE_ALIASES: dict[str, str] = _V["college_aliases"]
 DEGREE_ALIASES: dict[str, str] = _V["degree_aliases"]
 GE_PREFIXES: set[str] = set(_V["ge_course_id_prefixes"])
 
-_GRADE_TOKEN = re.compile(r'(?:[一二三四五六七八九十甲乙丙丁]|碩|博|在職|專班|學程|組|系|所|\d)+')
+_STEM_RE = re.compile(r'^([一-鿿]+?)(?=[一二三四五六七八九十甲乙丙丁碩博]|\d)')
 
 def strip_grade_tokens(s: str) -> str:
-    """砍年級/班別/學制/數字得系名詞幹；重複段取第一個詞幹。"""
-    # 取字串開頭到第一個 grade token 前的中文詞幹
-    m = re.match(r'^([一-鿿]+?)(?:[一二三四五六七八九十甲乙丙丁碩博]|\d)', s)
-    stem = m.group(1) if m else _GRADE_TOKEN.sub('', s)
-    return stem or s
+    """取系名詞幹：砍掉第一個年級/班別/碩博/數字起的尾段；無這些 token 則原樣返回
+    （故「歷史系」保留、靠 alias 對映，「歷史一」→「歷史」、「歷史碩一歷史博一」→「歷史」）。"""
+    m = _STEM_RE.match(s)
+    return m.group(1) if m else s
 
 def infer_degree_level(dirty: str, course_id: str) -> str:
     if course_id[:3] in GE_PREFIXES:
