@@ -1,13 +1,19 @@
 # backend/dept_query.py
 from __future__ import annotations
+from typing import Optional
+
+from pydantic import BaseModel
 from pypinyin import lazy_pinyin
 from rapidfuzz import process, fuzz
 from backend.dept_vocab import (
     CANONICAL_DEPTS, DEPT_ALIASES, COLLEGE_ALIASES, DEGREE_ALIASES,
-    strip_grade_tokens,
+    strip_grade_tokens, load_vocab,
 )
 
-_COLLEGES = set(COLLEGE_ALIASES.values()) | {"文學院","理學院","社會科學學院","法學院","商學院","外國語文學院","傳播學院","國際事務學院","教育學院","資訊學院","創新國際學院"}
+# Task 6 concern #2（false-negative 修復）：_COLLEGES 改從 vocab 衍生，不再硬編清單。
+# 舊版硬編清單漏收錄「國際金融學院」（vocab 的 colleges 有這個 key，硬編列表沒有）——
+# 從 load_vocab()["colleges"].keys() 衍生後，vocab 新增學院不會再需要同步修這裡。
+_COLLEGES = set(load_vocab()["colleges"].keys()) | set(COLLEGE_ALIASES.values())
 _FUZZ_CUTOFF = 82  # 字面相似度門檻；低於此視為對不上
 
 # 通用學術單位字尾（依長度由長至短排列，供 _core() 逐一比對結尾——
@@ -54,7 +60,12 @@ def _match(raw: str | None, alias: dict[str, str], canonical: set[str]) -> str |
     hit = process.extractOne(raw, pool, scorer=fuzz.ratio, score_cutoff=_FUZZ_CUTOFF)
     if hit:
         val = hit[0]
-        return alias.get(val, val)
+        # Task 6 concern #1 守門：候選字串與 raw 互為子字串包含（如「護理學院」⊃「理學院」、
+        # 「管理學院」⊃「理學院」、「人文學院」⊃「文學院」）時，fuzz.ratio 會被包含關係灌到
+        # >= cutoff 而誤配——這是前後綴增減（不同系所/學院），不是錯字，拒絕接受此模糊命中。
+        # 不影響「資訊管里學系→資訊管理學系」這種單字替換型錯字（兩者互不包含）。
+        if val not in raw and raw not in val:
+            return alias.get(val, val)
     # 層3：拼音比對（治同音字，如「立是系」拼音同「歷史系」但字形無關，rapidfuzz 字形比對抓不到）。
     # 池只用 canonical（不含 alias.keys()）：alias 多為短別名，轉拼音後長度被壓縮，
     # 會讓不相關字串（如「商院子」vs 別名「商院」）因長度正規化虛高命中而誤配；
@@ -86,3 +97,106 @@ def normalize_degree(raw: str | None) -> str | None:
         return None
     hit = process.extractOne(raw, list(DEGREE_ALIASES.keys()), scorer=fuzz.ratio, score_cutoff=_FUZZ_CUTOFF)
     return DEGREE_ALIASES[hit[0]] if hit else None
+
+
+# ─────────────────────────── build_dept_filter ───────────────────────────
+
+# degree_level 值展開成 OpenAI filter 要 IN 的值集合（碩博合開課要同時涵蓋）。
+# 「學士」「通識」不在此表 → 走精確 eq（見 build_dept_filter）。
+_DEGREE_IN: dict[str, list[str]] = {
+    "碩士": ["碩士", "碩博"],
+    "博士": ["博士", "碩博"],
+    "研究所": ["碩士", "博士", "碩博"],
+}
+
+
+def build_dept_filter(slots: dict) -> dict | None:
+    """把 extract_slots 正規化後的 {department, college, degree_level} 組成 OpenAI vector store filter。
+
+    決定#2（通識排除）：使用者指定系所/學院、但沒指定學制時，預設排除通識課
+    （額外加一條 {"type":"ne","key":"degree_level","value":"通識"}）——避免「歷史系的課」
+    這種查詢混進全校共通的通識課。若使用者已明確指定學制（含明確要通識），尊重原意、不加此條。
+
+    空 slots → None；單一 clause → 直接回該 clause；多條 → {"type":"and","filters":[...]}。
+    """
+    clauses: list[dict] = []
+    department = slots.get("department")
+    college = slots.get("college")
+    if department:
+        clauses.append({"type": "eq", "key": "dept_canonical", "value": department})
+    if college:
+        clauses.append({"type": "eq", "key": "college", "value": college})
+
+    degree_level = slots.get("degree_level")
+    if degree_level:
+        if degree_level in _DEGREE_IN:
+            clauses.append({"type": "in", "key": "degree_level", "value": _DEGREE_IN[degree_level]})
+        else:  # 學士/通識 等精確值
+            clauses.append({"type": "eq", "key": "degree_level", "value": degree_level})
+    elif department or college:
+        # 決定#2：指定系所/學院卻沒指定學制 → 預設排除通識課
+        clauses.append({"type": "ne", "key": "degree_level", "value": "通識"})
+
+    if not clauses:
+        return None
+    if len(clauses) == 1:
+        return clauses[0]
+    return {"type": "and", "filters": clauses}
+
+
+# ─────────────────────────── extract_slots ───────────────────────────
+
+
+class _Slots(BaseModel):
+    """extract_slots 的 structured output schema（原文，未正規化）。"""
+    department: Optional[str] = None
+    college: Optional[str] = None
+    degree_level: Optional[str] = None
+
+
+_EMPTY_SLOTS = {"department": None, "college": None, "degree_level": None}
+
+
+async def extract_slots(query: str) -> dict:
+    """從查詢文字（通常是 condense 後的獨立問句）抽出使用者「明確指定」的系所/學院/學制原文，
+    再用 normalize_department/normalize_college/normalize_degree 正規化成 canonical 值。
+
+    使用 OpenAI Responses API structured output（responses.parse + _Slots，
+    照抄 backend/qa.py condense_question 的呼叫法，避免 SDK 版本參數不符）。
+    抽不到、output_parsed 為 None、或任何例外（含 OPENAI_API_KEY 未設）→ 全部回 None，
+    不可讓 slot 抽取拖垮查詢（fail open：退回無 filter 的全庫檢索）。
+    """
+    from backend.openai_client import get_client
+    from backend.recommend import OPENAI_MODEL
+
+    client = get_client()
+    if client is None:
+        return dict(_EMPTY_SLOTS)
+
+    try:
+        resp = await client.responses.parse(
+            model=OPENAI_MODEL,
+            input=[
+                {
+                    "role": "system",
+                    "content": (
+                        "從使用者的課程查詢中，抽出使用者「明確指定」的系所、學院、學制（大學部/碩士/博士/"
+                        "研究所/通識）原文。只抽使用者明確提到的，沒提到的欄位一律填 null，不要臆測或補全。"
+                        "使用台灣慣用繁體中文。"
+                    ),
+                },
+                {"role": "user", "content": query},
+            ],
+            text_format=_Slots,
+        )
+        parsed = resp.output_parsed
+        if parsed is None:
+            return dict(_EMPTY_SLOTS)
+    except Exception:
+        return dict(_EMPTY_SLOTS)
+
+    return {
+        "department": normalize_department(parsed.department),
+        "college": normalize_college(parsed.college),
+        "degree_level": normalize_degree(parsed.degree_level),
+    }

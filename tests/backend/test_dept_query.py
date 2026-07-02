@@ -76,3 +76,31 @@ def test_broad_scan_no_false_positive_on_real_sounding_names():
     # 「外文系」核心「外文」與本校真實特別單位「外文中心」的核心（砍「中心」後）字面完全相同
     # （非拼音灌水巧合），屬合理對映，非誤配。
     assert normalize_department("外文系") == "外文中心"
+
+
+# ───── Task 6 concern #2（false-negative）：_COLLEGES 改從 vocab 衍生，不漏收錄 ─────
+
+
+def test_college_from_vocab_not_hardcoded_list():
+    # 「國際金融學院」在 dept_canonical.json 的 colleges 有這個 key，
+    # 但 dept_query.py 舊版 _COLLEGES 是硬編清單、漏收錄它 → normalize_college 誤回 None（false-negative）。
+    # 修法：_COLLEGES 改從 load_vocab()["colleges"].keys() 衍生，不會再漏收錄任何 vocab 已有的學院。
+    assert normalize_college("國際金融學院") == "國際金融學院"
+
+
+# ───── Task 6 concern #1：層2 rapidfuzz 子字串包含誤配守門 ─────
+
+
+def test_layer2_rejects_substring_containment_false_positive():
+    # 「護理學院」「管理學院」都不在本校 canonical/alias 中，但 canonical「理學院」是它們的子字串，
+    # fuzz.ratio 被子字串包含關係灌到 >= cutoff（85.71）而誤配。子字串包含視為前後綴增減、非錯字，
+    # 修法在層2 命中後加守門拒絕，回 None（不誤配、不過濾使用者查詢）。
+    assert normalize_college("護理學院") is None
+    assert normalize_college("管理學院") is None
+    assert normalize_college("人文學院") is None
+
+
+def test_layer2_substring_guard_does_not_break_real_typo_fix():
+    # 守門不可誤傷本來要救的單字替換型錯字：「資訊管里學系」與「資訊管理學系」互不為子字串
+    # （中間一字不同，非前後綴增減），仍應正常經層2 rapidfuzz 命中。
+    assert normalize_department("資訊管里學系") == "資訊管理學系"
