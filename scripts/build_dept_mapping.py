@@ -6,10 +6,9 @@ from __future__ import annotations
 import json, os, re, sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from backend.dept_vocab import CANONICAL_DEPTS, DEPT_TO_COLLEGE, strip_grade_tokens
+from backend.dept_vocab import CANONICAL_DEPTS, DEPT_TO_COLLEGE
 
 ROOT = Path(__file__).resolve().parent.parent
-META = json.loads((ROOT / "backend/courses_meta.json").read_text(encoding="utf-8"))
 OUT = ROOT / "backend/dept_mapping.json"
 
 def distinct_dirty_values(meta: dict) -> list[str]:
@@ -29,11 +28,18 @@ def parse_mapping_response(text: str) -> dict:
     text = re.sub(r"^```(?:json)?|```$", "", text.strip(), flags=re.MULTILINE).strip()
     return json.loads(text)
 
+def clamp_to_canonical(dc: str, confidence: str, canonical: set[str]) -> tuple[str, str]:
+    """護欄：dept_canonical 不在合法清單內就夾成「其他」/low confidence，否則原樣返回。"""
+    if dc not in canonical:
+        return "其他", "low"
+    return dc, confidence
+
 def main() -> None:
     from openai import OpenAI
     client = OpenAI()
     model = os.environ.get("OPENAI_MODEL", "gpt-5.4-mini")
-    dirty = distinct_dirty_values(META)
+    meta = json.loads((ROOT / "backend/courses_meta.json").read_text(encoding="utf-8"))
+    dirty = distinct_dirty_values(meta)
     canonical = sorted(CANONICAL_DEPTS) + ["其他"]
     result: dict = {}
     BATCH = 60
@@ -45,10 +51,8 @@ def main() -> None:
         )
         parsed = parse_mapping_response(resp.output_text)
         for k, v in parsed.items():
-            dc = v.get("dept_canonical", "其他")
-            if dc not in CANONICAL_DEPTS:
-                dc, v["confidence"] = "其他", "low"
-            result[k] = {"dept_canonical": dc, "college": DEPT_TO_COLLEGE.get(dc, ""), "confidence": v.get("confidence", "low")}
+            dc, confidence = clamp_to_canonical(v.get("dept_canonical", "其他"), v.get("confidence", "low"), CANONICAL_DEPTS)
+            result[k] = {"dept_canonical": dc, "college": DEPT_TO_COLLEGE.get(dc, ""), "confidence": confidence}
         print(f"  mapped {i+len(batch)}/{len(dirty)}", file=sys.stderr)
     OUT.write_text(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
     print(f"wrote {OUT} ({len(result)} entries)")
