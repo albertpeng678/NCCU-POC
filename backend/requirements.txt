@@ -10,3 +10,4 @@ sentry-sdk[fastapi]>=2.0
 sse-starlette>=2.1
 json-repair>=0.30
 openai>=2.0
+rapidfuzz
