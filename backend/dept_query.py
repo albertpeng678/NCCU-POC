@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from pypinyin import lazy_pinyin
 from rapidfuzz import process, fuzz
 from backend.dept_vocab import (
-    CANONICAL_DEPTS, DEPT_ALIASES, COLLEGE_ALIASES, DEGREE_ALIASES,
+    CANONICAL_DEPTS, DEPT_ALIASES, COLLEGE_ALIASES, DEGREE_ALIASES, CANONICAL_DEGREES,
     strip_grade_tokens, load_vocab,
 )
 
@@ -91,6 +91,8 @@ def normalize_degree(raw: str | None) -> str | None:
     if not raw:
         return None
     raw = raw.strip()
+    if raw in CANONICAL_DEGREES:    # 層1a：已是 canonical 值，原樣返回（不依賴 DEGREE_ALIASES
+        return raw                  # 是否有自我對映鍵——雙保險，見 dept_vocab.py 的補鍵註解）
     if raw in DEGREE_ALIASES:
         return DEGREE_ALIASES[raw]
     if len(raw) < 2:                # 短字串守門：太短模糊比對極易誤配，直接不做

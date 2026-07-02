@@ -22,6 +22,25 @@ def test_degree_alias():
     assert normalize_degree("研究所") == "研究所"
     assert normalize_degree("碩士班") == "碩士"
 
+
+def test_degree_canonical_self_maps():
+    # Critical bug（review 實測）：使用者問「歷史系的通識課」，LLM 正確抽出 degree_level 原文
+    # 「通識」，但舊版 normalize_degree("通識") 回 None（DEGREE_ALIASES 沒有「通識」自我對映鍵，
+    # 也沒有「已是 canonical 就原樣返回」的短路）→ build_dept_filter 誤判成「未指定學制」→
+    # 加上 {"type":"ne","key":"degree_level","value":"通識"}，排除通識，與使用者要的完全相反。
+    # 同理「學士」對 alias key「學士班」的 fuzz.ratio=80 < cutoff 82，也會靜默漏掉學制條件。
+    # normalize_degree 對所有 6 個 canonical degree_level 值都必須原樣返回。
+    assert normalize_degree("通識") == "通識"
+    assert normalize_degree("學士") == "學士"
+    assert normalize_degree("碩士") == "碩士"
+    assert normalize_degree("博士") == "博士"
+    assert normalize_degree("碩博") == "碩博"
+
+
+def test_degree_garbage_and_none_returns_none():
+    assert normalize_degree(None) is None
+    assert normalize_degree("asdfqwer") is None
+
 def test_garbage_returns_none():
     assert normalize_department("asdfqwer") is None
     assert normalize_department(None) is None

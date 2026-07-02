@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from backend.dept_query import build_dept_filter, extract_slots
+from backend.dept_query import build_dept_filter, extract_slots, normalize_degree
 
 
 # ───────────────────────────── build_dept_filter ─────────────────────────────
@@ -87,6 +87,25 @@ def test_dept_and_college_and_degree_all_set_no_ge_exclusion():
 def test_explicit_ge_degree_level_not_double_excluded():
     """使用者明確指定要通識（degree_level=通識）→ 誠實回 eq 通識，不自相矛盾加 ne 通識。"""
     f = build_dept_filter({"department": "歷史學系", "college": None, "degree_level": "通識"})
+    assert f == {
+        "type": "and",
+        "filters": [
+            {"type": "eq", "key": "dept_canonical", "value": "歷史學系"},
+            {"type": "eq", "key": "degree_level", "value": "通識"},
+        ],
+    }
+
+
+def test_general_education_department_query_not_self_contradictory():
+    """Critical bug e2e（review 實測、已重現）："歷史系的通識課" → LLM 抽出 degree_level 原文
+    「通識」→ normalize_degree("通識") 必須回 "通識"（非 None）→ build_dept_filter 必須產出
+    eq 通識（使用者要的），不可落入「未指定學制」分支加 ne 通識（自相矛盾、排除掉使用者要的通識課）。
+    這裡刻意經過 normalize_degree()（而非像 test_explicit_ge_degree_level_not_double_excluded
+    直接硬編 "通識"），才會真正覆蓋到 normalize_degree 的 bug。
+    """
+    f = build_dept_filter(
+        {"department": "歷史學系", "college": None, "degree_level": normalize_degree("通識")}
+    )
     assert f == {
         "type": "and",
         "filters": [
