@@ -7,9 +7,15 @@ def test_alias_exact():
 def test_already_canonical():
     assert normalize_department("歷史學系") == "歷史學系"
 
-def test_fuzzy_typo():
-    assert normalize_college("文苑") == "文學院"      # 錯字 → 最近鄰
+def test_alias_typo_via_college_alias_table():
+    # 「文苑」「文院」都命中 college_aliases 硬編別名（層1b 快路），不會進到層2 rapidfuzz。
+    assert normalize_college("文苑") == "文學院"
     assert normalize_college("文院") == "文學院"      # 別名
+
+def test_fuzzy_typo_via_rapidfuzz_layer():
+    # 「資訊管里學系」不在任何別名表，必須真正經過層2 rapidfuzz 最近鄰治錯字（里→理）。
+    # fuzz.ratio("資訊管里學系", "資訊管理學系") ≈ 83.33，>= _FUZZ_CUTOFF(82)，真模糊命中。
+    assert normalize_department("資訊管里學系") == "資訊管理學系"
 
 def test_degree_alias():
     assert normalize_degree("大學部") == "學士"
@@ -19,3 +25,11 @@ def test_degree_alias():
 def test_garbage_returns_none():
     assert normalize_department("asdfqwer") is None
     assert normalize_department(None) is None
+
+def test_short_or_junk_strings_never_guessed():
+    # F3: fuzz.WRatio 的 partial-match 特性會讓短字串/亂打字串被誤配到不相關的系所/學院
+    # （例如「中」被灌水配到「華語文教學中心」、「商院子」被配到「商學院」）。
+    # 對不上必須回 None，不可亂猜——否則會誤過濾使用者查詢。
+    assert normalize_college("中") is None
+    assert normalize_department("法") is None
+    assert normalize_college("商院子") is None

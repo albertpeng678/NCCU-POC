@@ -20,9 +20,12 @@ def _match(raw: str | None, alias: dict[str, str], canonical: set[str]) -> str |
     stem = strip_grade_tokens(raw)
     if stem in alias:
         return alias[stem]
+    if len(raw) < 2:                # 短字串守門：太短模糊比對極易誤配，直接不做
+        return None
     # 層2：rapidfuzz 最近鄰（治錯字），比對 canonical + alias keys
+    # 用 fuzz.ratio（長度敏感、不做 partial 子字串灌水）而非 WRatio，避免短字串/亂打誤配
     pool = list(canonical) + list(alias.keys())
-    hit = process.extractOne(raw, pool, scorer=fuzz.WRatio, score_cutoff=_FUZZ_CUTOFF)
+    hit = process.extractOne(raw, pool, scorer=fuzz.ratio, score_cutoff=_FUZZ_CUTOFF)
     if hit:
         val = hit[0]
         return alias.get(val, val)
@@ -40,5 +43,7 @@ def normalize_degree(raw: str | None) -> str | None:
     raw = raw.strip()
     if raw in DEGREE_ALIASES:
         return DEGREE_ALIASES[raw]
-    hit = process.extractOne(raw, list(DEGREE_ALIASES.keys()), scorer=fuzz.WRatio, score_cutoff=_FUZZ_CUTOFF)
+    if len(raw) < 2:                # 短字串守門：太短模糊比對極易誤配，直接不做
+        return None
+    hit = process.extractOne(raw, list(DEGREE_ALIASES.keys()), scorer=fuzz.ratio, score_cutoff=_FUZZ_CUTOFF)
     return DEGREE_ALIASES[hit[0]] if hit else None
